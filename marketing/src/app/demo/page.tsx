@@ -1,8 +1,10 @@
 'use client';
 
-import { useState, type FormEvent } from 'react';
+import { useActionState } from 'react';
 
 import { PageHero } from '@/components/page-hero';
+
+import { INITIAL_STATE, sendDemoRequest } from './actions';
 
 const SOFTWARE_OPTIONS = [
   'Zenoti',
@@ -15,14 +17,13 @@ const SOFTWARE_OPTIONS = [
 ];
 
 export default function DemoRequestPage() {
-  const [submitted, setSubmitted] = useState(false);
-
-  const handleSubmit = (e: FormEvent<HTMLFormElement>) => {
-    e.preventDefault();
-    // v1: client-side confirmation. Backend wiring (POST to /api/demo-requests/)
-    // lands in Session 2.
-    setSubmitted(true);
-  };
+  // Sends a server action → emails the lead via Resend
+  // (CONTACT_FORM_TO_EMAIL env var). See ./actions.ts for setup.
+  const [state, formAction, pending] = useActionState(
+    sendDemoRequest,
+    INITIAL_STATE,
+  );
+  const submitted = state.status === 'success';
 
   return (
     <>
@@ -71,7 +72,7 @@ export default function DemoRequestPage() {
               </aside>
 
               <form
-                onSubmit={handleSubmit}
+                action={formAction}
                 className="lg:col-span-8 space-y-8"
                 noValidate
               >
@@ -144,6 +145,16 @@ export default function DemoRequestPage() {
                   placeholder="e.g. multi-location reporting, Botox consent workflow, migrating from Zenoti…"
                 />
 
+                {state.status === 'error' ? (
+                  <p
+                    role="alert"
+                    aria-live="polite"
+                    className="rounded-md border border-red-300 bg-red-50 px-4 py-3 text-sm text-red-800"
+                  >
+                    {state.message}
+                  </p>
+                ) : null}
+
                 <div className="flex flex-col items-start gap-4 pt-4 sm:flex-row sm:items-center sm:justify-between">
                   <p className="max-w-md text-xs text-muted-foreground">
                     We respond within one business day. We never share or
@@ -151,9 +162,10 @@ export default function DemoRequestPage() {
                   </p>
                   <button
                     type="submit"
-                    className="inline-flex h-12 items-center rounded-full bg-foreground px-7 text-sm font-medium uppercase tracking-[0.16em] text-background hover:bg-foreground/90 transition-colors"
+                    disabled={pending}
+                    className="inline-flex h-12 items-center rounded-full bg-foreground px-7 text-sm font-medium uppercase tracking-[0.16em] text-background hover:bg-foreground/90 transition-colors disabled:opacity-60 disabled:cursor-not-allowed"
                   >
-                    Send request
+                    {pending ? 'Sending…' : 'Send request'}
                   </button>
                 </div>
               </form>

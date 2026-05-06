@@ -35,6 +35,24 @@ The "Sign in" CTA points at `NEXT_PUBLIC_APP_URL`, which defaults to
 `http://localhost:3000` in dev. Set it to `https://app.lumecrm.com`
 (or whatever the staff sign-in surface is named) for production.
 
+## Environment variables
+
+Set these in Vercel → Project → Settings → Environment Variables.
+Without them the demo form falls back to a stub-mode that logs to
+the server console instead of emailing — useful in dev, useless in
+prod.
+
+| Var | Required | Description |
+|-----|----------|-------------|
+| `RESEND_API_KEY` | Yes (prod) | Get one at https://resend.com/api-keys. Free tier: 100/day. |
+| `CONTACT_FORM_TO_EMAIL` | Yes (prod) | Inbox that receives demo-request leads. |
+| `CONTACT_FORM_FROM` | Optional | Verified sender address. Until you verify a domain in Resend, leave unset and the action uses Resend's `onboarding@resend.dev` testing sender. After domain verification, set to e.g. `demo-requests@lumecrm.com`. |
+| `NEXT_PUBLIC_APP_URL` | Optional | Where the "Sign in" CTA points. |
+
+The `replyTo` header on outgoing demo-request emails is the
+submitter's email, so hitting reply in your inbox replies directly
+to the lead.
+
 ## Production deployment shape
 
 ```
