@@ -51,7 +51,7 @@ export function ProductFrame({
         </div>
         <div className="ml-2 flex items-center gap-2 rounded-md bg-foreground/5 px-3 py-1 text-[11px] font-mono text-foreground/55">
           <span aria-hidden>◆</span>
-          <span>acmespa.lumecrm.com</span>
+          <span>acmespa.lumècrm.com</span>
           <span className="text-foreground/30">{url}</span>
         </div>
       </div>

@@ -1,10 +1,11 @@
 # marketing
 
-The public marketing site at **lumecrm.com**. Lives separately from
-the CRM (`../frontend`) because:
+The public marketing site at **lumècrm.com** (IDN; punycode form
+`xn--lumcrm-5ua.com` is what DNS sees on the wire). Lives separately
+from the CRM (`../frontend`) because:
 
-1. **Different deployments at different domains.** `lumecrm.com` is
-   one Vercel/Fargate target; `<tenant>.lumecrm.com` is another.
+1. **Different deployments at different domains.** `lumècrm.com` is
+   one Vercel/Fargate target; `<tenant>.lumècrm.com` is another.
    Co-locating in one Next app would mean serving the auth shell +
    tanstack-query providers on every public page request.
 2. **Different release cadence.** Marketing copy ships weekly; the
@@ -16,7 +17,7 @@ the CRM (`../frontend`) because:
 
 The brand assets, color palette, and typography are mirrored verbatim
 from the CRM so the visual continuity holds end-to-end. A customer
-who lands on lumecrm.com, signs in, and arrives in their tenant
+who lands on lumècrm.com, signs in, and arrives in their tenant
 subdomain shouldn't notice the seam.
 
 ## Local dev
@@ -29,10 +30,10 @@ npm run dev     # boots Next on http://localhost:3001
 
 The CRM frontend runs on `:3000` (typically already up). Both can
 run side by side; only the marketing site is exposed at
-`lumecrm.com` in production.
+`lumècrm.com` in production.
 
 The "Sign in" CTA points at `NEXT_PUBLIC_APP_URL`, which defaults to
-`http://localhost:3000` in dev. Set it to `https://app.lumecrm.com`
+`http://localhost:3000` in dev. Set it to `https://app.lumècrm.com`
 (or whatever the staff sign-in surface is named) for production.
 
 ## Environment variables
@@ -46,7 +47,7 @@ prod.
 |-----|----------|-------------|
 | `RESEND_API_KEY` | Yes (prod) | Get one at https://resend.com/api-keys. Free tier: 100/day. |
 | `CONTACT_FORM_TO_EMAIL` | Yes (prod) | Inbox that receives demo-request leads. |
-| `CONTACT_FORM_FROM` | Optional | Verified sender address. Until you verify a domain in Resend, leave unset and the action uses Resend's `onboarding@resend.dev` testing sender. After domain verification, set to e.g. `demo-requests@lumecrm.com`. |
+| `CONTACT_FORM_FROM` | Optional | Verified sender address. Until you verify a domain in Resend, leave unset and the action uses Resend's `onboarding@resend.dev` testing sender. After domain verification, set to e.g. `demo-requests@lumècrm.com`. |
 | `NEXT_PUBLIC_APP_URL` | Optional | Where the "Sign in" CTA points. |
 
 The `replyTo` header on outgoing demo-request emails is the
@@ -57,35 +58,35 @@ to the lead.
 
 ```
                        ┌──────────────────────────────────┐
-   lumecrm.com    ───→ │ marketing/  (this app)           │  Vercel / Fargate
+   lumècrm.com    ───→ │ marketing/  (this app)           │  Vercel / Fargate
                        └──────────────────────────────────┘
 
                        ┌──────────────────────────────────┐
-   *.lumecrm.com  ───→ │ frontend/   (the CRM)            │  Vercel / Fargate
+   *.lumècrm.com  ───→ │ frontend/   (the CRM)            │  Vercel / Fargate
                        │  resolves tenant from subdomain  │
                        └──────────────────────────────────┘
 
                        ┌──────────────────────────────────┐
-   api.lumecrm.com ──→ │ backend/    (Django + Postgres)  │  Fargate + RDS
+   api.lumècrm.com ──→ │ backend/    (Django + Postgres)  │  Fargate + RDS
                        │  resolves tenant from Origin or  │
                        │  X-Tenant-Slug header            │
                        └──────────────────────────────────┘
 ```
 
 DNS:
-- `lumecrm.com` (apex) — A/ALIAS to the marketing deployment
-- `www.lumecrm.com` — 301 → apex
-- `*.lumecrm.com` — wildcard CNAME to the CRM frontend deployment
-- `api.lumecrm.com` — A/CNAME to the backend ALB
+- `lumècrm.com` (apex) — A/ALIAS to the marketing deployment
+- `www.lumècrm.com` — 301 → apex
+- `*.lumècrm.com` — wildcard CNAME to the CRM frontend deployment
+- `api.lumècrm.com` — A/CNAME to the backend ALB
 
 The marketing site links to the CRM via the `NEXT_PUBLIC_APP_URL`
 env var. We can either:
 
 - **Single staff sign-in surface**: route every operator through
-  `app.lumecrm.com`, which reads the active tenant from the session
+  `app.lumècrm.com`, which reads the active tenant from the session
   cookie or asks them to pick. Simpler nav.
 - **Per-tenant subdomain on first request**: ask the operator to
-  visit `<your-spa>.lumecrm.com` directly. Better SEO de-indexing
+  visit `<your-spa>.lumècrm.com` directly. Better SEO de-indexing
   isolation, harder for an operator who has lost their slug.
 
 Lean toward the single sign-in surface for v1; revisit when we have

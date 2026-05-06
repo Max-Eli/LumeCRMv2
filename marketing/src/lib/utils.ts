@@ -7,8 +7,8 @@ export function cn(...inputs: ClassValue[]) {
 
 /**
  * URL of the CRM application. In production this is the per-tenant
- * subdomain root (e.g. `https://app.lumecrm.com` if we use a single
- * staff-facing subdomain, or the explicit `<tenant>.lumecrm.com` if
+ * subdomain root (e.g. `https://app.lumècrm.com` if we use a single
+ * staff-facing subdomain, or the explicit `<tenant>.lumècrm.com` if
  * the operator already knows their slug). In dev it's the local CRM
  * Next app on port 3000.
  *
