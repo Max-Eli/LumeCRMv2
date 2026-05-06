@@ -4,7 +4,8 @@ import { useActionState } from 'react';
 
 import { PageHero } from '@/components/page-hero';
 
-import { INITIAL_STATE, sendDemoRequest } from './actions';
+import { sendDemoRequest } from './actions';
+import { INITIAL_STATE } from './types';
 
 const SOFTWARE_OPTIONS = [
   'Zenoti',

@@ -26,17 +26,15 @@
 
 'use server';
 
+// Note: this file has `'use server'` so EVERY export must be an async
+// function (Next.js requirement). Type definitions (interfaces) are
+// stripped at compile time so they're fine, but a `const` or other
+// runtime value would crash at request time. Constants + types
+// related to this action live alongside it in `./types.ts`.
+
 import { Resend } from 'resend';
 
-export interface DemoRequestState {
-  status: 'idle' | 'success' | 'error';
-  message: string;
-}
-
-export const INITIAL_STATE: DemoRequestState = {
-  status: 'idle',
-  message: '',
-};
+import type { DemoRequestState } from './types';
 
 interface DemoRequestPayload {
   first_name: string;
