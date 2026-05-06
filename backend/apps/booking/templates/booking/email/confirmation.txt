@@ -1,0 +1,17 @@
+Hi {{ customer.first_name|default:"there" }},
+
+Your appointment at {{ tenant_name }} is confirmed.
+
+  Service:   {{ service_name }} ({{ duration_minutes }} min)
+  When:      {{ when_local }}
+  Provider:  {{ provider_display_name }}
+  Where:     {{ location_name }}{% if location_address %}
+             {{ location_address }}{% endif %}{% if location_phone %}
+             {{ location_phone }}{% endif %}
+
+Need to reschedule or cancel? Use this link any time:
+{{ manage_url }}
+
+Looking forward to seeing you.
+
+— {{ tenant_name }}

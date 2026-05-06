@@ -1,0 +1,220 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-emphasis: var(--emphasis);
+
+  --font-sans: var(--font-sans);
+  --font-serif: var(--font-serif);
+  --font-heading: var(--font-serif);
+
+  --radius-sm: calc(var(--radius) * 0.6);
+  --radius-md: calc(var(--radius) * 0.8);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) * 1.4);
+  --radius-2xl: calc(var(--radius) * 1.8);
+}
+
+/*
+ * MP096 fire palette — same as the CRM (see frontend/src/app/globals.css
+ * + ADR 0006 for the color system + contrast math). Mirrored verbatim
+ * here so the brand reads as one continuous experience: a customer
+ * lands on lumecrm.com, signs in, and arrives in their tenant subdomain
+ * without any visual seam.
+ *
+ *   #F3F4F5  Chef's Hat         page background
+ *   #DBE0E1  Drifting Cloud     borders, dividers, fine rules
+ *   #100C08  Smoky Black        body type, primary buttons
+ *   #95122C  Bacchic Burgundy   editorial accent (drop caps, rules,
+ *                                italic flourishes — NOT a button color)
+ *   #FF9408  Merin's Fire       reserved high-energy emphasis
+ *
+ * The marketing site leans more EDITORIAL than the CRM: bigger serif
+ * type, more whitespace, accent used sparingly to punctuate. The
+ * underlying palette is identical so the visual continuity holds.
+ */
+
+:root {
+  --background: #F3F4F5;
+  --foreground: #100C08;
+
+  --card: #F3F4F5;
+  --card-foreground: #100C08;
+
+  --muted: #DBE0E1;
+  --muted-foreground: color-mix(in oklab, #100C08 60%, #F3F4F5);
+
+  --border: #DBE0E1;
+
+  --accent: #95122C;             /* Bacchic Burgundy — editorial accent */
+  --accent-foreground: #F3F4F5;
+
+  --emphasis: #FF9408;           /* Merin's Fire — reserved highlight */
+
+  --radius: 0.5rem;
+}
+
+* {
+  border-color: var(--color-border);
+}
+
+html {
+  font-feature-settings: "ss01", "cv11";  /* Geist's friendlier alternates */
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-sans);
+}
+
+/* ── Editorial typography helpers ────────────────────────────────────── */
+
+/* Display serif at hero scale — Fraunces, optical-size variable so the
+ * contrast climbs as the size grows. Tightened tracking + relaxed
+ * line-height for editorial feel. */
+.font-display {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.02;
+  font-variation-settings: "opsz" 144;
+}
+
+/* Small-caps eyebrow label used to introduce a section. Fine-grained
+ * letter-spacing + uppercase + subtle accent color → "this is a chapter
+ * marker, not a button." */
+.eyebrow {
+  font-family: var(--font-sans);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+/* Italic burgundy phrase — call out a single word inside a serif
+ * headline ("the *only* HIPAA-ready CRM"). */
+.accent-italic {
+  font-family: var(--font-serif);
+  font-style: italic;
+  color: var(--accent);
+  font-weight: 400;
+}
+
+/* Drop-cap on the first letter of a paragraph — three lines tall,
+ * serif, accent-colored. Reserve for one paragraph per page max. */
+.drop-cap::first-letter {
+  font-family: var(--font-serif);
+  font-weight: 500;
+  float: left;
+  font-size: 4.25em;
+  line-height: 0.85;
+  padding-top: 0.08em;
+  padding-right: 0.12em;
+  color: var(--accent);
+}
+
+/* Fine ruled section divider. Use sparingly between major sections —
+ * editorial restraint, not Tailwind `<hr>` defaults. */
+.rule {
+  height: 1px;
+  background: var(--border);
+  border: none;
+}
+
+/* ── Motion ─────────────────────────────────────────────────────────── */
+
+/* Smooth in-page anchor scrolling. Native, no JS. */
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* Marquee — slow editorial ticker of typographic phrases.
+ * Used once per page maximum, as a horizontal counterpoint to the
+ * dominant vertical reading rhythm. Two duplicate inner tracks keep
+ * the loop seamless. */
+@keyframes marquee-x {
+  from { transform: translate3d(0, 0, 0); }
+  to   { transform: translate3d(-50%, 0, 0); }
+}
+
+.marquee {
+  display: flex;
+  width: max-content;
+  animation: marquee-x 60s linear infinite;
+}
+
+.marquee-track {
+  display: flex;
+  align-items: center;
+  gap: 4rem;
+  padding-right: 4rem;
+  white-space: nowrap;
+}
+
+/* Pause the marquee on hover — tiny moment of operator control. */
+.marquee-host:hover .marquee {
+  animation-play-state: paused;
+}
+
+/* Hero text reveal — fades in on initial mount with a slight stagger
+ * via animation-delay. No scroll trigger needed because the hero is
+ * always visible on load. */
+@keyframes hero-rise {
+  from {
+    opacity: 0;
+    transform: translate3d(0, 18px, 0);
+  }
+  to {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.hero-rise {
+  opacity: 0;
+  animation: hero-rise 0.9s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Underline-grow link micro-interaction — the underline starts at 0
+ * width and animates to 100% on hover. Fine motion, editorial. */
+.link-underline {
+  position: relative;
+}
+.link-underline::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: -2px;
+  height: 1px;
+  background: currentColor;
+  transform: scaleX(0);
+  transform-origin: left;
+  transition: transform 0.5s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.link-underline:hover::after {
+  transform: scaleX(1);
+}

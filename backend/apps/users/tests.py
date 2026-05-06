@@ -1,0 +1,195 @@
+"""Auth tests — covers the deliberately-disjoint customer / platform login surfaces.
+
+Two test classes:
+  - LoginSeparationTests — proves you can't sign in to the wrong
+    surface, in either direction
+  - PlatformAdminAccountTests — covers the createplatformadmin
+    management command + the "platform admin must have zero
+    memberships" invariant
+
+Tenant create flow's rejection of platform-admin owner emails is
+covered in apps.platform.tests.PlatformTenantCreateTests.
+"""
+
+from __future__ import annotations
+
+from django.contrib.auth import get_user_model
+from django.core.management import call_command
+from django.core.management.base import CommandError
+from django.test import TestCase
+from django.urls import reverse
+from io import StringIO
+from rest_framework import status
+from rest_framework.test import APIClient
+
+from apps.tenants.models import Tenant
+from apps.tenants.services import create_tenant_with_defaults
+
+User = get_user_model()
+
+
+def _make_tenant_user(email: str, slug: str) -> User:
+    """Create a regular tenant user with one active membership."""
+    user = User.objects.create_user(email=email, password='test-password')
+    create_tenant_with_defaults(name=slug.title(), slug=slug, owner_user=user)
+    return user
+
+
+def _make_platform_admin(email: str) -> User:
+    user = User.objects.create_user(email=email, password='test-password')
+    user.is_platform_admin = True
+    user.save()
+    return user
+
+
+class LoginSeparationTests(TestCase):
+    """Proves the customer and platform login surfaces are disjoint."""
+
+    def test_tenant_user_can_use_regular_login(self):
+        _make_tenant_user('owner@example.com', 'somespa')
+        client = APIClient()
+        client.get(reverse('auth-csrf'))
+        response = client.post(
+            reverse('auth-login'),
+            data={'email': 'owner@example.com', 'password': 'test-password'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertFalse(response.data['user']['is_platform_admin'])
+        self.assertEqual(len(response.data['user']['memberships']), 1)
+
+    def test_platform_admin_blocked_from_regular_login(self):
+        """Platform admins posting to /api/auth/login/ get a 401 with
+        a structured error code so the frontend can redirect them to
+        the platform login page."""
+        _make_platform_admin('platform@lumecrm.com')
+        client = APIClient()
+        client.get(reverse('auth-csrf'))
+        response = client.post(
+            reverse('auth-login'),
+            data={'email': 'platform@lumecrm.com', 'password': 'test-password'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(response.data.get('code'), 'platform_admin_account')
+
+    def test_platform_admin_can_use_platform_login(self):
+        _make_platform_admin('platform@lumecrm.com')
+        client = APIClient()
+        client.get(reverse('auth-csrf'))
+        response = client.post(
+            reverse('auth-platform-login'),
+            data={'email': 'platform@lumecrm.com', 'password': 'test-password'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['user']['is_platform_admin'])
+        self.assertEqual(response.data['user']['memberships'], [])
+
+    def test_tenant_user_blocked_from_platform_login(self):
+        """Generic invalid-credentials message — no information leak."""
+        _make_tenant_user('owner@example.com', 'somespa')
+        client = APIClient()
+        client.get(reverse('auth-csrf'))
+        response = client.post(
+            reverse('auth-platform-login'),
+            data={'email': 'owner@example.com', 'password': 'test-password'},
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        # No code field — same response shape as a wrong password.
+        self.assertNotIn('code', response.data)
+
+    def test_wrong_password_returns_generic_error_on_both_surfaces(self):
+        _make_platform_admin('p@lumecrm.com')
+        _make_tenant_user('t@example.com', 'tenant')
+        client = APIClient()
+        client.get(reverse('auth-csrf'))
+        # Wrong password on regular surface
+        r1 = client.post(
+            reverse('auth-login'),
+            data={'email': 't@example.com', 'password': 'wrong'},
+            format='json',
+        )
+        self.assertEqual(r1.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertNotIn('code', r1.data)
+        # Wrong password on platform surface
+        r2 = client.post(
+            reverse('auth-platform-login'),
+            data={'email': 'p@lumecrm.com', 'password': 'wrong'},
+            format='json',
+        )
+        self.assertEqual(r2.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_me_endpoint_exposes_is_platform_admin(self):
+        admin = _make_platform_admin('p@lumecrm.com')
+        client = APIClient()
+        client.force_login(admin)
+        response = client.get(reverse('auth-me'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data['user']['is_platform_admin'])
+
+
+class PlatformAdminAccountTests(TestCase):
+    """Bootstrap command + invariants on platform admin accounts."""
+
+    def test_createplatformadmin_creates_new_account(self):
+        out = StringIO()
+        call_command(
+            'createplatformadmin',
+            email='max@voxtro.io',
+            password='supersecret-pw-123',
+            first_name='Max',
+            last_name='Test',
+            interactive=False,
+            stdout=out,
+        )
+        user = User.objects.get(email='max@voxtro.io')
+        self.assertTrue(user.is_platform_admin)
+        self.assertFalse(user.is_superuser)  # NOT auto-elevated
+        self.assertFalse(user.memberships.exists())
+        self.assertIn('Created platform admin', out.getvalue())
+
+    def test_createplatformadmin_elevates_existing_user_with_no_memberships(self):
+        User.objects.create_user(email='lonely@example.com', password='whatever')
+        out = StringIO()
+        call_command(
+            'createplatformadmin',
+            email='lonely@example.com',
+            password='supersecret-pw-123',
+            interactive=False,
+            stdout=out,
+        )
+        user = User.objects.get(email='lonely@example.com')
+        self.assertTrue(user.is_platform_admin)
+        self.assertIn('Elevated platform admin', out.getvalue())
+
+    def test_createplatformadmin_refuses_user_with_memberships(self):
+        _make_tenant_user('owner@example.com', 'thespa')
+        with self.assertRaises(CommandError) as ctx:
+            call_command(
+                'createplatformadmin',
+                email='owner@example.com',
+                password='supersecret-pw-123',
+                interactive=False,
+            )
+        self.assertIn('membership', str(ctx.exception).lower())
+
+    def test_tenant_create_rejects_platform_admin_email(self):
+        """The platform-side tenant create endpoint rejects any owner
+        email belonging to a platform admin — keeps worlds disjoint."""
+        admin = _make_platform_admin('admin@lumecrm.com')
+        creator = _make_platform_admin('creator@lumecrm.com')
+        client = APIClient()
+        client.force_login(creator)
+        response = client.post(
+            reverse('platform-tenant-list'),
+            data={
+                'name': 'Trying',
+                'slug': 'trying',
+                'owner_email': admin.email,
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('owner_email', response.data)

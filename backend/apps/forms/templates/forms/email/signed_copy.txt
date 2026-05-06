@@ -1,0 +1,23 @@
+{# Plain-text fallback for the signed-copy email. Required for
+ # accessibility / non-HTML mail clients. Same content shape as the
+ # HTML version — keep them in sync when editing. #}
+Hi {{ customer.first_name|default:"there" }},
+
+You signed {{ template_name }} on {{ signed_date }}.
+
+Below is what you signed. Keep this email for your records.
+
+{% for field in fields %}
+─────────────────────────────────────────────────
+{{ field.label }}
+{% if field.value %}{{ field.value }}{% else %}(no answer){% endif %}
+{% endfor %}
+─────────────────────────────────────────────────
+
+You can also view the signed copy online:
+{{ fill_url }}
+
+— {{ tenant_name }}
+
+This email contains protected health information you requested. If
+you didn't ask for this email, please contact us right away.

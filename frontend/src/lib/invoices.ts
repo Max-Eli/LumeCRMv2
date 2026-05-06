@@ -1,0 +1,425 @@
+/**
+ * Invoice data hooks.
+ *
+ * Pairs with `apps.invoices` at `/api/invoices/`. Per ADR 0007:
+ *
+ *   - Every appointment has an invoice (1:1, auto-created on booking).
+ *     Standalone invoices (POS) land in Phase 2A — same shape, with
+ *     `appointment` = null.
+ *   - The only path to `Appointment.status = 'completed'` is closing the
+ *     invoice via `useCloseInvoice`. The serializer rejects direct
+ *     `PATCH status=completed` on appointments with a guidance message.
+ *   - Owners and managers may reopen a paid invoice within 60 days of
+ *     `closed_at` (the FIRST close — re-closes don't extend the window).
+ *
+ * Money everywhere is in cents — divide by 100 only at the display edge.
+ */
+
+'use client';
+
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+
+import { ApiError, api } from './api';
+
+// ── Types ────────────────────────────────────────────────────────────────
+
+export type InvoiceStatus = 'open' | 'paid' | 'void';
+
+export type PaymentMethod = 'cash' | 'check' | 'card_external' | 'other';
+
+export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
+  cash: 'Cash',
+  check: 'Check',
+  card_external: 'Card (external terminal)',
+  other: 'Other',
+};
+
+export interface InvoiceLineItem {
+  id: number;
+  service: number | null;
+  product: number | null;
+  package: number | null;
+  membership_plan: number | null;
+  description: string;
+  quantity: number;
+  unit_price_cents: number;
+  tax_rate_percent: string; // Decimal as string from DRF
+  line_subtotal_cents: number;
+  line_tax_cents: number;
+  created_at: string;
+}
+
+export interface InvoiceCustomerSummary {
+  id: number;
+  first_name: string;
+  last_name: string;
+  full_name: string;
+}
+
+export interface InvoiceAppointmentSummary {
+  id: number;
+  status: string;
+  start_time: string;
+  end_time: string;
+  service_name: string;
+  provider_name: string | null;
+}
+
+export interface Invoice {
+  id: number;
+  /** Human-readable invoice number, format `INV-YYYY-NNNN`. Per-tenant
+   *  sequential, resets on Jan 1. Always present on rows created
+   *  after the 0003 migration; backfilled retroactively on existing
+   *  rows. Defensive empty-string fallback only for pre-migration
+   *  test fixtures. */
+  invoice_number: string;
+  customer: InvoiceCustomerSummary;
+  appointment: InvoiceAppointmentSummary | null;
+  status: InvoiceStatus;
+  subtotal_cents: number;
+  tax_cents: number;
+  total_cents: number;
+  payment_method: PaymentMethod | '';
+  payment_reference: string;
+  notes: string;
+  closed_at: string | null;
+  closed_by_email: string | null;
+  reopened_at: string | null;
+  reopened_by_email: string | null;
+  reopen_count: number;
+  voided_at: string | null;
+  voided_by_email: string | null;
+  void_reason: string;
+  created_at: string;
+  updated_at: string;
+  created_by_email: string | null;
+  line_items: InvoiceLineItem[];
+  is_reopen_window_open: boolean;
+  reopen_deadline: string | null;
+}
+
+export interface CloseInvoiceInput {
+  payment_method: PaymentMethod;
+  payment_reference?: string;
+  notes?: string;
+}
+
+export interface ReopenInvoiceInput {
+  reason: string;
+}
+
+export interface VoidInvoiceInput {
+  reason: string;
+}
+
+/** Body for `POST /api/invoices/<id>/add-line/`. Caller supplies
+ *  exactly one of `service_id` / `product_id` / `package_id` /
+ *  `membership_plan_id`; backend rejects more or fewer with a 400. */
+export interface AddInvoiceLineInput {
+  service_id?: number;
+  product_id?: number;
+  package_id?: number;
+  membership_plan_id?: number;
+  quantity?: number;
+  /** Optional override for member discounts / comp pricing. */
+  unit_price_cents?: number;
+  /** Optional override for the snapshot description. */
+  description?: string;
+}
+
+/** Body for `POST /api/invoices/<id>/redeem-from-package/`. Backend
+ *  validates the package is ACTIVE, not expired, customer-matched,
+ *  and has remaining credit for the chosen service. */
+export interface RedeemFromPackageInput {
+  purchased_package_id: number;
+  service_id: number;
+  note?: string;
+}
+
+/** Body for `POST /api/invoices/<id>/redeem-from-membership/`.
+ *  Backend validates the subscription is ACTIVE + in-period,
+ *  customer-matched, and has remaining credit for the service. */
+export interface RedeemFromMembershipInput {
+  subscription_id: number;
+  service_id: number;
+  note?: string;
+}
+
+/** One row in the custom-package builder. */
+export interface CustomPackageItemInput {
+  service_id: number;
+  quantity: number;
+}
+
+/** Body for `POST /api/invoices/<id>/add-custom-package/`. Builds
+ *  a one-off bundle for this customer (not from the catalog) and
+ *  adds it to the invoice as a single line. Same lifecycle as a
+ *  catalog package: PENDING until invoice close, then ACTIVE. */
+export interface AddCustomPackageInput {
+  name: string;
+  description?: string;
+  price_cents: number;
+  tax_rate_percent?: string | number;
+  validity_days?: number | null;
+  items: CustomPackageItemInput[];
+}
+
+// ── Query keys ───────────────────────────────────────────────────────────
+
+const INVOICES_KEY = ['invoices'] as const;
+
+const invoiceDetailKey = (id: number) => [...INVOICES_KEY, id] as const;
+const invoiceByAppointmentKey = (appointmentId: number) =>
+  [...INVOICES_KEY, 'appointment', appointmentId] as const;
+
+// ── Hooks ────────────────────────────────────────────────────────────────
+
+/** Fetch a single invoice by ID. */
+export function useInvoice(id: number | undefined) {
+  return useQuery<Invoice>({
+    queryKey: invoiceDetailKey(id ?? 0),
+    queryFn: () => api.get<Invoice>(`/api/invoices/${id}/`),
+    enabled: typeof id === 'number' && id > 0,
+  });
+}
+
+/** All invoices for a single customer, newest first.
+ *
+ *  Drives the customer profile's Wallet tab — open balance + payment
+ *  history at a glance. Hits `/api/invoices/?customer=<id>`; tenant
+ *  scoping handled by middleware. */
+export function useCustomerInvoices(customerId: number | undefined) {
+  return useQuery<Invoice[]>({
+    queryKey: [...INVOICES_KEY, 'customer', customerId ?? 0],
+    queryFn: () => api.get<Invoice[]>(`/api/invoices/?customer=${customerId}`),
+    enabled: typeof customerId === 'number' && customerId > 0,
+  });
+}
+
+/**
+ * Fetch the (single) invoice for an appointment. The list endpoint is
+ * filtered server-side; we unwrap the array to return the first hit (or
+ * null) so callers that know "this appointment has at most one invoice"
+ * (per ADR 0007) get a clean shape.
+ */
+export function useInvoiceForAppointment(appointmentId: number | undefined) {
+  return useQuery<Invoice | null>({
+    queryKey: invoiceByAppointmentKey(appointmentId ?? 0),
+    queryFn: async () => {
+      const list = await api.get<Invoice[] | { results: Invoice[] }>(
+        `/api/invoices/?appointment=${appointmentId}`,
+      );
+      const items = Array.isArray(list) ? list : list.results;
+      return items[0] ?? null;
+    },
+    enabled: typeof appointmentId === 'number' && appointmentId > 0,
+  });
+}
+
+/**
+ * Close (take payment). Throws an `ApiError` on permission failure
+ * (typically 403) or state-machine conflict (409 — invoice already
+ * paid / voided / appointment cancelled).
+ */
+export function useCloseInvoice(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, CloseInvoiceInput>({
+    mutationFn: (input) => api.post<Invoice>(`/api/invoices/${invoiceId}/close/`, input),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      // The appointment side also changed (status → completed); blow the
+      // appointments cache so the calendar reflects it without a manual
+      // refetch.
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['appointments'] });
+    },
+  });
+}
+
+/**
+ * Reopen a paid invoice. 403 if the caller lacks `REOPEN_INVOICE`
+ * (owner / manager only), 409 if the 60-day window has passed
+ * (response body includes `window_expired: true`).
+ */
+export function useReopenInvoice(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, ReopenInvoiceInput>({
+    mutationFn: (input) => api.post<Invoice>(`/api/invoices/${invoiceId}/reopen/`, input),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['appointments'] });
+    },
+  });
+}
+
+/** Add a service or product line to an OPEN invoice. 409 if the
+ *  invoice is PAID or VOID; 400 if the catalog item is inactive or
+ *  cross-tenant. Stock decrement happens at close time, not here. */
+export function useAddInvoiceLine(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, AddInvoiceLineInput>({
+    mutationFn: (input) =>
+      api.post<Invoice>(`/api/invoices/${invoiceId}/add-line/`, input),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+    },
+  });
+}
+
+/** Remove a line from an OPEN invoice. 404 if the line isn't on
+ *  this invoice; 409 if the invoice is PAID or VOID. The endpoint
+ *  returns the recalculated invoice. */
+export function useRemoveInvoiceLine(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, number>({
+    mutationFn: (lineId) =>
+      api.delete<Invoice>(`/api/invoices/${invoiceId}/lines/${lineId}/`),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+    },
+  });
+}
+
+/** Build a one-off package per customer + add it as a line on
+ *  the invoice. `source_template` on the resulting PurchasedPackage
+ *  is null. Same lifecycle as catalog packages: PENDING until
+ *  the invoice closes. */
+export function useAddCustomPackage(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, AddCustomPackageInput>({
+    mutationFn: (input) =>
+      api.post<Invoice>(
+        `/api/invoices/${invoiceId}/add-custom-package/`,
+        input,
+      ),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['purchased-packages'] });
+    },
+  });
+}
+
+/** Redeem a credit from a customer's purchased package. The
+ *  endpoint atomically: decrements the per-service balance,
+ *  creates a $0 invoice line tagged with the source package,
+ *  and writes a `PackageRedemption` ledger row. Returns the
+ *  recalculated invoice. */
+export function useRedeemFromPackage(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, RedeemFromPackageInput>({
+    mutationFn: (input) =>
+      api.post<Invoice>(
+        `/api/invoices/${invoiceId}/redeem-from-package/`,
+        input,
+      ),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['purchased-packages'] });
+    },
+  });
+}
+
+/** Redeem a credit from a customer's active Subscription. Same
+ *  contract as `useRedeemFromPackage` but on the membership side.
+ *  Returns the recalculated invoice. */
+export function useRedeemFromMembership(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, RedeemFromMembershipInput>({
+    mutationFn: (input) =>
+      api.post<Invoice>(
+        `/api/invoices/${invoiceId}/redeem-from-membership/`,
+        input,
+      ),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['subscriptions'] });
+    },
+  });
+}
+
+/** Void an open invoice. 409 if invoice is paid (must reopen first). */
+export function useVoidInvoice(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, VoidInvoiceInput>({
+    mutationFn: (input) => api.post<Invoice>(`/api/invoices/${invoiceId}/void/`, input),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['appointments'] });
+    },
+  });
+}
+
+// ── Display helpers ──────────────────────────────────────────────────────
+
+export const INVOICE_STATUS_LABELS: Record<InvoiceStatus, string> = {
+  open: 'Open',
+  paid: 'Paid',
+  void: 'Void',
+};
+
+export const INVOICE_STATUS_TONE: Record<
+  InvoiceStatus,
+  'neutral' | 'success' | 'destructive'
+> = {
+  open: 'neutral',
+  paid: 'success',
+  void: 'destructive',
+};
+
+/** Format cents as a USD currency string. */
+export function formatMoneyCents(cents: number): string {
+  return (cents / 100).toLocaleString(undefined, {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  });
+}
+
+/** Pull a human error message from an ApiError body, falling back to a default. */
+export function invoiceErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError && typeof err.body === 'object' && err.body) {
+    const body = err.body as { detail?: string };
+    if (typeof body.detail === 'string' && body.detail) return body.detail;
+  }
+  return fallback;
+}

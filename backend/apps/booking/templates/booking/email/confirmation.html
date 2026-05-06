@@ -1,0 +1,60 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Your appointment at {{ tenant_name }}</title>
+  <style>
+    body { margin: 0; padding: 0; background: #f3f4f5; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: #1a1a1a; }
+    .wrapper { max-width: 600px; margin: 0 auto; padding: 24px 16px; }
+    .card { background: #ffffff; border-radius: 8px; padding: 32px 28px; }
+    h1 { font-size: 22px; line-height: 1.3; margin: 0 0 8px; font-weight: 600; }
+    h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; color: #6b7280; margin: 24px 0 8px; font-weight: 600; }
+    p { font-size: 14px; line-height: 1.55; margin: 0 0 12px; }
+    .muted { color: #6b7280; font-size: 13px; }
+    .pill { display: inline-block; padding: 4px 10px; background: #ecfdf5; color: #047857; border-radius: 999px; font-size: 12px; font-weight: 500; margin-bottom: 12px; }
+    dl { margin: 0; padding: 0; border-top: 1px solid #e5e7eb; }
+    .row { padding: 14px 0; border-bottom: 1px solid #e5e7eb; }
+    .row dt { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: #6b7280; margin: 0 0 2px; font-weight: 600; }
+    .row dd { font-size: 15px; line-height: 1.45; margin: 0; padding: 0; color: #1a1a1a; font-weight: 500; }
+    .row dd .sub { display: block; font-weight: 400; color: #6b7280; font-size: 13px; margin-top: 2px; }
+    .link-button { display: inline-block; padding: 11px 20px; background: {{ primary_color }}; color: #ffffff !important; text-decoration: none; border-radius: 6px; font-size: 14px; font-weight: 500; margin-top: 20px; }
+    .footer { text-align: center; color: #9ca3af; font-size: 12px; margin-top: 24px; line-height: 1.5; }
+    .secondary-link { color: #6b7280; font-size: 13px; word-break: break-all; }
+  </style>
+</head>
+<body>
+  <div class="wrapper">
+    <div class="card">
+      <span class="pill">&#10003; Confirmed</span>
+      <h1>Your appointment at {{ tenant_name }}</h1>
+      <p class="muted">Hi {{ customer.first_name|default:"there" }} — we&rsquo;ve got you on the books.</p>
+
+      <h2>Booking details</h2>
+      <dl>
+        <div class="row">
+          <dt>Service</dt>
+          <dd>{{ service_name }}<span class="sub">{{ duration_minutes }} minutes</span></dd>
+        </div>
+        <div class="row">
+          <dt>When</dt>
+          <dd>{{ when_local }}</dd>
+        </div>
+        <div class="row">
+          <dt>Provider</dt>
+          <dd>{{ provider_display_name }}</dd>
+        </div>
+        <div class="row">
+          <dt>Where</dt>
+          <dd>{{ location_name }}{% if location_address %}<span class="sub">{{ location_address }}</span>{% endif %}{% if location_phone %}<span class="sub">{{ location_phone }}</span>{% endif %}</dd>
+        </div>
+      </dl>
+
+      <a href="{{ manage_url }}" class="link-button">Manage booking</a>
+      <p class="muted" style="margin-top:16px;">Need to reschedule or cancel? Use the button above any time.</p>
+      <p class="secondary-link" style="margin-top:8px;">{{ manage_url }}</p>
+    </div>
+    <p class="footer">&mdash; {{ tenant_name }}</p>
+  </div>
+</body>
+</html>
