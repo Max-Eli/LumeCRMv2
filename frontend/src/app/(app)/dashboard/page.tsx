@@ -55,6 +55,9 @@ import {
   RevenueTodayTile,
 } from './_components/kpi-tiles';
 import { KpiRow } from './_components/kpi-tile';
+import { MyDayPanel } from './_components/my-day-panel';
+import { MyEarningsTile } from './_components/my-earnings-tile';
+import { OnTheClockTile } from './_components/on-the-clock-tile';
 import { RevenueChartPanel } from './_components/revenue-chart-panel';
 import { TodaySchedulePanel } from './_components/today-schedule-panel';
 
@@ -65,8 +68,17 @@ interface RoleConfig {
   showAppointmentsTile: boolean;
   showNewClientsTile: boolean;
   showNoShowTile: boolean;
+  /** "On the clock right now" — operational awareness for owner/
+   *  manager/front-desk. */
+  showOnTheClockTile: boolean;
+  /** "Your commissions MTD" — provider/manager/owner only. */
+  showMyEarningsTile: boolean;
   showRevenueChart: boolean;
+  /** Tenant-wide schedule panel. Provider role gets `showMyDayPanel`
+   *  instead — their own schedule + clock-in in one mobile-first card. */
   showSchedulePanel: boolean;
+  /** Provider-only mobile-first day card; replaces the schedule panel. */
+  showMyDayPanel: boolean;
   showAROverduePanel: boolean;
   showFormsPendingPanel: boolean;
 }
@@ -77,8 +89,11 @@ const ROLE_CONFIGS: Record<Role, RoleConfig> = {
     showAppointmentsTile: true,
     showNewClientsTile: true,
     showNoShowTile: true,
+    showOnTheClockTile: true,
+    showMyEarningsTile: false,
     showRevenueChart: true,
     showSchedulePanel: true,
+    showMyDayPanel: false,
     showAROverduePanel: true,
     showFormsPendingPanel: true,
   },
@@ -87,8 +102,11 @@ const ROLE_CONFIGS: Record<Role, RoleConfig> = {
     showAppointmentsTile: true,
     showNewClientsTile: true,
     showNoShowTile: true,
+    showOnTheClockTile: true,
+    showMyEarningsTile: false,
     showRevenueChart: true,
     showSchedulePanel: true,
+    showMyDayPanel: false,
     showAROverduePanel: true,
     showFormsPendingPanel: true,
   },
@@ -97,8 +115,11 @@ const ROLE_CONFIGS: Record<Role, RoleConfig> = {
     showAppointmentsTile: false,
     showNewClientsTile: false,
     showNoShowTile: false,
+    showOnTheClockTile: false,
+    showMyEarningsTile: false,
     showRevenueChart: true,
     showSchedulePanel: false,
+    showMyDayPanel: false,
     showAROverduePanel: true,
     showFormsPendingPanel: false,
   },
@@ -107,18 +128,24 @@ const ROLE_CONFIGS: Record<Role, RoleConfig> = {
     showAppointmentsTile: true,
     showNewClientsTile: false,
     showNoShowTile: false,
+    showOnTheClockTile: true,
+    showMyEarningsTile: false,
     showRevenueChart: false,
     showSchedulePanel: true,
+    showMyDayPanel: false,
     showAROverduePanel: false,
     showFormsPendingPanel: true,
   },
   provider: {
     showRevenueTile: false,
-    showAppointmentsTile: true,
+    showAppointmentsTile: false,
     showNewClientsTile: false,
     showNoShowTile: false,
+    showOnTheClockTile: false,
+    showMyEarningsTile: true,
     showRevenueChart: false,
-    showSchedulePanel: true,
+    showSchedulePanel: false,
+    showMyDayPanel: true,
     showAROverduePanel: false,
     showFormsPendingPanel: false,
   },
@@ -127,8 +154,11 @@ const ROLE_CONFIGS: Record<Role, RoleConfig> = {
     showAppointmentsTile: false,
     showNewClientsTile: true,
     showNoShowTile: false,
+    showOnTheClockTile: false,
+    showMyEarningsTile: false,
     showRevenueChart: false,
     showSchedulePanel: false,
+    showMyDayPanel: false,
     showAROverduePanel: false,
     showFormsPendingPanel: false,
   },
@@ -160,18 +190,21 @@ export default function DashboardPage() {
   const visibleTiles = [
     config.showRevenueTile && <RevenueTodayTile key="revenue" />,
     config.showAppointmentsTile && <AppointmentsTodayTile key="appts" />,
+    config.showOnTheClockTile && <OnTheClockTile key="onclock" />,
+    config.showMyEarningsTile && <MyEarningsTile key="earnings" />,
     config.showNewClientsTile && <NewClientsThisMonthTile key="new" />,
     config.showNoShowTile && <NoShowRateThisMonthTile key="noshow" />,
   ].filter(Boolean);
 
   const visiblePanels = [
+    config.showMyDayPanel && <MyDayPanel key="myday" />,
     config.showSchedulePanel && <TodaySchedulePanel key="schedule" />,
     config.showAROverduePanel && <AROverduePanel key="ar" />,
     config.showFormsPendingPanel && <FormsPendingPanel key="forms" />,
   ].filter(Boolean);
 
   return (
-    <div className="px-10 py-10 max-w-7xl space-y-8">
+    <div className="px-4 py-6 sm:px-8 sm:py-10 space-y-6 sm:space-y-8">
       <PageHeader
         title={`Good ${tod}, ${greeting}`}
         actions={

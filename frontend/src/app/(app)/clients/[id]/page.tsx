@@ -78,6 +78,7 @@ import {
 } from '@/lib/marketing';
 
 import { AppointmentsTab } from './_tabs/appointments-tab';
+import { GiftCardsTab } from './_tabs/gift-cards-tab';
 import { MembershipsTab } from './_tabs/memberships-tab';
 import { NotesTab } from './_tabs/notes-tab';
 import { PackagesTab } from './_tabs/packages-tab';
@@ -100,6 +101,7 @@ const TABS: readonly TabDef[] = [
   { id: 'products', label: 'Products', comingPhase: 'Phase 2A · POS' },
   { id: 'memberships', label: 'Memberships' },
   { id: 'packages', label: 'Packages' },
+  { id: 'gift-cards', label: 'Gift cards' },
   { id: 'wallet', label: 'Wallet' },
   { id: 'payments', label: 'Payments', comingPhase: 'Phase 2A · POS' },
   { id: 'forms', label: 'Treatment forms' },
@@ -115,8 +117,9 @@ const TAB_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   appointments: Calendar,
   notes: ClipboardList,
   products: ShoppingBag,
-  memberships: Gift,
+  memberships: CreditCard,
   packages: Package,
+  'gift-cards': Gift,
   wallet: Wallet,
   payments: CreditCard,
   forms: FileText,
@@ -138,11 +141,11 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
   const activeTab = TABS.find((t) => t.id === requestedTab) ?? TABS[0];
 
   if (isLoading) {
-    return <div className="px-10 py-10 text-sm text-muted-foreground">Loading client…</div>;
+    return <div className="px-4 sm:px-8 py-8 sm:py-10 text-sm text-muted-foreground">Loading client…</div>;
   }
   if (error || !customer) {
     return (
-      <div className="px-10 py-10">
+      <div className="px-4 sm:px-8 py-8 sm:py-10">
         <PageHeader
           title="Client not found"
           back={{ href: '/clients', label: 'Back to clients' }}
@@ -155,7 +158,7 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
   return (
     <div>
       {/* Back link — scrolls away with content */}
-      <div className="max-w-6xl px-10 pt-10">
+      <div className="px-4 sm:px-8 pt-6 sm:pt-10">
         <PageHeader title="" back={{ href: '/clients', label: 'Back to clients' }} className="mb-0" />
       </div>
 
@@ -165,8 +168,8 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
        * content scrolling under it; the tabs nav's own border-b provides the
        * lower edge so we don't double up on lines.
        */}
-      <div className="sticky top-0 z-10 mt-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <div className="max-w-6xl px-10 pt-2">
+      <div className="sticky top-0 z-10 mt-3 sm:mt-4 bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <div className="px-4 sm:px-8 pt-2">
           <Hero customer={customer} />
           <ReferralCodeChip code={customer.referral_code} />
           <TabsNav active={activeTab.id} />
@@ -174,7 +177,7 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
       </div>
 
       {/* Tab content — scrolls under the sticky band */}
-      <div className="max-w-6xl px-10 mt-8 pb-10">
+      <div className="px-4 sm:px-8 mt-6 sm:mt-8 pb-10">
         {activeTab.id === 'overview' ? (
           <OverviewTab customer={customer} />
         ) : activeTab.id === 'profile' ? (
@@ -193,6 +196,8 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
           <PackagesTab customerId={customer.id} />
         ) : activeTab.id === 'memberships' ? (
           <MembershipsTab customerId={customer.id} />
+        ) : activeTab.id === 'gift-cards' ? (
+          <GiftCardsTab customerId={customer.id} />
         ) : activeTab.id === 'marketing' ? (
           <MarketingTab customer={customer} />
         ) : (
@@ -207,16 +212,18 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
 
 function Hero({ customer }: { customer: CustomerDetail }) {
   return (
-    <div className="flex items-center gap-5">
+    <div className="flex items-center gap-3 sm:gap-5">
       <InitialsAvatar name={customer.full_name} size="xl" />
       <div className="min-w-0 flex-1">
-        <h1 className="font-serif text-3xl font-semibold tracking-tight">{customer.full_name}</h1>
+        <h1 className="font-serif text-2xl sm:text-3xl font-semibold tracking-tight truncate">
+          {customer.full_name}
+        </h1>
         {customer.preferred_name && customer.first_name !== customer.preferred_name ? (
-          <p className="text-sm text-muted-foreground mt-1">
+          <p className="text-xs sm:text-sm text-muted-foreground mt-1 truncate">
             Legal: {customer.first_name} {customer.last_name}
           </p>
         ) : null}
-        <div className="flex flex-wrap items-center gap-3 mt-3">
+        <div className="flex flex-wrap items-center gap-2 sm:gap-3 mt-2 sm:mt-3">
           <StatusBadge tone={customerStatusTone(customer.status)}>{customer.status}</StatusBadge>
           {customer.tags.map((t) => (
             <Badge
@@ -699,9 +706,10 @@ function ProfileTab({ customer }: { customer: CustomerDetail }) {
         </Section>
       </div>
 
-      {/* Sticky save bar */}
-      <div className="sticky bottom-0 -mx-10 mt-10 px-10 py-4 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
-        <div className="flex items-center justify-between gap-2 max-w-6xl mx-auto">
+      {/* Sticky save bar — its negative margins must match the parent
+          container's px-* so it spans edge-to-edge at every breakpoint. */}
+      <div className="sticky bottom-0 -mx-4 sm:-mx-8 mt-8 sm:mt-10 px-4 sm:px-8 py-3 sm:py-4 border-t bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/80">
+        <div className="flex items-center justify-between gap-2">
           <p className="text-xs text-muted-foreground">
             {isDirty ? 'Unsaved changes' : 'No changes'}
           </p>

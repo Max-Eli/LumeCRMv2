@@ -20,7 +20,9 @@ import { useCreateServiceCategory } from '@/lib/services';
 const schema = z.object({
   name: z.string().min(1, 'Name is required').max(100),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a 6-digit hex like #6b7280'),
-  sort_order: z.coerce.number().int(),
+  // See [id]/page.tsx for the rationale on plain `z.number()` +
+  // `valueAsNumber: true` on the input.
+  sort_order: z.number().int(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -119,7 +121,7 @@ export default function NewCategoryPage() {
               id="sort_order"
               type="number"
               className="w-32"
-              {...form.register('sort_order')}
+              {...form.register('sort_order', { valueAsNumber: true })}
             />
             <p className="text-xs text-muted-foreground mt-1">
               Lower numbers appear first on the categories grid.

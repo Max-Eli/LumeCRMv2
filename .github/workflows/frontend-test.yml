@@ -1,0 +1,64 @@
+# Frontend lint + typecheck + build pipeline.
+#
+# Production build is the strongest possible "does it actually work"
+# signal — runs the full Next compile, type-check, and bundle. ~3-5
+# min on the runner.
+
+name: Frontend tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-test.yml"
+  pull_request:
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-test.yml"
+
+concurrency:
+  group: frontend-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    defaults:
+      run:
+        working-directory: frontend
+
+    env:
+      # Don't phone home from CI; keeps the run hermetic + a touch faster.
+      NEXT_TELEMETRY_DISABLED: "1"
+      # NEXT_PUBLIC_API_BASE is build-time inlined into the bundle.
+      # CI uses a placeholder; the production deploy workflow injects
+      # the real value via build-args to docker.
+      NEXT_PUBLIC_API_BASE: "http://localhost:8000"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npx eslint . --max-warnings 9999 || true
+        # Lint is informational for now — we have a bag of pre-existing
+        # warnings that aren't this PR's job to fix. The build below is
+        # the gate.
+
+      - name: Type-check
+        run: npx tsc --noEmit
+
+      - name: Build (production)
+        run: npm run build

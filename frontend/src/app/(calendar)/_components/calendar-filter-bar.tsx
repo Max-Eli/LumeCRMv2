@@ -74,7 +74,7 @@ export function CalendarFilterBar({
 
   return (
     <div className="shrink-0 border-b bg-background">
-      <div className="flex items-center justify-between gap-3 px-6 py-2.5">
+      <div className="flex items-center justify-between gap-2 sm:gap-3 px-3 sm:px-6 py-2.5">
         {/* Date controls */}
         <div className="flex items-center gap-2 min-w-0">
           <Button
@@ -112,7 +112,12 @@ export function CalendarFilterBar({
         {/* Filters + display mode + view */}
         <div className="flex items-center gap-2">
           <div className="hidden md:flex items-center">
-            <Select value={providerFilter || 'all'} onValueChange={(v) => onChangeProviderFilter(v === 'all' ? '' : v)}>
+            <Select
+              value={providerFilter || 'all'}
+              onValueChange={(v) =>
+                onChangeProviderFilter(!v || v === 'all' ? '' : v)
+              }
+            >
               <SelectTrigger size="sm" className="w-[170px]">
                 <SelectValue placeholder="All providers" />
               </SelectTrigger>
@@ -131,19 +136,27 @@ export function CalendarFilterBar({
             type="button"
             onClick={() => onChangeHideCancelled(!hideCancelled)}
             aria-pressed={hideCancelled}
+            aria-label="Hide cancelled appointments"
+            title="Hide cancelled appointments"
             className={cn(
-              'inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md text-xs uppercase tracking-wide transition-colors border',
+              'inline-flex items-center gap-1.5 h-8 px-2 sm:px-2.5 rounded-md text-xs uppercase tracking-wide transition-colors border',
               hideCancelled
                 ? 'border-foreground/30 bg-foreground text-background'
                 : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
           >
             <EyeOff className="size-3.5" />
-            Hide cancelled
+            <span className="hidden sm:inline">Hide cancelled</span>
           </button>
 
-          <DisplayModeToggle value={displayMode} onChange={onChangeDisplayMode} />
-          <ViewToggle value={view} onChange={onChangeView} />
+          {/* Display + view toggles are desktop-only. Mobile is forced
+              into list view by the page (a 390 px screen can't render a
+              multi-column day grid usefully), so the toggles would be
+              misleading no-ops there. */}
+          <div className="hidden sm:flex items-center gap-2">
+            <DisplayModeToggle value={displayMode} onChange={onChangeDisplayMode} />
+            <ViewToggle value={view} onChange={onChangeView} />
+          </div>
         </div>
       </div>
     </div>

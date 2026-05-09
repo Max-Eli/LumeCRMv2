@@ -1,0 +1,87 @@
+# Backend test + lint pipeline.
+#
+# Runs on every push to a backend file. Fast (~ 20-30 sec end to end)
+# so it doesn't slow down PR review. The deploy workflow lives in a
+# separate file so a green test build doesn't auto-deploy — that's an
+# explicit `workflow_dispatch` or merge-to-main event.
+
+name: Backend tests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-test.yml"
+  pull_request:
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-test.yml"
+
+# Cancel an in-flight run when a new commit lands on the same branch
+# / PR. Prevents 3 minutes of obsolete CI when you push a fixup.
+concurrency:
+  group: backend-test-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: lume
+          POSTGRES_PASSWORD: lume
+          POSTGRES_DB: lume_crm_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lume -d lume_crm_test"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    defaults:
+      run:
+        working-directory: backend
+
+    env:
+      # Settings module with a stable, predictable test surface. The
+      # dev module guard (`DEBUG=0` raises) is opt-out via env here so
+      # CI can run in production-like config when needed; we use dev
+      # for tests because they don't require the prod-only deps.
+      DJANGO_SETTINGS_MODULE: lume_crm.settings.dev
+      SECRET_KEY: ci-test-secret-not-for-production
+      DEBUG: "1"
+      ALLOWED_HOSTS: "localhost,127.0.0.1,testserver"
+      DATABASE_URL: "postgres://lume:lume@localhost:5432/lume_crm_test"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          # Cache pip downloads keyed on the lockfiles.
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-prod.txt
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt -r requirements-prod.txt
+
+      - name: Django system check
+        run: python manage.py check
+
+      - name: Migrate
+        run: python manage.py migrate --noinput
+
+      - name: Run tests
+        run: python manage.py test --parallel 4 --verbosity 2

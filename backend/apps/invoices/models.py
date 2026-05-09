@@ -855,6 +855,13 @@ class Invoice(TenantedModel):
             gift_cards_activated = locked._activate_pending_gift_cards(
                 by_user=by_user,
             )
+            # Accrue commission on each service line whose provider
+            # has an active CommissionRule. Idempotent — a line
+            # that already has an un-reversed accrual is skipped.
+            from apps.commissions.services import accrue_for_invoice
+            commissions_accrued = accrue_for_invoice(
+                invoice=locked, by_user=by_user,
+            )
 
             record(
                 action=AuditLog.Action.UPDATE,
@@ -873,6 +880,7 @@ class Invoice(TenantedModel):
                     'packages_activated': packages_activated,
                     'subscriptions_activated': subscriptions_activated,
                     'gift_cards_activated': gift_cards_activated,
+                    'commissions_accrued': commissions_accrued,
                 },
             )
 
@@ -952,6 +960,13 @@ class Invoice(TenantedModel):
             # Restock — reverse the close-time decrement so on-hand
             # counts go back to where they were before the sale.
             inventory_snapshot = locked._apply_inventory_delta(sign=+1)
+            # Reverse every un-reversed commission accrual against
+            # this invoice. If the invoice closes again, fresh
+            # accruals get written on top.
+            from apps.commissions.services import reverse_for_invoice
+            commissions_reversed = reverse_for_invoice(
+                invoice=locked, by_user=by_user,
+            )
 
             record(
                 action=AuditLog.Action.UPDATE,
@@ -969,6 +984,7 @@ class Invoice(TenantedModel):
                     'packages_reverted': packages_reverted,
                     'subscriptions_reverted': subscriptions_reverted,
                     'gift_cards_reverted': gift_cards_reverted,
+                    'commissions_reversed': commissions_reversed,
                 },
             )
 

@@ -102,7 +102,11 @@ export function RightToolRail({ active, onToggle }: RightToolRailProps) {
   return (
     <aside
       className={cn(
-        'shrink-0 border-l bg-sidebar flex flex-col py-2 transition-[width] duration-200',
+        // Hidden on touch widths — the rail's icon strip is a desktop
+        // affordance that crowds the day grid on a phone. Mobile users
+        // get the list view (forced in CalendarPage) and don't need it.
+        'hidden sm:flex',
+        'shrink-0 border-l bg-sidebar flex-col py-2 transition-[width] duration-200',
         // Expanded: 240 px (w-60). Sized so the longest tool labels —
         // "Employee check-in" + the right-aligned "Soon" pill — sit
         // comfortably without truncation. Collapsed: 48 px icon-only.

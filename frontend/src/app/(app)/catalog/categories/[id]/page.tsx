@@ -43,7 +43,12 @@ import {
 const schema = z.object({
   name: z.string().min(1, 'Name is required').max(100),
   color: z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a 6-digit hex like #6b7280'),
-  sort_order: z.coerce.number().int(),
+  // Plain `z.number()` (not `z.coerce.number()`) so the schema's
+  // input + output types both stay `number` and zodResolver doesn't
+  // get a Resolver<input=unknown> ↔ FormValues<output=number>
+  // mismatch. The `<Input>` is registered with `valueAsNumber: true`
+  // below to coerce the HTML string to number on the RHF side.
+  sort_order: z.number().int(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -214,7 +219,7 @@ export default function EditCategoryPage({ params }: { params: Promise<{ id: str
                 id="sort_order"
                 type="number"
                 className="w-32 tabular-nums"
-                {...form.register('sort_order')}
+                {...form.register('sort_order', { valueAsNumber: true })}
               />
               <p className="text-[11px] text-muted-foreground mt-1">
                 Lower numbers appear first in lists. Categories with the same number

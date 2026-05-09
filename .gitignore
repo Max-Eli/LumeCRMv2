@@ -56,3 +56,10 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+
+# Claude Code per-project state (NOT shared across collaborators)
+.claude/
+
+# Screenshots / scratch files at the repo root
+Screenshot*.png
+Screenshot*.jpg

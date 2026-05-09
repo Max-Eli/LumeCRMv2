@@ -58,7 +58,8 @@ export function ListView({ timezone, appointments }: ListViewProps) {
             <button
               type="button"
               className={cn(
-                'w-full grid grid-cols-[110px_1fr_auto] items-center gap-4 px-6 py-3 text-left',
+                'w-full grid grid-cols-[88px_1fr_auto] sm:grid-cols-[110px_1fr_auto]',
+                'items-center gap-3 sm:gap-4 px-4 sm:px-6 py-3 text-left',
                 'hover:bg-muted/50 transition-colors focus-visible:bg-muted/50 outline-none',
               )}
             >

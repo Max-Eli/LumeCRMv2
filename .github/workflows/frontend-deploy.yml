@@ -1,0 +1,125 @@
+# Frontend deploy — build, push to ECR, update ECS service.
+#
+# No migration step (no database). Otherwise mirrors the backend
+# deploy workflow's shape for consistency.
+#
+# `NEXT_PUBLIC_API_BASE` is build-time inlined into the client bundle,
+# so changing it requires a rebuild. The value is passed as a build-arg
+# from this workflow's secret.
+
+name: Frontend deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (defaults to commit SHA)."
+        required: false
+        default: ""
+
+concurrency:
+  group: frontend-deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: lume-prod-frontend
+  ECS_CLUSTER: lume-prod-cluster
+  ECS_SERVICE: lume-prod-frontend
+  TASK_DEF_FAMILY: lume-prod-frontend
+  CONTAINER_NAME: frontend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU (arm64 cross-build)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build + push image
+        run: |
+          IMAGE_URI="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.tag.outputs.tag }}"
+          if docker manifest inspect "$IMAGE_URI" >/dev/null 2>&1; then
+            echo "Image $IMAGE_URI already in ECR — skipping build."
+          else
+            docker buildx build \
+              --platform linux/arm64 \
+              --build-arg NEXT_PUBLIC_API_BASE="${{ secrets.NEXT_PUBLIC_API_BASE }}" \
+              --tag "$IMAGE_URI" \
+              --push \
+              ./frontend
+          fi
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_ENV"
+
+      - name: Render new task definition
+        id: render
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "${{ env.TASK_DEF_FAMILY }}" \
+            --query taskDefinition > task-def.json
+
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            task-def.json > task-def-clean.json
+
+          jq --arg img "${{ env.image_uri }}" \
+             --arg name "${{ env.CONTAINER_NAME }}" \
+             '.containerDefinitions |= map(if .name == $name then .image = $img else . end)' \
+             task-def-clean.json > task-def-new.json
+
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-def-new.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "new_arn=$NEW_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Update ECS service
+        run: |
+          aws ecs update-service \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ env.ECS_SERVICE }}" \
+            --task-definition "${{ steps.render.outputs.new_arn }}" \
+            --force-new-deployment > /dev/null
+
+      - name: Wait for stable
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}"
+          echo "✓ Frontend deploy stable on tag ${{ steps.tag.outputs.tag }}."

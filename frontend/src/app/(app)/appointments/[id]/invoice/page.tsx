@@ -18,7 +18,9 @@
 import {
   Ban,
   CheckCircle2,
+  ChevronDown,
   CreditCard,
+  Gift,
   Layers,
   Loader2,
   Package as PackageIcon,
@@ -27,6 +29,7 @@ import {
   RotateCcw,
   Sparkles,
   Trash2,
+  X,
 } from 'lucide-react';
 import { useSearchParams } from 'next/navigation';
 import { use, useState } from 'react';
@@ -53,18 +56,22 @@ import {
   PAYMENT_METHOD_LABELS,
   formatMoneyCents,
   invoiceErrorMessage,
+  useAddGiftCardSale,
   useAddInvoiceLine,
+  useApplyGiftCard,
   useCloseInvoice,
   useInvoiceForAppointment,
   useRedeemFromMembership,
   useRedeemFromPackage,
   useRemoveInvoiceLine,
   useReopenInvoice,
+  useReverseGiftCardRedemption,
   useVoidInvoice,
   type Invoice,
   type InvoiceLineItem,
   type PaymentMethod,
 } from '@/lib/invoices';
+import { centsFromDollars, useGiftCardLookup } from '@/lib/giftcards';
 import {
   useCustomerPurchasedPackages,
   usePackages,
@@ -144,7 +151,7 @@ function InvoiceBody({
   const tz = DEFAULT_TIMEZONE;
 
   return (
-    <div className="px-10 py-10 max-w-3xl">
+    <div className="px-4 sm:px-8 py-6 sm:py-10 max-w-3xl mx-auto">
       <PageHeader
         title={invoice.invoice_number || `Invoice #${invoice.id}`}
         description={`${appointment.customer.full_name} · ${appointment.service.name} · ${formatLongDateTime(appointment.start_time, tz)}`}
@@ -166,6 +173,12 @@ function InvoiceBody({
           ) : null}
           {canEditLines && invoice.status === 'open' && invoice.customer ? (
             <CustomPackageBuilder invoice={invoice} />
+          ) : null}
+          {canEditLines && invoice.status === 'open' && invoice.customer ? (
+            <SellGiftCardPanel invoice={invoice} />
+          ) : null}
+          {canEditLines && invoice.status === 'open' && invoice.customer ? (
+            <ApplyGiftCardPanel invoice={invoice} />
           ) : null}
           {canEditLines && invoice.status === 'open' && invoice.customer ? (
             <RedeemFromPackagePanel
@@ -285,33 +298,38 @@ function LineItemsTable({
   };
 
   return (
-    <div className="px-6 py-5">
+    <div className="px-4 sm:px-6 py-5">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-3">
         Line items
       </p>
-      <table className="w-full text-sm">
-        <thead>
-          <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
-            <th className="text-left font-normal pb-2">Description</th>
-            <th className="text-right font-normal pb-2 w-12">Qty</th>
-            <th className="text-right font-normal pb-2 w-24">Price</th>
-            <th className="text-right font-normal pb-2 w-24">Tax</th>
-            <th className="text-right font-normal pb-2 w-28">Subtotal</th>
-            {editable ? <th className="w-8" /> : null}
-          </tr>
-        </thead>
-        <tbody className="divide-y divide-border/40">
-          {invoice.line_items.map((line) => (
-            <LineRow
-              key={line.id}
-              line={line}
-              editable={editable}
-              onRemove={onRemove}
-              isRemoving={remove.isPending && remove.variables === line.id}
-            />
-          ))}
-        </tbody>
-      </table>
+      {/* overflow-x-auto fallback for very narrow screens; the Tax
+          column hides below sm so the typical phone layout fits without
+          horizontal scrolling. */}
+      <div className="-mx-4 sm:mx-0 overflow-x-auto">
+        <table className="w-full text-sm min-w-[360px]">
+          <thead>
+            <tr className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              <th className="text-left font-normal pb-2 pl-4 sm:pl-0">Description</th>
+              <th className="text-right font-normal pb-2 w-10">Qty</th>
+              <th className="text-right font-normal pb-2 w-20 sm:w-24">Price</th>
+              <th className="text-right font-normal pb-2 w-24 hidden sm:table-cell">Tax</th>
+              <th className="text-right font-normal pb-2 w-24 sm:w-28 pr-4 sm:pr-0">Subtotal</th>
+              {editable ? <th className="w-8" /> : null}
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border/40">
+            {invoice.line_items.map((line) => (
+              <LineRow
+                key={line.id}
+                line={line}
+                editable={editable}
+                onRemove={onRemove}
+                isRemoving={remove.isPending && remove.variables === line.id}
+              />
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -334,12 +352,12 @@ function LineRow({
       : null;
   return (
     <tr className="group">
-      <td className="py-2.5">
-        <div className="flex items-center gap-2">
+      <td className="py-2.5 pl-4 sm:pl-0">
+        <div className="flex items-center gap-2 min-w-0">
           {Icon ? (
             <Icon className="size-3.5 text-muted-foreground shrink-0" />
           ) : null}
-          <span>{line.description}</span>
+          <span className="truncate">{line.description}</span>
         </div>
       </td>
       <td className="py-2.5 text-right font-mono tabular-nums">
@@ -348,19 +366,21 @@ function LineRow({
       <td className="py-2.5 text-right font-mono tabular-nums">
         {formatMoneyCents(line.unit_price_cents)}
       </td>
-      <td className="py-2.5 text-right font-mono tabular-nums text-muted-foreground">
+      <td className="py-2.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">
         {formatMoneyCents(line.line_tax_cents)}
       </td>
-      <td className="py-2.5 text-right font-mono tabular-nums">
+      <td className="py-2.5 text-right font-mono tabular-nums pr-4 sm:pr-0">
         {formatMoneyCents(line.line_subtotal_cents + line.line_tax_cents)}
       </td>
       {editable ? (
         <td className="py-2.5 text-right">
+          {/* opacity-0 hover-reveal becomes always-on at touch widths
+              where there's no hover state to depend on. */}
           <button
             type="button"
             onClick={() => onRemove(line.id)}
             disabled={isRemoving}
-            className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground/60 opacity-0 group-hover:opacity-100 hover:bg-muted hover:text-destructive transition-all disabled:opacity-50"
+            className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground/60 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-muted hover:text-destructive transition-all disabled:opacity-50"
             aria-label="Remove line"
             title="Remove line"
           >
@@ -695,18 +715,35 @@ function RedeemFromPackagePanel({
 }
 
 function TotalsBlock({ invoice }: { invoice: Invoice }) {
+  const hasGiftCardCredits = invoice.gift_card_credits_cents > 0;
   return (
     <div className="px-6 py-5 flex justify-end">
-      <dl className="text-sm space-y-1.5 min-w-[200px]">
+      <dl className="text-sm space-y-1.5 min-w-[220px]">
         <SummaryRow label="Subtotal" value={formatMoneyCents(invoice.subtotal_cents)} />
         <SummaryRow label="Tax" value={formatMoneyCents(invoice.tax_cents)} />
         <div className="border-t border-border/60 pt-1.5 mt-1.5">
           <SummaryRow
             label="Total"
             value={formatMoneyCents(invoice.total_cents)}
-            emphasis
+            emphasis={!hasGiftCardCredits}
           />
         </div>
+        {hasGiftCardCredits ? (
+          <>
+            <SummaryRow
+              label="Gift cards applied"
+              value={`-${formatMoneyCents(invoice.gift_card_credits_cents)}`}
+              tone="positive"
+            />
+            <div className="border-t border-border/60 pt-1.5 mt-1.5">
+              <SummaryRow
+                label="Amount due"
+                value={formatMoneyCents(invoice.amount_due_cents)}
+                emphasis
+              />
+            </div>
+          </>
+        ) : null}
       </dl>
     </div>
   );
@@ -716,10 +753,12 @@ function SummaryRow({
   label,
   value,
   emphasis,
+  tone,
 }: {
   label: string;
   value: string;
   emphasis?: boolean;
+  tone?: 'positive';
 }) {
   return (
     <div className="flex items-baseline justify-between gap-8">
@@ -735,6 +774,7 @@ function SummaryRow({
         className={cn(
           'font-mono tabular-nums',
           emphasis && 'font-semibold text-base',
+          tone === 'positive' && 'text-emerald-700',
         )}
       >
         {value}
@@ -915,6 +955,465 @@ function RedeemFromMembershipPanel({
           </Button>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Gift card sale ──────────────────────────────────────────────────
+
+function SellGiftCardPanel({ invoice }: { invoice: Invoice }) {
+  const [open, setOpen] = useState(false);
+  const [valueDollars, setValueDollars] = useState('');
+  const [recipientName, setRecipientName] = useState('');
+  const [recipientEmail, setRecipientEmail] = useState('');
+  const [useCustomer, setUseCustomer] = useState(true);
+  const sale = useAddGiftCardSale(invoice.id);
+
+  // Default to "issue to the customer on this invoice." Operator can
+  // toggle off and type a different recipient name (gift to a non-
+  // customer). Recipient FK isn't a search picker in v1 — the
+  // common case is "this customer pays for their own card or buys
+  // it as a gift for someone outside the system."
+  const customerName = invoice.customer.full_name;
+
+  const reset = () => {
+    setValueDollars('');
+    setRecipientName('');
+    setRecipientEmail('');
+    setUseCustomer(true);
+  };
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    const cents = centsFromDollars(valueDollars);
+    if (cents <= 0) {
+      toast.error('Enter a dollar amount.');
+      return;
+    }
+    if (!useCustomer && !recipientName.trim()) {
+      toast.error('Recipient name required for non-customer gifts.');
+      return;
+    }
+
+    sale.mutate(
+      {
+        value_cents: cents,
+        recipient_customer_id: useCustomer ? invoice.customer.id : undefined,
+        recipient_name: useCustomer ? undefined : recipientName.trim(),
+        recipient_email: recipientEmail.trim() || undefined,
+      },
+      {
+        onSuccess: () => {
+          toast.success(`Gift card added · $${(cents / 100).toFixed(2)}`);
+          reset();
+          setOpen(false);
+        },
+        onError: (err) =>
+          toast.error(
+            invoiceErrorMessage(err, "Couldn't sell that card."),
+          ),
+      },
+    );
+  };
+
+  if (!open) {
+    return (
+      <div className="px-6 py-4 border-t bg-emerald-50/30">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center gap-2 text-sm text-emerald-900 hover:text-emerald-950 transition-colors"
+        >
+          <Gift className="size-4" />
+          Sell a gift card
+          <ChevronDown className="size-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <form
+      onSubmit={onSubmit}
+      className="px-6 py-5 border-t bg-emerald-50/30 space-y-3"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-emerald-900 font-medium flex items-center gap-1.5">
+            <Gift className="size-3.5" />
+            Sell a gift card
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+            Card activates when the customer pays this invoice.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            reset();
+            setOpen(false);
+          }}
+          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
+          aria-label="Cancel"
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
+        <div>
+          <label
+            htmlFor="gc-value"
+            className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium"
+          >
+            Card value
+          </label>
+          <div className="relative mt-1">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+              $
+            </span>
+            <Input
+              id="gc-value"
+              type="text"
+              inputMode="decimal"
+              placeholder="0.00"
+              className="pl-7"
+              value={valueDollars}
+              onChange={(e) => setValueDollars(e.target.value)}
+            />
+          </div>
+        </div>
+
+        <div className="space-y-2">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+            Issue to
+          </p>
+          <div className="inline-flex items-center gap-0.5 rounded-md border bg-card p-0.5 w-full">
+            <button
+              type="button"
+              onClick={() => setUseCustomer(true)}
+              className={cn(
+                'flex-1 px-3 h-8 rounded text-xs transition-colors truncate',
+                useCustomer
+                  ? 'bg-foreground text-background font-medium'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              {customerName}
+            </button>
+            <button
+              type="button"
+              onClick={() => setUseCustomer(false)}
+              className={cn(
+                'flex-1 px-3 h-8 rounded text-xs transition-colors',
+                !useCustomer
+                  ? 'bg-foreground text-background font-medium'
+                  : 'text-muted-foreground hover:text-foreground',
+              )}
+            >
+              Someone else
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {!useCustomer ? (
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label
+              htmlFor="gc-recipient-name"
+              className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium"
+            >
+              Recipient name
+            </label>
+            <Input
+              id="gc-recipient-name"
+              className="mt-1"
+              value={recipientName}
+              onChange={(e) => setRecipientName(e.target.value)}
+              placeholder="e.g. Aunt Mary"
+            />
+          </div>
+          <div>
+            <label
+              htmlFor="gc-recipient-email"
+              className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium"
+            >
+              Recipient email <span className="text-muted-foreground/70 normal-case">(optional)</span>
+            </label>
+            <Input
+              id="gc-recipient-email"
+              type="email"
+              className="mt-1"
+              value={recipientEmail}
+              onChange={(e) => setRecipientEmail(e.target.value)}
+              placeholder="mary@example.com"
+            />
+          </div>
+        </div>
+      ) : null}
+
+      <div className="flex justify-end pt-2">
+        <Button type="submit" disabled={sale.isPending}>
+          {sale.isPending ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Plus className="size-4" />
+          )}
+          Add to invoice
+        </Button>
+      </div>
+    </form>
+  );
+}
+
+// ── Apply gift card (redemption at checkout) ───────────────────────
+
+function ApplyGiftCardPanel({ invoice }: { invoice: Invoice }) {
+  const [open, setOpen] = useState(false);
+  const [code, setCode] = useState('');
+  const [amountDollars, setAmountDollars] = useState('');
+  const [lookedUp, setLookedUp] = useState<{
+    code: string;
+    balance_cents: number;
+    balance_dollars: string;
+    is_redeemable: boolean;
+  } | null>(null);
+  const lookup = useGiftCardLookup();
+  const apply = useApplyGiftCard(invoice.id);
+  const reverse = useReverseGiftCardRedemption(invoice.id);
+
+  const reset = () => {
+    setCode('');
+    setAmountDollars('');
+    setLookedUp(null);
+  };
+
+  const onLookup = () => {
+    const trimmed = code.trim().toUpperCase();
+    if (!trimmed) return;
+    lookup.mutate(
+      { code: trimmed },
+      {
+        onSuccess: (card) => {
+          setLookedUp({
+            code: card.code,
+            balance_cents: card.balance_cents,
+            balance_dollars: card.balance_dollars,
+            is_redeemable: card.is_redeemable,
+          });
+          // Default to applying the smaller of card balance and amount due.
+          const default_cents = Math.min(
+            card.balance_cents,
+            invoice.amount_due_cents,
+          );
+          setAmountDollars((default_cents / 100).toFixed(2));
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && err.status === 404) {
+            toast.error('No card with that code.');
+          } else {
+            toast.error('Lookup failed.');
+          }
+        },
+      },
+    );
+  };
+
+  const onApply = () => {
+    if (!lookedUp) return;
+    const cents = centsFromDollars(amountDollars);
+    if (cents <= 0) {
+      toast.error('Enter an amount.');
+      return;
+    }
+    apply.mutate(
+      { code: lookedUp.code, amount_cents: cents },
+      {
+        onSuccess: () => {
+          toast.success(`$${(cents / 100).toFixed(2)} applied`);
+          reset();
+        },
+        onError: (err) =>
+          toast.error(
+            invoiceErrorMessage(err, "Couldn't apply this card."),
+          ),
+      },
+    );
+  };
+
+  // Find applied gift card ledger rows on this invoice so the
+  // operator can see what's been credited + reverse if needed.
+  // NOTE: the invoice payload doesn't currently include nested
+  // ledger entries. For v1 we just show the rolling total from
+  // `gift_card_credits_cents`; reversal requires drilling into the
+  // gift card's detail page (where the ledger is visible).
+
+  if (!open) {
+    return (
+      <div className="px-6 py-4 border-t bg-emerald-50/30">
+        <button
+          type="button"
+          onClick={() => setOpen(true)}
+          className="inline-flex items-center gap-2 text-sm text-emerald-900 hover:text-emerald-950 transition-colors"
+        >
+          <Gift className="size-4" />
+          Apply a gift card
+          {invoice.gift_card_credits_cents > 0 ? (
+            <span className="text-xs text-muted-foreground">
+              · ${(invoice.gift_card_credits_cents / 100).toFixed(2)} applied so far
+            </span>
+          ) : null}
+          <ChevronDown className="size-3.5" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="px-6 py-5 border-t bg-emerald-50/30 space-y-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="text-[11px] uppercase tracking-wide text-emerald-900 font-medium flex items-center gap-1.5">
+            <Gift className="size-3.5" />
+            Apply gift card
+          </p>
+          <p className="text-xs text-muted-foreground mt-0.5 leading-relaxed">
+            Customer presents the code; balance applies as a payment
+            tender. The remaining amount due covers via the
+            payment method at close.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => {
+            reset();
+            setOpen(false);
+          }}
+          className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-muted"
+          aria-label="Cancel"
+        >
+          <X className="size-3.5" />
+        </button>
+      </div>
+
+      <div className="flex items-end gap-2 flex-wrap">
+        <div className="flex-1 min-w-[200px]">
+          <label
+            htmlFor="agc-code"
+            className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium"
+          >
+            Card code
+          </label>
+          <Input
+            id="agc-code"
+            value={code}
+            onChange={(e) => setCode(e.target.value)}
+            placeholder="GC-XXXX-YYYY"
+            className="font-mono uppercase mt-1"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                onLookup();
+              }
+            }}
+            disabled={!!lookedUp}
+          />
+        </div>
+        {!lookedUp ? (
+          <Button
+            type="button"
+            onClick={onLookup}
+            disabled={lookup.isPending || !code.trim()}
+            variant="outline"
+          >
+            {lookup.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : null}
+            Look up
+          </Button>
+        ) : null}
+      </div>
+
+      {lookedUp ? (
+        <>
+          <div className="rounded-md bg-card border px-3 py-2 flex items-center justify-between gap-3 text-sm">
+            <span className="text-muted-foreground">
+              {lookedUp.code} · balance
+            </span>
+            <span className="font-mono font-medium tabular-nums">
+              {lookedUp.balance_dollars}
+            </span>
+          </div>
+
+          {!lookedUp.is_redeemable ? (
+            <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+              This card isn&rsquo;t redeemable (voided, expired, or zero balance).
+            </div>
+          ) : (
+            <div className="flex items-end gap-2 flex-wrap">
+              <div className="flex-1 min-w-[200px]">
+                <label
+                  htmlFor="agc-amount"
+                  className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium"
+                >
+                  Apply how much
+                </label>
+                <div className="relative mt-1">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">
+                    $
+                  </span>
+                  <Input
+                    id="agc-amount"
+                    type="text"
+                    inputMode="decimal"
+                    className="pl-7"
+                    value={amountDollars}
+                    onChange={(e) => setAmountDollars(e.target.value)}
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground mt-1">
+                  Amount due on this invoice: ${(invoice.amount_due_cents / 100).toFixed(2)}
+                </p>
+              </div>
+              <Button
+                type="button"
+                onClick={onApply}
+                disabled={apply.isPending}
+              >
+                {apply.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="size-4" />
+                )}
+                Apply
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={reset}
+                disabled={apply.isPending}
+              >
+                Different card
+              </Button>
+            </div>
+          )}
+        </>
+      ) : null}
+
+      {invoice.gift_card_credits_cents > 0 ? (
+        <div className="text-xs text-muted-foreground pt-3 border-t">
+          <span className="font-medium text-foreground">
+            ${(invoice.gift_card_credits_cents / 100).toFixed(2)}
+          </span>{' '}
+          applied to this invoice via gift cards. To reverse a
+          specific redemption, open the card&rsquo;s detail page and
+          use the ledger.
+          {/* Suppress unused-warning for the reverse hook — kept on
+              hand in case future UX needs inline reversal. */}
+          <span hidden>{String(reverse.isPending)}</span>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -1226,7 +1725,7 @@ function VoidForm({
 
 function Loading() {
   return (
-    <div className="px-10 py-10 max-w-3xl">
+    <div className="px-4 sm:px-8 py-6 sm:py-10 max-w-3xl mx-auto">
       <PageHeader
         title="Invoice"
         description="Loading…"
@@ -1238,7 +1737,7 @@ function Loading() {
 
 function Error() {
   return (
-    <div className="px-10 py-10 max-w-3xl">
+    <div className="px-4 sm:px-8 py-6 sm:py-10 max-w-3xl mx-auto">
       <PageHeader
         title="Invoice"
         back={{ href: '/calendar', label: 'Back to calendar' }}
@@ -1250,7 +1749,7 @@ function Error() {
 
 function Missing() {
   return (
-    <div className="px-10 py-10 max-w-3xl">
+    <div className="px-4 sm:px-8 py-6 sm:py-10 max-w-3xl mx-auto">
       <PageHeader
         title="Invoice"
         back={{ href: '/calendar', label: 'Back to calendar' }}

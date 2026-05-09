@@ -34,8 +34,11 @@ const schema = z.object({
   description: z.string(),
   service_type: z.enum(['regular', 'addon']),
   category_id: z.string(),
-  duration_minutes: z.coerce.number().int().min(1, 'Must be at least 1 minute'),
-  buffer_minutes: z.coerce.number().int().min(0),
+  // Plain `z.number()` (not coerce) so zodResolver's input/output
+  // types match. The `<Input type="number">`s register with
+  // `valueAsNumber: true` to coerce on the RHF side.
+  duration_minutes: z.number().int().min(1, 'Must be at least 1 minute'),
+  buffer_minutes: z.number().int().min(0),
   price_dollars: z.string().refine((v) => v === '' || !Number.isNaN(Number(v)), 'Enter a number'),
   tax_rate_percent: z
     .string()
@@ -198,7 +201,9 @@ export default function NewServicePage() {
                   <FieldLabel htmlFor="category_id">Category</FieldLabel>
                   <Select
                     value={watched.category_id}
-                    onValueChange={(v) => form.setValue('category_id', v, { shouldDirty: true })}
+                    onValueChange={(v) =>
+                      form.setValue('category_id', v ?? '', { shouldDirty: true })
+                    }
                   >
                     <SelectTrigger id="category_id" className="w-full">
                       <SelectValue placeholder="Uncategorized" />
@@ -226,7 +231,7 @@ export default function NewServicePage() {
                     id="duration_minutes"
                     type="number"
                     min={1}
-                    {...form.register('duration_minutes')}
+                    {...form.register('duration_minutes', { valueAsNumber: true })}
                   />
                   {form.formState.errors.duration_minutes ? (
                     <FieldError>{form.formState.errors.duration_minutes.message}</FieldError>
@@ -238,7 +243,7 @@ export default function NewServicePage() {
                     id="buffer_minutes"
                     type="number"
                     min={0}
-                    {...form.register('buffer_minutes')}
+                    {...form.register('buffer_minutes', { valueAsNumber: true })}
                   />
                   <p className="text-xs text-muted-foreground mt-1">
                     Cleanup / setup time, kept off the bookable schedule.

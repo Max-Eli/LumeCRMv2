@@ -1,0 +1,178 @@
+# Backend deploy — build, push to ECR, run migrations, update ECS service.
+#
+# Triggered by a push to `main` that touches `backend/**`, OR manually
+# via `workflow_dispatch`. Runs migrations BEFORE swapping the running
+# task definition so a backwards-incompatible schema change can't take
+# the service down by exposing old code to a new schema.
+#
+# Authentication: OIDC, NOT long-lived access keys. The role this
+# workflow assumes is provisioned manually (see runbook); its trust
+# policy restricts to this exact repo + main branch.
+
+name: Backend deploy
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "backend/**"
+      - ".github/workflows/backend-deploy.yml"
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "Image tag to deploy (defaults to commit SHA). Use this to redeploy a previous build for rollback."
+        required: false
+        default: ""
+
+# Don't run two deploys at once — ECS handles deployment overlap, but
+# the migration step ahead of it could race and leave the schema
+# half-applied. One in-flight at a time.
+concurrency:
+  group: backend-deploy
+  cancel-in-progress: false
+
+permissions:
+  id-token: write # OIDC
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: lume-prod-backend
+  ECS_CLUSTER: lume-prod-cluster
+  ECS_SERVICE: lume-prod-backend
+  TASK_DEF_FAMILY: lume-prod-backend
+  CONTAINER_NAME: backend
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Resolve image tag
+        id: tag
+        run: |
+          if [ -n "${{ inputs.image_tag }}" ]; then
+            echo "tag=${{ inputs.image_tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_SHA::12}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Login to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Set up QEMU (for arm64 cross-build)
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build + push image (linux/arm64 for Fargate Graviton)
+        # Skip the build if the image already exists in ECR — happens
+        # when the deploy workflow is re-run for a known-good tag (e.g.
+        # rollback). `docker manifest inspect` is the cheap probe.
+        run: |
+          IMAGE_URI="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.tag.outputs.tag }}"
+          if docker manifest inspect "$IMAGE_URI" >/dev/null 2>&1; then
+            echo "Image $IMAGE_URI already in ECR — skipping build."
+          else
+            docker buildx build \
+              --platform linux/arm64 \
+              --tag "$IMAGE_URI" \
+              --push \
+              ./backend
+          fi
+          echo "image_uri=$IMAGE_URI" >> "$GITHUB_ENV"
+
+      - name: Render new task definition
+        id: render
+        run: |
+          # Pull the running task def, swap the image, re-register.
+          aws ecs describe-task-definition \
+            --task-definition "${{ env.TASK_DEF_FAMILY }}" \
+            --query taskDefinition > task-def.json
+
+          # Strip read-only fields ECS rejects on register.
+          jq 'del(.taskDefinitionArn, .revision, .status, .requiresAttributes, .compatibilities, .registeredAt, .registeredBy)' \
+            task-def.json > task-def-clean.json
+
+          # Replace the container image.
+          jq --arg img "${{ env.image_uri }}" \
+             --arg name "${{ env.CONTAINER_NAME }}" \
+             '.containerDefinitions |= map(if .name == $name then .image = $img else . end)' \
+             task-def-clean.json > task-def-new.json
+
+          NEW_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://task-def-new.json \
+            --query 'taskDefinition.taskDefinitionArn' \
+            --output text)
+          echo "new_arn=$NEW_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Run database migrations (one-shot task on new revision)
+        # Run migrations BEFORE the service swap. If migrations fail,
+        # we never deregister the old tasks — service stays healthy on
+        # the previous code, deploy fails loudly, no half-state.
+        run: |
+          echo "Running migrations on ${{ steps.render.outputs.new_arn }}"
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --task-definition "${{ steps.render.outputs.new_arn }}" \
+            --launch-type FARGATE \
+            --network-configuration '{
+              "awsvpcConfiguration": {
+                "subnets": ${{ secrets.PRIVATE_SUBNETS_JSON }},
+                "securityGroups": ${{ secrets.BACKEND_SG_JSON }},
+                "assignPublicIp": "DISABLED"
+              }
+            }' \
+            --overrides '{
+              "containerOverrides": [{
+                "name": "${{ env.CONTAINER_NAME }}",
+                "command": ["sh", "-c", "export DATABASE_URL=\"postgres://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME\" && exec python manage.py migrate --noinput"]
+              }]
+            }' \
+            --query 'tasks[0].taskArn' \
+            --output text)
+
+          echo "Migration task: $TASK_ARN"
+          aws ecs wait tasks-stopped \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --tasks "$TASK_ARN"
+
+          EXIT=$(aws ecs describe-tasks \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+
+          if [ "$EXIT" != "0" ]; then
+            echo "Migration task exited $EXIT — failing the deploy."
+            aws logs tail "/lume-crm/prod/backend" --since 5m || true
+            exit 1
+          fi
+
+      - name: Update ECS service to new task def
+        run: |
+          aws ecs update-service \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --service "${{ env.ECS_SERVICE }}" \
+            --task-definition "${{ steps.render.outputs.new_arn }}" \
+            --force-new-deployment > /dev/null
+
+      - name: Wait for stable
+        run: |
+          aws ecs wait services-stable \
+            --cluster "${{ env.ECS_CLUSTER }}" \
+            --services "${{ env.ECS_SERVICE }}"
+          echo "✓ Backend deploy stable on tag ${{ steps.tag.outputs.tag }}."

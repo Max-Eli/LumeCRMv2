@@ -1,0 +1,140 @@
+# Terraform plan + apply for the `infra/` directory.
+#
+# Plan runs on PRs that touch infra; apply runs on merge to main with
+# manual approval gate via the `production` environment. Apply is also
+# available via `workflow_dispatch` for one-off changes.
+#
+# Authentication: same OIDC role as the deploy workflows. The role's
+# trust policy must allow this exact repo + (main branch OR PR
+# context). Plan-only PRs from forks are blocked by the OIDC condition.
+
+name: Infra (Terraform)
+
+on:
+  pull_request:
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra.yml"
+  push:
+    branches: [main]
+    paths:
+      - "infra/**"
+      - ".github/workflows/infra.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: infra-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  id-token: write
+  contents: read
+  pull-requests: write # for posting plan output as a PR comment
+
+env:
+  AWS_REGION: us-east-1
+  TF_VERSION: "1.10.4"
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: infra
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      - name: Init
+        run: terraform init -input=false
+
+      - name: Validate
+        run: terraform validate
+
+      - name: Plan
+        id: plan
+        run: |
+          terraform plan -input=false -no-color \
+            -var "domain_name=${{ secrets.TF_VAR_domain_name }}" \
+            -var "ses_from_address=${{ secrets.TF_VAR_ses_from_address }}" \
+            -var "alarm_email=${{ secrets.TF_VAR_alarm_email }}" \
+            -out=tfplan 2>&1 | tee plan.txt
+          echo "summary<<EOF" >> "$GITHUB_OUTPUT"
+          tail -50 plan.txt >> "$GITHUB_OUTPUT"
+          echo "EOF" >> "$GITHUB_OUTPUT"
+
+      - name: Comment plan on PR
+        if: github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const summary = `${{ steps.plan.outputs.summary }}`;
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `### Terraform plan (last 50 lines)\n\n\`\`\`\n${summary}\n\`\`\``
+            });
+
+      - name: Upload plan artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tfplan
+          path: infra/tfplan
+          retention-days: 7
+
+  apply:
+    needs: plan
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    # `production` environment in repo settings holds the manual
+    # approval gate. Required reviewers approve the apply before
+    # the job runs.
+    environment: production
+    defaults:
+      run:
+        working-directory: infra
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+          terraform_wrapper: false
+
+      - name: Init
+        run: terraform init -input=false
+
+      - name: Download plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: tfplan
+          path: infra/
+
+      - name: Apply
+        run: terraform apply -input=false tfplan

@@ -19,6 +19,7 @@ import {
   BarChart3,
   Building2,
   Calendar,
+  Clock,
   FileText,
   LayoutDashboard,
   LogOut,
@@ -81,6 +82,10 @@ const NAV_LINKS: NavLink[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, group: 'location' },
   { href: '/calendar', label: 'Calendar', icon: Calendar, group: 'location' },
   { href: '/clients', label: 'Clients', icon: Users, group: 'location' },
+  // Mobile-first clock-in/out for any staff member. Sits at top
+  // level (rather than under /staff) because every role uses it,
+  // not just managers.
+  { href: '/clock-in', label: 'Clock in', icon: Clock, group: 'location' },
   // Catalog — services + categories live here today; products,
   // memberships, and packages are placeholder pages until the
   // retail / packages / memberships features land. Sub-pages
@@ -113,6 +118,7 @@ const NAV_LINKS: NavLink[] = [
       { href: '/staff/employees', label: 'Employees', roles: ['owner', 'manager'] },
       { href: '/staff/schedule', label: 'Schedule', roles: ['owner', 'manager'] },
       { href: '/staff/check-in', label: 'Check-in', roles: ['owner', 'manager'] },
+      { href: '/staff/commissions', label: 'Commissions' },
       { href: '/staff/payroll', label: 'Payroll', roles: ['owner', 'manager'] },
     ],
   },

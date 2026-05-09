@@ -1,23 +1,38 @@
 """
-Django settings for lume_crm project.
+Shared Django settings — environment-agnostic.
 
-Local-dev settings. Do not deploy this configuration to production as-is.
-Sensitive values are loaded from a `.env` file in the backend/ directory.
+Both `dev.py` and `prod.py` import * from this module, then override
+the few things that genuinely differ (DEBUG, email backend, security
+headers, logging). Keep environment-specific defaults OUT of here —
+the goal is that this file reads the same way prod or dev.
+
+Sensitive values come from the env (Secrets Manager → ECS env in prod,
+`.env` file in dev). Never bake secrets into source.
 """
 
+import os
 from pathlib import Path
 
 import environ
 
-BASE_DIR = Path(__file__).resolve().parent.parent
+# BASE_DIR is the `backend/` directory (two levels up from this file:
+# `backend/lume_crm/settings/base.py` → `backend/`).
+BASE_DIR = Path(__file__).resolve().parent.parent.parent
 
 env = environ.Env(
     DEBUG=(bool, False),
     ALLOWED_HOSTS=(list, []),
 )
+# Read .env when present. Production containers don't ship a .env (env
+# vars are injected by ECS / Secrets Manager), so the `read_env` is a
+# no-op there.
 environ.Env.read_env(BASE_DIR / '.env')
 
-SECRET_KEY = env('SECRET_KEY')
+# Read SECRET_KEY via raw os.environ -- django-environ's env() has a
+# "proxied env" feature that recursively substitutes values starting
+# with `$`. Random secrets routinely start with `$`, which breaks
+# unpredictably. Same rationale applies to DB_PASSWORD below.
+SECRET_KEY = os.environ['SECRET_KEY']
 DEBUG = env('DEBUG')
 ALLOWED_HOSTS = env('ALLOWED_HOSTS')
 
@@ -30,10 +45,12 @@ INSTALLED_APPS = [
     'django.contrib.messages',
     'django.contrib.staticfiles',
 
+    # Third-party
     'rest_framework',
     'corsheaders',
     'drf_spectacular',
 
+    # Lumè apps
     'apps.users',
     'apps.tenants',
     'apps.audit',
@@ -53,6 +70,8 @@ INSTALLED_APPS = [
     'apps.packages',
     'apps.memberships',
     'apps.giftcards',
+    'apps.timetracking',
+    'apps.commissions',
 ]
 
 AUTH_USER_MODEL = 'users.User'
@@ -70,26 +89,19 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-# CORS — allow the Next.js dev server to call our API with credentials
-CORS_ALLOWED_ORIGINS = [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-]
+# Default CORS — dev permits localhost; prod overrides with the real
+# tenant subdomains. CORS_ALLOWED_ORIGINS lives in dev.py / prod.py.
 CORS_ALLOW_CREDENTIALS = True
 
-# Extend the default CORS allow-headers so the browser preflight accepts our
-# custom tenant-slug header in dev (where subdomains aren't available).
+# Extend the default CORS allow-headers so the browser preflight accepts
+# our custom tenant-slug header in dev (where subdomains aren't
+# available). Prod resolves tenants from the request subdomain.
 from corsheaders.defaults import default_headers as _default_cors_headers
 CORS_ALLOW_HEADERS = (*_default_cors_headers, 'x-tenant-slug')
 
-# CSRF — trust the Next.js dev origin so DRF SessionAuthentication accepts CSRF tokens from it
-CSRF_TRUSTED_ORIGINS = [
-    'http://localhost:3000',
-    'http://127.0.0.1:3000',
-]
 
-# DRF defaults: session-cookie auth, require auth by default. Endpoints that should
-# be public (login, csrf) opt into AllowAny explicitly.
+# DRF defaults: session-cookie auth, require auth by default. Endpoints
+# that should be public (login, csrf) opt into AllowAny explicitly.
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.SessionAuthentication',
@@ -100,11 +112,9 @@ REST_FRAMEWORK = {
     'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
 
     # Throttle rates for the public booking surface (apps.booking).
-    # Counts live in Django's default cache (local-memory) — accurate
-    # at single-instance scale. When we move to multi-process /
-    # multi-instance hosting in Phase 0c, swap CACHES to Redis so
-    # the counts are shared. Tests use settings overrides to disable
-    # throttling per-class so retry-heavy specs aren't fragile.
+    # Counts live in Django's default cache (local-memory in dev,
+    # Redis in prod via Phase 0c.2). Tests use settings overrides to
+    # disable throttling per-class so retry-heavy specs aren't fragile.
     'DEFAULT_THROTTLE_RATES': {
         'booking_submit': '10/hour',
         'booking_reschedule': '20/hour',
@@ -141,6 +151,38 @@ TEMPLATES = [
 WSGI_APPLICATION = 'lume_crm.wsgi.application'
 
 
+# Database connection. Two paths supported:
+#
+#   1. `DATABASE_URL` env var set directly -- used in dev (loaded
+#      from .env) and any environment where the URL is hand-crafted.
+#
+#   2. Individual `DB_USER`/`DB_PASSWORD`/`DB_HOST`/`DB_PORT`/`DB_NAME`
+#      env vars -- used in prod where ECS injects them separately
+#      (DB_PASSWORD comes from Secrets Manager). We URL-encode the
+#      password before assembling the URL because RDS-managed
+#      passwords routinely include `@`, `$`, `/`, `&`, and other
+#      characters that break URL parsing or shell expansion.
+#
+# CRITICAL: read DB_PASSWORD via `os.environ` directly, NOT via
+# django-environ's `env()`. django-environ has a "proxied env"
+# feature where any value starting with `$` gets recursively looked
+# up as an env-var name -- which is exactly what RDS-generated
+# passwords do when they happen to start with `$`. Bypassing env()
+# avoids that footgun. Same reason for the other DB_* lookups in
+# this block: any of them MIGHT start with `$` in some future
+# rotation, and we don't want a deploy to silently break.
+import os as _os
+import urllib.parse as _urlparse
+
+if not _os.environ.get('DATABASE_URL'):
+    _db_password = _urlparse.quote(_os.environ['DB_PASSWORD'], safe='')
+    _os.environ['DATABASE_URL'] = (
+        f"postgres://{_os.environ['DB_USER']}"
+        f":{_db_password}"
+        f"@{_os.environ['DB_HOST']}:{_os.environ.get('DB_PORT', '5432')}"
+        f"/{_os.environ['DB_NAME']}"
+    )
+
 DATABASES = {
     'default': env.db('DATABASE_URL'),
 }
@@ -159,30 +201,25 @@ TIME_ZONE = 'UTC'
 USE_I18N = True
 USE_TZ = True
 
+# Static-files configuration. WhiteNoise (prod.py) serves the
+# collectstatic output via gunicorn so the admin/DRF browsable API
+# work without an extra nginx layer. CloudFront caches in front.
 STATIC_URL = 'static/'
+STATIC_ROOT = BASE_DIR / 'staticfiles'
 
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 
 # ── Email ────────────────────────────────────────────────────────────
 #
-# Dev: filebased backend writes each email to `backend/tmp/emails/`
-# as a `.log` file. Way more reliable than the console backend —
-# discoverable (just `ls` the directory), survives restarts, and
-# doesn't depend on which terminal is open. View the latest with
-# `cat $(ls -t backend/tmp/emails/*.log | head -1)`.
-#
-# Production: AWS SES via `django-ses` — see ADR 0012. Phase 0c
-# wiring will set EMAIL_BACKEND=django_ses.SESBackend + the SES
-# credentials via env. The choice of backend is the only thing that
-# changes; templates + send code are identical.
+# Backend choice is per-environment (dev → filebased, prod → SES via
+# django-ses). Defaults below are overridable so each environment can
+# tighten them. See ADR 0012.
 
 EMAIL_BACKEND = env(
     'EMAIL_BACKEND',
     default='django.core.mail.backends.filebased.EmailBackend',
 )
-# Only relevant when EMAIL_BACKEND is filebased. Created on first
-# send if it doesn't exist.
 EMAIL_FILE_PATH = env(
     'EMAIL_FILE_PATH',
     default=str(BASE_DIR / 'tmp' / 'emails'),
@@ -193,8 +230,8 @@ DEFAULT_FROM_EMAIL = env(
 )
 
 # Public host the tokenized fill URLs resolve under. Used to build
-# the absolute /sign/<token> link in emails. In dev: localhost:3000;
-# in prod: per-tenant subdomain (set via env, Phase 0c).
+# the absolute /sign/<token> link in emails. Dev: localhost:3000;
+# prod: per-tenant subdomain (set via env).
 PUBLIC_BASE_URL = env(
     'PUBLIC_BASE_URL',
     default='http://localhost:3000',

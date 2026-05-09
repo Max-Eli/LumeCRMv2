@@ -39,7 +39,7 @@ import {
 } from '@/lib/marketing';
 import { cn } from '@/lib/utils';
 
-import { CampaignStatusPill } from '../page';
+import { CampaignStatusPill } from '../_components/campaign-status-pill';
 
 export default function CampaignDetailPage({
   params,

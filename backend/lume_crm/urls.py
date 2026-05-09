@@ -18,7 +18,14 @@ from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
+from lume_crm.health import liveness, readiness
+
 urlpatterns = [
+    # Liveness + readiness — ECS uses /healthz/live, ALB uses /healthz.
+    # Order: registered before any catch-all so they always resolve.
+    path('healthz', readiness, name='healthz-readiness'),
+    path('healthz/live', liveness, name='healthz-liveness'),
+
     path('admin/', admin.site.urls),
     path('api/auth/', include('apps.users.urls')),
     path('api/', include('apps.tenants.urls')),
@@ -38,6 +45,8 @@ urlpatterns = [
     path('api/', include('apps.packages.urls')),
     path('api/', include('apps.memberships.urls')),
     path('api/', include('apps.giftcards.urls')),
+    path('api/', include('apps.timetracking.urls')),
+    path('api/', include('apps.commissions.urls')),
 
     # OpenAPI schema + Swagger UI
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

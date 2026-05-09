@@ -25,12 +25,18 @@ import { ApiError, api } from './api';
 
 export type InvoiceStatus = 'open' | 'paid' | 'void';
 
-export type PaymentMethod = 'cash' | 'check' | 'card_external' | 'other';
+export type PaymentMethod =
+  | 'cash'
+  | 'check'
+  | 'card_external'
+  | 'gift_card'
+  | 'other';
 
 export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   cash: 'Cash',
   check: 'Check',
   card_external: 'Card (external terminal)',
+  gift_card: 'Gift card (full coverage)',
   other: 'Other',
 };
 
@@ -47,6 +53,26 @@ export interface InvoiceLineItem {
   line_subtotal_cents: number;
   line_tax_cents: number;
   created_at: string;
+}
+
+/** Body for `POST /api/invoices/<id>/add-gift-card-sale/`. Sells a
+ *  gift card on this OPEN invoice. Caller supplies value + recipient
+ *  (either an existing customer FK or a free-text name). */
+export interface AddGiftCardSaleInput {
+  value_cents: number;
+  recipient_customer_id?: number;
+  recipient_name?: string;
+  recipient_email?: string;
+  expires_at?: string;
+  notes?: string;
+}
+
+/** Body for `POST /api/invoices/<id>/apply-gift-card/`. Applies a
+ *  portion of a card's balance to this invoice. Backend validates
+ *  active + not expired + balance covers + ≤ amount due. */
+export interface ApplyGiftCardInput {
+  code: string;
+  amount_cents: number;
 }
 
 export interface InvoiceCustomerSummary {
@@ -79,6 +105,13 @@ export interface Invoice {
   subtotal_cents: number;
   tax_cents: number;
   total_cents: number;
+  /** Total of gift card credits applied toward this invoice.
+   *  Reduces `amount_due_cents`. Mutated by the apply-gift-card /
+   *  reverse-gift-card-redemption actions. */
+  gift_card_credits_cents: number;
+  /** What `payment_method` covers at close: `total - gift_card_credits`,
+   *  clamped at 0. Server-computed. */
+  amount_due_cents: number;
   payment_method: PaymentMethod | '';
   payment_reference: string;
   notes: string;
@@ -367,6 +400,71 @@ export function useRedeemFromMembership(invoiceId: number) {
         });
       }
       qc.invalidateQueries({ queryKey: ['subscriptions'] });
+    },
+  });
+}
+
+/** Sell a gift card on an OPEN invoice. Creates a positive line +
+ *  PENDING `GiftCard` (flips ACTIVE on invoice close). */
+export function useAddGiftCardSale(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, AddGiftCardSaleInput>({
+    mutationFn: (input) =>
+      api.post<Invoice>(
+        `/api/invoices/${invoiceId}/add-gift-card-sale/`,
+        input,
+      ),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['gift-cards'] });
+    },
+  });
+}
+
+/** Apply some of a gift card's balance toward this OPEN invoice.
+ *  Decrements card balance + bumps `gift_card_credits_cents`. */
+export function useApplyGiftCard(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, ApplyGiftCardInput>({
+    mutationFn: (input) =>
+      api.post<Invoice>(
+        `/api/invoices/${invoiceId}/apply-gift-card/`,
+        input,
+      ),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['gift-cards'] });
+    },
+  });
+}
+
+/** Reverse a previously-applied gift card credit. The original
+ *  REDEEM ledger row is preserved; a REVERSAL row is appended. */
+export function useReverseGiftCardRedemption(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, number>({
+    mutationFn: (ledgerId) =>
+      api.delete<Invoice>(
+        `/api/invoices/${invoiceId}/gift-card-redemptions/${ledgerId}/`,
+      ),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['gift-cards'] });
     },
   });
 }

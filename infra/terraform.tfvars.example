@@ -1,0 +1,30 @@
+# Copy to `terraform.tfvars` and fill in. tfvars is gitignored — do NOT
+# commit. CI passes these as `-var "key=value"` flags via GitHub
+# Actions secrets.
+
+aws_region  = "us-east-1"
+environment = "prod"
+
+# Domain name in Punycode (ASCII) form. The human-readable spelling
+# is `lumècrm.com`; ACM and AWS APIs only accept the encoded form.
+# To compute Punycode for any IDN: python3 -c "print('YOURDOMAIN'.encode('idna').decode())"
+domain_name = "xn--lumcrm-5ua.com"
+
+# Initial sizing — fine for 2-10 paying spas. See variables.tf for
+# scale-up notes.
+rds_instance_class       = "db.t4g.micro"
+rds_allocated_storage_gb = 20
+
+# Backend / frontend images. CI overrides at deploy time with the
+# commit SHA. Initial bootstrap can use 'latest' once an image has
+# been pushed to ECR — never deploy 'latest' from a CI run, always
+# the SHA.
+backend_image_tag  = "latest"
+frontend_image_tag = "latest"
+
+# Verified SES sender. The domain (mail.lumecrm.com here) must have
+# DKIM + SPF + DMARC verified before sending — runbook walks through.
+ses_from_address = "noreply@mail.lumecrm.com"
+
+# Email that receives critical alarms (RDS down, ECS unhealthy, etc.)
+alarm_email = "ops@lumecrm.com"

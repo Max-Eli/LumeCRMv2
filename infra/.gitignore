@@ -1,0 +1,18 @@
+# Local Terraform state + plans (we use S3 backend, but `terraform
+# plan -out=...` saves a local file we don't want to commit either).
+.terraform/
+.terraform.lock.hcl
+tfplan
+*.tfplan
+*.tfplan.json
+
+# Per-environment overrides — secrets live here, NEVER in git.
+terraform.tfvars
+*.auto.tfvars
+
+# Crash logs
+crash.log
+crash.*.log
+
+# OS junk
+.DS_Store

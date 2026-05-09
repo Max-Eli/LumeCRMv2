@@ -1,11 +1,13 @@
 """Auth tests — covers the deliberately-disjoint customer / platform login surfaces.
 
-Two test classes:
+Three test classes:
   - LoginSeparationTests — proves you can't sign in to the wrong
     surface, in either direction
   - PlatformAdminAccountTests — covers the createplatformadmin
     management command + the "platform admin must have zero
     memberships" invariant
+  - IdleSessionTimeoutTests — proves the HIPAA idle-logoff middleware
+    expires sessions after the configured window
 
 Tenant create flow's rejection of platform-admin owner emails is
 covered in apps.platform.tests.PlatformTenantCreateTests.
@@ -13,10 +15,13 @@ covered in apps.platform.tests.PlatformTenantCreateTests.
 
 from __future__ import annotations
 
+import time
+from unittest.mock import patch
+
 from django.contrib.auth import get_user_model
 from django.core.management import call_command
 from django.core.management.base import CommandError
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from io import StringIO
 from rest_framework import status
@@ -193,3 +198,77 @@ class PlatformAdminAccountTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('owner_email', response.data)
+
+
+# ── Idle-session timeout (HIPAA §164.312(a)(2)(iii)) ─────────────────
+
+
+# `override_settings` adds the middleware on top of the default test
+# settings (which inherit from base.py — no idle middleware in dev).
+# Tightening the window to 60 seconds lets the test simulate idle by
+# fast-forwarding `time.time()` rather than literally sleeping.
+@override_settings(
+    MIDDLEWARE=[
+        'corsheaders.middleware.CorsMiddleware',
+        'django.middleware.security.SecurityMiddleware',
+        'django.contrib.sessions.middleware.SessionMiddleware',
+        'django.middleware.common.CommonMiddleware',
+        'django.middleware.csrf.CsrfViewMiddleware',
+        'django.contrib.auth.middleware.AuthenticationMiddleware',
+        'apps.users.middleware.IdleSessionTimeoutMiddleware',
+        'apps.tenants.middleware.TenantMiddleware',
+        'apps.tenants.middleware.LocationMiddleware',
+        'django.contrib.messages.middleware.MessageMiddleware',
+        'django.middleware.clickjacking.XFrameOptionsMiddleware',
+    ],
+    IDLE_SESSION_TIMEOUT_SECONDS=60,
+)
+class IdleSessionTimeoutTests(TestCase):
+    """Authenticated requests get logged out after `IDLE_SESSION_TIMEOUT_SECONDS`."""
+
+    def setUp(self):
+        self.user = _make_tenant_user('idle@example.com', 'idlespa')
+
+    def test_first_request_stamps_session_and_succeeds(self):
+        client = APIClient()
+        client.force_login(self.user)
+        response = client.get(reverse('auth-me'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        # Session got stamped — proves the middleware ran.
+        self.assertIn('_lume_last_activity_at', client.session)
+
+    def test_session_within_window_stays_active(self):
+        client = APIClient()
+        client.force_login(self.user)
+        # First request to seed the timestamp.
+        client.get(reverse('auth-me'))
+        # Bump the clock 30 seconds — well inside the 60-second window.
+        with patch('apps.users.middleware.time.time', return_value=time.time() + 30):
+            response = client.get(reverse('auth-me'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_session_past_window_is_logged_out(self):
+        client = APIClient()
+        client.force_login(self.user)
+        client.get(reverse('auth-me'))
+        # Two minutes — well past the 60-second window.
+        with patch('apps.users.middleware.time.time', return_value=time.time() + 120):
+            response = client.get(reverse('auth-me'))
+        # MeView requires auth; the middleware drops the session, so
+        # DRF returns 403 to an anonymous request. The 403 is the
+        # proof of logout — without the middleware, this would 200.
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        # Session activity stamp got cleared on logout.
+        self.assertNotIn('_lume_last_activity_at', client.session)
+
+    def test_healthz_is_exempt(self):
+        client = APIClient()
+        client.force_login(self.user)
+        client.get(reverse('auth-me'))
+        # Two-minute fast-forward; if /healthz were checked, the
+        # middleware would log the user out. We don't care about that
+        # for this assertion — we only care that hitting healthz
+        # itself returns 200 without touching the session.
+        with patch('apps.users.middleware.time.time', return_value=time.time() + 120):
+            response = client.get('/healthz/live')
+        self.assertEqual(response.status_code, 200)

@@ -1,0 +1,46 @@
+# Dev-only / version-controlled artifacts that bloat or pollute the image.
+
+# Python build/cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Virtual envs (host-side; the image builds its own)
+.venv/
+venv/
+env/
+
+# Django dev artifacts
+db.sqlite3
+db.sqlite3-journal
+staticfiles/
+media/
+tmp/
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
+*.swo
+
+# Secrets — never bake into the image
+.env
+.env.*
+!.env.example
+
+# Tests as cargo (the image runs migrations + serves; tests run in CI)
+**/test_*.py.bak
+
+# Git metadata + CI config not needed at runtime
+.git/
+.gitignore
+.github/
+
+# Docs / project plans (live in /docs in the repo, not the image)
+README.md
+*.md
