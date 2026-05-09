@@ -30,9 +30,9 @@
 #
 #   PORT                    server port (default 3000)
 #   HOSTNAME                bind interface (set to '0.0.0.0' below)
-#   NEXT_PUBLIC_API_URL     https://api.lumecrm.com (or env-equivalent)
-#                           -- baked at build time via build-arg below;
-#                             changing it requires a rebuild.
+#   NEXT_PUBLIC_API_URL     https://api.xn--lumcrm-5ua.com (punycode of
+#                           api.lumècrm.com) -- baked at build time via
+#                           build-arg below; changing it requires a rebuild.
 #
 # `NEXT_PUBLIC_*` env vars are inlined into the client bundle by Next
 # at build time. We accept them as build-args so CI can switch them
@@ -66,7 +66,7 @@ WORKDIR /app
 # Build-time env vars. NEXT_PUBLIC_* are inlined into the client
 # bundle, so changing them requires a rebuild + redeploy. CI passes
 # them via `--build-arg` per environment.
-ARG NEXT_PUBLIC_API_URL=https://api.lumecrm.com
+ARG NEXT_PUBLIC_API_URL=https://api.xn--lumcrm-5ua.com
 ENV NEXT_PUBLIC_API_URL=${NEXT_PUBLIC_API_URL}
 
 # Telemetry off — Next doesn't need to phone home from CI/Fargate

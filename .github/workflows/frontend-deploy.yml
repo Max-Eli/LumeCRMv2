@@ -3,7 +3,7 @@
 # No migration step (no database). Otherwise mirrors the backend
 # deploy workflow's shape for consistency.
 #
-# `NEXT_PUBLIC_API_BASE` is build-time inlined into the client bundle,
+# `NEXT_PUBLIC_API_URL` is build-time inlined into the client bundle,
 # so changing it requires a rebuild. The value is passed as a build-arg
 # from this workflow's secret.
 
@@ -81,7 +81,7 @@ jobs:
           else
             docker buildx build \
               --platform linux/arm64 \
-              --build-arg NEXT_PUBLIC_API_BASE="${{ secrets.NEXT_PUBLIC_API_BASE }}" \
+              --build-arg NEXT_PUBLIC_API_URL="${{ secrets.NEXT_PUBLIC_API_URL }}" \
               --tag "$IMAGE_URI" \
               --push \
               ./frontend
