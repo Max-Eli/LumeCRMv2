@@ -84,4 +84,8 @@ jobs:
         run: python manage.py migrate --noinput
 
       - name: Run tests
-        run: python manage.py test --parallel 4 --verbosity 2
+        # Sequential -- Django's --parallel runner can hit
+        # `cannot pickle 'traceback' object` errors in CI when an
+        # exception path captures unpicklable state. Local runs use
+        # --parallel for speed; CI prioritizes reliable signal.
+        run: python manage.py test --verbosity 2
