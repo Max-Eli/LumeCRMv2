@@ -20,6 +20,7 @@ import {
   CheckCircle2,
   ChevronDown,
   CreditCard,
+  Download,
   Gift,
   Layers,
   Loader2,
@@ -47,7 +48,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { ApiError } from '@/lib/api';
+import { ACTIVE_TENANT_COOKIE, ApiError } from '@/lib/api';
 import { useAppointment } from '@/lib/appointments';
 import { useCurrentMembership } from '@/lib/auth';
 import {
@@ -92,6 +93,79 @@ const REOPEN_ROLES = new Set(['owner', 'manager']);
 const VOID_ROLES = new Set(['owner', 'manager']);
 
 const DEFAULT_TIMEZONE = 'America/New_York';
+
+const API_URL = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+
+/** Download the invoice PDF via a fetch + Blob + anchor click. Mirrors
+ *  the CSV-export pattern in `/reports`: a plain `<a href>` would skip
+ *  the X-Tenant-Slug header the dev backend needs to resolve the
+ *  tenant. Session auth + tenant cookie are forwarded via
+ *  `credentials: 'include'`. */
+function DownloadPdfButton({ invoice }: { invoice: Invoice }) {
+  const [downloading, setDownloading] = useState(false);
+
+  const handleClick = async () => {
+    setDownloading(true);
+    try {
+      const tenantSlug = readCookie(ACTIVE_TENANT_COOKIE);
+      const headers: Record<string, string> = { Accept: 'application/pdf' };
+      if (tenantSlug) headers['X-Tenant-Slug'] = tenantSlug;
+
+      const res = await fetch(`${API_URL}/api/invoices/${invoice.id}/pdf/`, {
+        credentials: 'include',
+        headers,
+      });
+      if (!res.ok) {
+        toast.error(`Could not download PDF (HTTP ${res.status}).`);
+        return;
+      }
+
+      const blob = await res.blob();
+      const fallbackName = `${invoice.invoice_number || `invoice-${invoice.id}`}.pdf`;
+      const filename = parsePdfFilename(res.headers.get('Content-Disposition')) ?? fallbackName;
+
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (err) {
+      console.error('PDF download failed', err);
+      toast.error('Could not download PDF. Please try again.');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <Button
+      type="button"
+      variant="outline"
+      size="sm"
+      onClick={handleClick}
+      disabled={downloading}
+      className="gap-1.5"
+    >
+      <Download className="size-3.5" aria-hidden />
+      {downloading ? 'Downloading…' : 'Download PDF'}
+    </Button>
+  );
+}
+
+function readCookie(name: string): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(new RegExp(`(?:^|; )${name}=([^;]*)`));
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
+function parsePdfFilename(header: string | null): string | null {
+  if (!header) return null;
+  const m = /filename\*?=(?:UTF-8''|")?([^";]+)"?/i.exec(header);
+  return m ? decodeURIComponent(m[1]) : null;
+}
 
 interface InvoicePageProps {
   params: Promise<{ id: string }>;
@@ -157,9 +231,12 @@ function InvoiceBody({
         description={`${appointment.customer.full_name} · ${appointment.service.name} · ${formatLongDateTime(appointment.start_time, tz)}`}
         back={{ href: '/calendar', label: 'Back to calendar' }}
         actions={
-          <StatusBadge tone={INVOICE_STATUS_TONE[invoice.status]}>
-            {INVOICE_STATUS_LABELS[invoice.status]}
-          </StatusBadge>
+          <div className="flex items-center gap-2">
+            <DownloadPdfButton invoice={invoice} />
+            <StatusBadge tone={INVOICE_STATUS_TONE[invoice.status]}>
+              {INVOICE_STATUS_LABELS[invoice.status]}
+            </StatusBadge>
+          </div>
         }
       />
 
