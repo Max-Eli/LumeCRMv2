@@ -62,6 +62,7 @@ import {
 } from '@/components/ui/select';
 import { ApiError } from '@/lib/api';
 import { useCurrentMembership } from '@/lib/auth';
+import { useJobTitles } from '@/lib/job-titles';
 import { locationDisplayName, useLocations } from '@/lib/locations';
 import {
   ASSIGNABLE_ROLES,
@@ -173,6 +174,7 @@ function EmployeeDetailForm({
   canEdit: boolean;
 }) {
   const update = useUpdateEmployee(employee.id);
+  const { data: jobTitles } = useJobTitles();
 
   const defaultValues = toFormValues(employee);
   const form = useForm<FormValues>({
@@ -271,16 +273,35 @@ function EmployeeDetailForm({
 
                 <Field>
                   <FieldLabel htmlFor="job_title">Job title</FieldLabel>
-                  <Input
-                    id="job_title"
-                    value={employee.job_title_name ?? '—'}
-                    readOnly
-                    disabled
-                    title="Job title is managed in the legacy staff list (will be inline-editable in a follow-up)."
-                  />
+                  <Select
+                    value={form.watch('job_title_id')}
+                    onValueChange={(v) =>
+                      form.setValue('job_title_id', v ?? 'none', { shouldDirty: true })
+                    }
+                    disabled={!canEdit}
+                  >
+                    <SelectTrigger id="job_title">
+                      <SelectValue placeholder="No job title" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No job title</SelectItem>
+                      {(jobTitles ?? []).map((jt) => (
+                        <SelectItem key={jt.id} value={String(jt.id)}>
+                          {jt.name}
+                          {jt.is_clinical ? ' · clinical' : ''}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                   <p className="text-[11px] text-muted-foreground mt-1">
-                    Set during onboarding. Editing inline lands with the next
-                    job-titles polish pass.
+                    Manage the list of job titles at{' '}
+                    <a
+                      href="/staff/employees"
+                      className="underline underline-offset-2 hover:text-foreground"
+                    >
+                      /staff/employees
+                    </a>
+                    . Clinical roles can view + sign chart notes.
                   </p>
                 </Field>
               </div>
@@ -947,8 +968,10 @@ function toApiInput(values: FormValues, original: EmployeeDetail) {
     pay_rate_cents: payRateCents,
     hire_date: values.hire_date || null,
     employment_notes: values.employment_notes,
-    // Job title isn't editable from this page yet; preserve current value.
-    job_title_id: original.job_title_id,
+    // 'none' from the Select maps to backend null (no job title).
+    // Numeric strings ('5', '12') coerce to integers.
+    job_title_id:
+      values.job_title_id === 'none' ? null : Number(values.job_title_id),
     ...(locationIdsChanged ? { set_location_ids: values.location_ids } : {}),
   };
 }

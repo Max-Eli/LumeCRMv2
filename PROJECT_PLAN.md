@@ -626,11 +626,11 @@ category; Sessions 2 + 3 fill out the catalog and add CSV export.*
 - [x] **`/staff/employees` Add employee button** — owner + manager only. Opens a bottom sheet (`AddEmployeeSheet`) with first/last/email/role/optional job title/bookable. On success: brand-new user → swap to a "share these credentials" panel with one-click copy; existing user → toast + close.
 - [x] **`/staff/employees/[id]` profile page** — five sections: Role & access · Personal contact · Employment · Payroll · Multi-center · Notes. Two-column layout matching `/settings/business`. All fields edit-gated to owner + manager (non-managers see read-only). Pay rate UI is dollars; the wire format is cents. `commission_only` zeroes out the rate. **Note (2026-05-02 follow-up):** the Multi-center section currently lists cross-tenant memberships, which is the wrong concept for "spas with multiple physical locations." Phase 4E session 5 swaps it for real per-location assignments scoped to this tenant.
 
-**Session 3 (later):**
-- [ ] Cancellation policy text
-- [ ] Notification templates (SMS reminder copy, etc.) — lights up with Phase 1F (SMS / email plumbing)
-- [ ] Job title inline edit on `/staff/employees/[id]` — currently the field is read-only on the profile page; new-employee flow already accepts it. Lift into a small Select once tenants start customizing job-title lists.
-- [ ] Staff invitation flow (email tokenized link → set password → join tenant) — replaces the temp-password reveal panel once SES lands (Phase 1F).
+**Session 3:**
+- [x] Cancellation policy text — shipped (built earlier on `/org/online-booking`; full form with placeholder, schema validation, surfaces on the public booking page).
+- [x] Job title inline edit on `/staff/employees/[id]` — shipped 2026-05-12. Read-only Input swapped for a Select sourced from `useJobTitles`. 'none' option maps to backend null; numeric values coerce to integer on submit. Existing schema field `job_title_id` already validated; only the UI changed.
+- [ ] Notification templates (SMS reminder copy, etc.) — lights up with Phase 1F (SMS / email plumbing — needs Twilio).
+- [ ] Staff invitation flow (email tokenized link → set password → join tenant) — replaces the temp-password reveal panel. **Now unblocked** by the verified SES production pipeline.
 - [ ] Logo upload (S3 in prod, local FS in dev) — currently URL paste only; tracked in polish backlog
 
 #### 1J. Zenoti migration tooling
