@@ -1161,6 +1161,8 @@ class BookingConsentCaptureTests(TestCase):
     def _book_payload(self, **overrides):
         from apps.booking.availability import compute_provider_slots
         on_date = dt.date.today() + dt.timedelta(days=14)
+        while on_date.weekday() >= 5:
+            on_date += dt.timedelta(days=1)
         slots = compute_provider_slots(
             provider=self.provider, service=self.service, location=self.location,
             on_date=on_date,
