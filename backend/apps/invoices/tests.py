@@ -2223,3 +2223,159 @@ class InvoicePDFTests(TestCase):
         ).first()
         self.assertIsNotNone(log, 'No audit log entry for PDF download')
         self.assertGreater(log.metadata.get('bytes', 0), 0)
+
+
+# ── Email invoice to client ───────────────────────────────────────────
+
+
+class InvoiceEmailTests(TestCase):
+    """POST /api/invoices/{id}/email/ — send the customer their PDF.
+
+    Gated by PROCESS_PAYMENT (owner / manager / front_desk). Customer
+    must have an email on file; missing-email is a 400 with a
+    structured detail. Every send writes an audit-log entry whether
+    or not it succeeded so reads of "did we ever email this person?"
+    survive across staff turnover.
+    """
+
+    def setUp(self):
+        from django.core import mail
+        mail.outbox = []
+
+        self.tenant, self.owner = _make_tenant_with_owner('email-tenant')
+        self.provider = _make_membership(
+            user=_make_user('email-provider@test.local'), tenant=self.tenant,
+            role=TenantMembership.Role.PROVIDER, is_bookable=True,
+        )
+        self.fd_user = _make_user('email-fd@test.local')
+        self.fd = _make_membership(
+            user=self.fd_user, tenant=self.tenant,
+            role=TenantMembership.Role.FRONT_DESK,
+        )
+        self.mkt_user = _make_user('email-mkt@test.local')
+        self.mkt = _make_membership(
+            user=self.mkt_user, tenant=self.tenant,
+            role=TenantMembership.Role.MARKETING,
+        )
+        self.customer = _make_customer(self.tenant)
+        self.customer.email = 'pat-recipient@test.local'
+        self.customer.save(update_fields=['email'])
+
+        self.service = _make_service(self.tenant, price_cents=15000, tax='0')
+        self.appt = _make_appointment(
+            self.tenant, customer=self.customer, service=self.service,
+            provider=self.provider, status=Appointment.Status.CHECKED_IN,
+            created_by=self.owner,
+        )
+        self.invoice = Invoice.objects.get(appointment=self.appt)
+
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def _email_url(self, pk: int) -> str:
+        return reverse('invoice-email', args=[pk])
+
+    def test_owner_sends_email_to_customer(self):
+        from django.core import mail
+        response = self.client.post(
+            self._email_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['recipient'], 'pat-recipient@test.local')
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ['pat-recipient@test.local'])
+        self.assertIn(self.invoice.invoice_number, sent.subject)
+        self.assertIn(self.tenant.name, sent.subject)
+        # Plain-text body + HTML alternative + PDF attachment.
+        self.assertIn(self.invoice.invoice_number, sent.body)
+        self.assertEqual(len(sent.attachments), 1)
+        filename, content, mimetype = sent.attachments[0]
+        self.assertTrue(filename.endswith('.pdf'))
+        self.assertEqual(mimetype, 'application/pdf')
+        self.assertTrue(content.startswith(b'%PDF-'))
+
+    def test_front_desk_can_email(self):
+        from django.core import mail
+        c = APIClient()
+        c.force_login(self.fd_user)
+        response = c.post(
+            self._email_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_marketing_blocked(self):
+        from django.core import mail
+        c = APIClient()
+        c.force_login(self.mkt_user)
+        response = c.post(
+            self._email_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_anonymous_blocked(self):
+        from django.core import mail
+        c = APIClient()
+        response = c.post(
+            self._email_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_customer_with_no_email_returns_400(self):
+        from django.core import mail
+        self.customer.email = ''
+        self.customer.save(update_fields=['email'])
+
+        response = self.client.post(
+            self._email_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('email', response.data['detail'].lower())
+        self.assertEqual(len(mail.outbox), 0)
+
+        # Audit log captures the failed attempt so it's not silent.
+        log = AuditLog.objects.filter(
+            resource_type='invoice_email',
+            resource_id=str(self.invoice.pk),
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('outcome'), 'failed_missing_email')
+
+    def test_cross_tenant_returns_404(self):
+        other_tenant, other_owner = _make_tenant_with_owner('email-other-tenant')
+        c = APIClient()
+        c.force_login(other_owner)
+        response = c.post(
+            self._email_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=other_tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_successful_send_writes_audit_log(self):
+        self.client.post(
+            self._email_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = AuditLog.objects.filter(
+            resource_type='invoice_email',
+            resource_id=str(self.invoice.pk),
+            action=AuditLog.Action.UPDATE,
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('outcome'), 'sent')
+        self.assertEqual(log.metadata.get('recipient'), 'pat-recipient@test.local')
+
+    def test_each_send_is_a_fresh_email(self):
+        from django.core import mail
+        # No deduplication — each click sends another email.
+        self.client.post(self._email_url(self.invoice.pk), HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.client.post(self._email_url(self.invoice.pk), HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.assertEqual(len(mail.outbox), 2)
