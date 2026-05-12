@@ -45,7 +45,9 @@ env:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    # Native arm64 runner — same arch as Fargate Graviton, so the image
+    # build is native (no QEMU). ~3× faster than emulating arm64 on x86.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 20
 
     steps:
@@ -73,27 +75,24 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set up QEMU (for arm64 cross-build)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      # No QEMU — native arm64 runner builds linux/arm64 directly.
 
       - name: Build + push image (linux/arm64 for Fargate Graviton)
-        # Skip the build if the image already exists in ECR — happens
-        # when the deploy workflow is re-run for a known-good tag (e.g.
-        # rollback). `docker manifest inspect` is the cheap probe.
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.tag.outputs.tag }}
+          # GitHub Actions cache — reuses pip + Django + Python deps
+          # layers across runs when requirements.txt / source haven't
+          # changed. First build is normal; subsequent ones drop sharply.
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Record image URI
         run: |
-          IMAGE_URI="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.tag.outputs.tag }}"
-          if docker manifest inspect "$IMAGE_URI" >/dev/null 2>&1; then
-            echo "Image $IMAGE_URI already in ECR — skipping build."
-          else
-            docker buildx build \
-              --platform linux/arm64 \
-              --tag "$IMAGE_URI" \
-              --push \
-              ./backend
-          fi
-          echo "image_uri=$IMAGE_URI" >> "$GITHUB_ENV"
+          echo "image_uri=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.tag.outputs.tag }}" >> "$GITHUB_ENV"
 
       - name: Render new task definition
         id: render

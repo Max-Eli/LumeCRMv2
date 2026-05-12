@@ -40,7 +40,11 @@ env:
 
 jobs:
   deploy:
-    runs-on: ubuntu-latest
+    # Native arm64 runner — drops QEMU emulation entirely. The Fargate
+    # task runs on Graviton (linux/arm64), so building on a same-arch
+    # runner is ~3× faster than emulating arm64 on an x86 host. Available
+    # for all GitHub plans since Jan 2025.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 25
 
     steps:
@@ -68,25 +72,27 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Set up QEMU (arm64 cross-build)
-        uses: docker/setup-qemu-action@v3
-        with:
-          platforms: arm64
+      # No QEMU setup — native arm64 runner handles linux/arm64 directly.
 
       - name: Build + push image
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.tag.outputs.tag }}
+          build-args: |
+            NEXT_PUBLIC_API_URL=${{ secrets.NEXT_PUBLIC_API_URL }}
+          # GitHub Actions cache — reuses Next 16 + npm install layers
+          # across runs when package.json / lockfile / source haven't
+          # changed. First build is normal speed; subsequent builds
+          # drop to ~60-90s instead of ~4 min.
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      - name: Record image URI
         run: |
-          IMAGE_URI="${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.tag.outputs.tag }}"
-          if docker manifest inspect "$IMAGE_URI" >/dev/null 2>&1; then
-            echo "Image $IMAGE_URI already in ECR — skipping build."
-          else
-            docker buildx build \
-              --platform linux/arm64 \
-              --build-arg NEXT_PUBLIC_API_URL="${{ secrets.NEXT_PUBLIC_API_URL }}" \
-              --tag "$IMAGE_URI" \
-              --push \
-              ./frontend
-          fi
-          echo "image_uri=$IMAGE_URI" >> "$GITHUB_ENV"
+          echo "image_uri=${{ steps.ecr.outputs.registry }}/${{ env.ECR_REPO }}:${{ steps.tag.outputs.tag }}" >> "$GITHUB_ENV"
 
       - name: Render new task definition
         id: render
