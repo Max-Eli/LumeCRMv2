@@ -41,7 +41,7 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { useQueryClient } from '@tanstack/react-query';
-import { Clock } from 'lucide-react';
+import { Check, Clock } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -1088,9 +1088,23 @@ function AppointmentBlock({
         transform: transformStyle,
         ...horizontalStyle,
       }}
-      aria-label={`${appointment.customer.full_name} · ${appointment.service.name} · ${formatTimeRange(appointment, timezone)}`}
-      title={`${appointment.customer.full_name} · ${appointment.service.name} · ${formatTimeRange(appointment, timezone)}`}
+      aria-label={`${appointment.customer.full_name} · ${appointment.service.name} · ${formatTimeRange(appointment, timezone)}${appointment.invoice_status === 'paid' ? ' · paid' : ''}`}
+      title={`${appointment.customer.full_name} · ${appointment.service.name} · ${formatTimeRange(appointment, timezone)}${appointment.invoice_status === 'paid' ? ' · paid' : ''}`}
     >
+      {/* Paid badge — top-right corner. Only renders on PAID invoices so
+          the default state (open) stays visual-quiet; showing a marker
+          on every appointment would dilute the signal. Hidden on
+          tight-vertical blocks where it would crowd the time text. */}
+      {appointment.invoice_status === 'paid' && !tightVertical ? (
+        <span
+          aria-hidden
+          className="absolute top-1 right-1 inline-flex size-4 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 ring-1 ring-emerald-200"
+          title="Paid"
+        >
+          <Check className="size-2.5" strokeWidth={3} />
+        </span>
+      ) : null}
+
       <div className={cn('flex items-start gap-1.5', tight ? 'p-1.5' : 'p-2')}>
         <StatusDot status={appointment.status} />
         <div className="min-w-0 flex-1">

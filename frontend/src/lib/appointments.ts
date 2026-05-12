@@ -61,6 +61,12 @@ export interface Appointment {
   end_time: string;
   duration_minutes: number;
   status: AppointmentStatus;
+  /** Status of the linked invoice (one-per-appointment). Sourced via the
+   *  reverse OneToOne on the backend so the calendar block can render a
+   *  paid / open / void pill without N+1 fetching. Null only in the
+   *  transient window between appointment creation and the invoice
+   *  signal firing — frontend treats null as "no badge yet." */
+  invoice_status: 'open' | 'paid' | 'void' | null;
   notes: string;
   source: string;
   checked_in_at: string | null;

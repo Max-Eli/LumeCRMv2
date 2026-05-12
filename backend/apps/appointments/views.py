@@ -67,6 +67,10 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 'service', 'service__category',
                 'provider', 'provider__user', 'provider__job_title',
                 'location',
+                # Reverse OneToOne to Invoice. The AppointmentSerializer
+                # exposes invoice_status off this so each calendar block
+                # can render a paid / open / void pill without N+1 fetch.
+                'invoice',
             )
         )
         location = get_current_location()

@@ -105,6 +105,17 @@ class AppointmentSerializer(serializers.ModelSerializer):
 
     duration_minutes = serializers.IntegerField(read_only=True)
 
+    # Invoice status of the linked invoice (one-per-appointment via
+    # OneToOneField, related_name='invoice'). Sourced via the reverse
+    # accessor so the calendar block can render a paid / open / void
+    # pill without a second request per appointment. Null only in the
+    # transient window between appointment creation and the invoice
+    # signal firing (same transaction in normal flow) — frontend
+    # treats null as "loading."
+    invoice_status = serializers.CharField(
+        source='invoice.status', read_only=True, allow_null=True, default=None,
+    )
+
     class Meta:
         model = Appointment
         fields = [
@@ -114,7 +125,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
             'service', 'service_id',
             'location_id',
             'start_time', 'end_time', 'duration_minutes',
-            'status',
+            'status', 'invoice_status',
             'notes',
             'source',
             'checked_in_at', 'completed_at', 'cancelled_at', 'cancelled_reason',
@@ -124,7 +135,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
         read_only_fields = [
             'id',
             'customer', 'provider', 'service',
-            'duration_minutes',
+            'duration_minutes', 'invoice_status',
             'checked_in_at', 'completed_at', 'cancelled_at',
             'created_at', 'updated_at',
         ]
