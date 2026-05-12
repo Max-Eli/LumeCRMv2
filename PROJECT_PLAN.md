@@ -698,7 +698,7 @@ User started Meta App registration. Status as of pause:
 - [x] Public cancellation via tokenized link
 - [x] Per-service buffer time respected by availability calculator
 - [x] Mobile-first responsive design (most online bookings happen on phone)
-- [ ] **Reschedule** via tokenized link (today: customer cancels then re-books; self-serve reschedule UI deferred). Now unblocked by SES — would use the same email-link pattern as the invitation flow (ADR 0019).
+- [x] **Reschedule** via tokenized link — shipped earlier. `Appointment.booking_token` carries 256-bit URL-safe entropy (set when `source='online'`); `GET /api/booking/manage/<token>/` returns the manage payload; `POST .../reschedule/` updates the slot + emails a "moved to ..." confirmation. Frontend route at `/book/manage/[token]/page.tsx`.
 - [ ] **SMS confirmation** — depends on 1L SMS marketing infra (Twilio + per-tenant phone provisioning). Deferred to Phase 1L.
 - [ ] **Returning customer flow** — email-code verification (today: every email+phone combo creates/matches silently). Polish item; depends on email-OTP infra.
 - [x] **"Phone only" services** — `is_bookable_online=False` is exposed in the services catalog UI; the public booking page filters by it.
