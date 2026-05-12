@@ -698,12 +698,12 @@ User started Meta App registration. Status as of pause:
 - [x] Public cancellation via tokenized link
 - [x] Per-service buffer time respected by availability calculator
 - [x] Mobile-first responsive design (most online bookings happen on phone)
-- [ ] **Reschedule** via tokenized link (today: customer cancels then re-books; self-serve reschedule UI deferred)
-- [ ] **SMS confirmation** — depends on 1L SMS marketing infra (Twilio + per-tenant phone provisioning)
-- [ ] **Returning customer flow** — email/SMS confirmation code (today: every email+phone combo creates/matches silently; verification code is a polish item)
-- [ ] **"Phone only" services** — UI surfacing already there via `is_bookable_online=False`; needs the staff catalog UI to expose the toggle (already exposed)
-- [ ] **Per-tenant timezone** for slot rendering — today server-tz is used; ProviderSchedule "09:00" should resolve in `Location.timezone` (availability.py:222 polish item)
-- [ ] **IP-based rate limiting** on the public POST /book/ endpoint (PublicBookingPermission has the hook ready)
+- [ ] **Reschedule** via tokenized link (today: customer cancels then re-books; self-serve reschedule UI deferred). Now unblocked by SES — would use the same email-link pattern as the invitation flow (ADR 0019).
+- [ ] **SMS confirmation** — depends on 1L SMS marketing infra (Twilio + per-tenant phone provisioning). Deferred to Phase 1L.
+- [ ] **Returning customer flow** — email-code verification (today: every email+phone combo creates/matches silently). Polish item; depends on email-OTP infra.
+- [x] **"Phone only" services** — `is_bookable_online=False` is exposed in the services catalog UI; the public booking page filters by it.
+- [x] **Per-tenant timezone** for slot rendering — shipped earlier (Location.timezone properly threaded through `_combine` + `_location_tz` in `apps.booking.availability`).
+- [x] **IP-based rate limiting** on the public POST /book/ endpoint — shipped earlier (`BookingSubmitThrottle` attached to `BookingSubmitView`, tested in `apps.booking.tests`).
 
 ---
 
