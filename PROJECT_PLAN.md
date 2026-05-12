@@ -879,6 +879,22 @@ User started Meta App registration. Status as of pause:
 - [ ] View invoices + receipts
 - [ ] Rebook last service
 
+#### 3F. Tenant connected accounts (social + ads hub)
+Per-tenant OAuth plumbing so each spa can link the platforms they actually run their business on. Surfaces under **Settings → Integrations**, scoped per tenant. Each connection stores refresh tokens in Secrets Manager (KMS-encrypted), not in Postgres. PHI must never be transmitted to any of these platforms — only marketing/identity data the client has consented to.
+
+- [ ] Connection framework: OAuth flow, token storage in Secrets Manager, per-tenant scoping, revocation, health checks
+- [ ] **Instagram** (Business account via Meta Graph API): DM inbox → unified inbox with SMS (3A), post-scheduling deferred
+- [ ] **Facebook** (Page): Page Messenger DM inbox → unified inbox, Lead Ads ingestion (overlaps 3D)
+- [ ] **WhatsApp Business** (Cloud API via Meta): customer DMs → unified inbox, opt-in template sends (booking confirms, reminders)
+- [ ] **Google Business Profile**: reviews sync into 3C reviews dashboard, business info parity
+- [ ] **Google Ads**: account linking + conversion upload (overlaps 3D, but this is the per-tenant linking UX)
+- [ ] **TikTok / TikTok Ads**: lead-form ingestion, Pixel/Events API (modern medspa acquisition channel)
+- [ ] Connection-status dashboard per tenant (token expiring, scope drift, last sync)
+
+**HIPAA note:** Meta, Google, TikTok do not sign BAAs. Anything sent to these platforms must be marketing-context only (consented), never PHI. Per-tenant connector + per-message audit log of what data was transmitted.
+
+**Pull-forward trigger:** if a spa's acquisition pipeline depends on a specific channel (e.g. all leads come through IG DMs), promote that channel's connector to Phase 1 polish without waiting for full 3F scope.
+
 ---
 
 ### Phase 4 — Advanced clinical & ops (Months 7+)
@@ -1044,6 +1060,38 @@ User started Meta App registration. Status as of pause:
 
 ---
 
+### Platform admin portal — tenant provisioning & lifecycle
+
+The platform-admin-facing portal (`platform.lumècrm.com`) currently does the basics: list tenants, create a tenant + Owner via `services.create_tenant_with_defaults`. To onboard a new spa cleanly without manual AWS/Twilio console work, the create-tenant flow needs to fan out into the per-tenant infrastructure each spa requires.
+
+#### P1. Twilio provisioning per tenant
+- [ ] **Subaccount creation** — one Twilio subaccount per tenant on tenant create. Isolated billing, separate auth tokens stored in Secrets Manager under `lume/tenants/<slug>/twilio/*`. Prevents cross-tenant data leakage and lets us see per-tenant Twilio cost.
+- [ ] **A2P 10DLC brand registration** — required to send SMS to US numbers. Brand is per legal entity (the spa's LLC). Admin portal collects EIN, legal name, address, vertical → submits to Twilio Brand API. Brand approval is automated but takes ~minutes to ~hours.
+- [ ] **A2P 10DLC campaign registration** — per messaging use case (appointment reminders, marketing). Carrier review takes 1–3 business days. Admin portal tracks status, surfaces blockers.
+- [ ] **Phone number purchase** — auto-search + provision a local number matching the spa's area code; fallback to admin-pick if unavailable. Attach to messaging service for the campaign.
+- [ ] **Messaging service** — one per tenant, wired to the approved campaign. Inbound webhooks scoped to the tenant.
+- [ ] **Verify service** (separate from messaging) — for OTPs / phone-verification flows.
+- [ ] **Cleanup on tenant suspend/delete** — release number, suspend subaccount, archive audit trail.
+- [ ] **Admin UI**: provisioning status dashboard (brand: pending/approved, campaign: pending/approved/rejected, number: provisioned, webhooks: healthy). One-glance "is this tenant ready to send SMS yet?"
+
+#### P2. SES per-tenant identity (optional)
+- [ ] **Default**: shared `noreply@lumècrm.com` From address (works in SES sandbox until exit).
+- [ ] **Tenant-branded sending**: optionally provision a tenant subdomain (`mail.<tenant>.lumècrm.com`) with DKIM keys per tenant, so emails From the spa's own brand. Adds DNS automation (Route 53 records per tenant) and SES configuration sets. Defer until a spa actually asks.
+
+#### P3. Tenant lifecycle controls
+- [ ] **Status transitions** — Trial → Active → Suspended → Deleted (with grace period). Currently status is set manually; admin portal exposes the transitions with audit log.
+- [ ] **Impersonation** — platform admin can "view as" a tenant user for support, with explicit audit log entry on every session. Required for support at scale.
+- [ ] **Bulk operations** — re-seed demo data, force password reset, broadcast announcement banner.
+- [ ] **Per-tenant feature flags** — gate beta features (e.g. WhatsApp connector, dark mode) per tenant from the admin portal.
+- [ ] **Per-tenant cost visibility** — pull from Twilio subaccount + RDS query stats + S3 usage to surface "this tenant costs $X/mo" so pricing decisions are data-driven.
+
+#### P4. Onboarding automation
+- [ ] **Self-serve trial signup** (vs admin-driven only): public marketing site → trial signup → auto-provision tenant + redirect to onboarding wizard. Gates: prove the manual path works for the first 10–20 spas first.
+- [ ] **Onboarding wizard** (tenant-facing, but triggered by platform admin tenant creation): collect business info, hours, providers, services, hours, branding colors/logo → seeds tenant with realistic defaults so they're not staring at an empty dashboard.
+- [ ] **CSV imports** — staff list, customer list, services. Hand-rolled tooling is fine for first 10 spas; build a UI when the same import is requested 3+ times.
+
+---
+
 ## 4.5 Polish backlog (pre-launch sweep)
 
 We're building forward through Phase 1 features and **deliberately deferring polish** until before the first real-spa launch. Everything in this section is known and intentionally not blocking — we'll close it out in a polish sweep right before going live. Add to this list as new items surface; review top-to-bottom before launch.
@@ -1190,6 +1238,61 @@ Real-world spas will want richer configuration:
 ### Dark mode
 
 - [ ] **Dark mode tokens** — currently shadcn defaults; needs a parallel pass to match the MP096 palette if dark mode becomes a real product requirement.
+
+---
+
+## 4.6 Scale-readiness gate (before opening sales to ~100+ tenants)
+
+The current production stack runs comfortably for the first ~10–20 tenants on minimum-size resources. Before hiring a sales team and pushing toward 1000s of users, these need to be in place — most are not feature work, they're hardening, capacity, and operational maturity. Treat this as a **gate before paid acquisition**, not a phase that runs in parallel with feature work.
+
+### Capacity
+- [ ] **RDS upgrade path** — current `db.t4g.micro` tops out fast. Move to `db.t4g.medium`/`db.t4g.large` (or `db.m7g.large` for production) before crossing ~50 active tenants. Enable PIE.
+- [ ] **RDS Proxy** in front of Postgres — Django opens connections fast; under load Fargate tasks exhaust the connection pool. RDS Proxy multiplexes.
+- [ ] **Read replica** for reporting + analytics queries (Phase 4H, Phase 2 reports) so heavy read load doesn't starve the booking write path.
+- [ ] **ECS service autoscaling** — target tracking on CPU + memory + ALB requests-per-target. Scale 2 → N tasks, with cooldown to prevent thrash.
+- [ ] **ElastiCache Redis** for: Django cache, Celery broker, Channels (if we add real-time), session storage. Single-AZ replication group is fine to start.
+- [ ] **Background job tier** — Celery worker pool on Fargate (separate service), Celery Beat for scheduled jobs. SMS/email sends, batch reports, webhook retries all move off the request path.
+- [ ] **CloudFront** in front of the frontend ALB target. Currently every page load round-trips to Fargate; CDN-cache the static Next chunks at minimum.
+
+### Tenant isolation under load
+- [ ] **Per-tenant rate limits** (DRF throttling keyed on tenant + IP) so a single noisy tenant can't degrade the platform. Currently no rate limits at all.
+- [ ] **Database query timeouts** — short timeout for OLTP queries (5s), longer for explicit report endpoints (30s).
+- [ ] **Async background jobs scoped per tenant** — Celery queues partitioned per tenant, or use prioritization so a tenant doing a 50k-customer CSV import doesn't starve another tenant's appointment reminders.
+- [ ] **Per-tenant Twilio + SES quota dashboards** — see [Platform admin P3] cost visibility; same data drives "this tenant is hammering reminders, alert the success team."
+
+### Observability at scale
+- [ ] **Drop CloudWatch Logs for structured logging to OpenSearch or DataDog** — CloudWatch ingestion costs explode past ~5GB/day. Either ship logs to OpenSearch Service or DataDog with HIPAA BAA.
+- [ ] **APM**: Sentry Performance or DataDog APM for trace-level visibility per tenant.
+- [ ] **Synthetic monitoring** — Route 53 health checks + a CloudWatch Synthetics canary that exercises login + appointment create + payment flow every 5 min.
+- [ ] **Per-tenant SLO dashboards** — request success rate, p95 latency, error rate. Used by support before a tenant calls in.
+
+### Compliance + trust
+- [ ] **SOC 2 Type II audit** — Drata or Vanta + auditor (~$500/mo platform + ~$15–25k one-time audit). Required for selling to spa groups, dermatology chains, anyone with a procurement team.
+- [ ] **HIPAA risk assessment + ongoing review** — annual.
+- [ ] **Penetration test** — annual third-party pentest. Required for SOC 2 and many enterprise procurement checklists.
+- [ ] **Disaster recovery drill** — actually restore from backup quarterly. Document RPO/RTO. Untested backups are not backups.
+- [ ] **Business continuity plan** — what happens if AWS us-east-1 goes down; what happens if the founder is hit by a bus.
+
+### Billing + revenue ops
+- [ ] **Billing infrastructure** — Stripe (or competitor) integration: per-tenant subscription, per-seat or per-tenant pricing, usage-based add-ons (SMS overage, additional locations). Currently no Stripe at all (deliberate for Phase 0–1).
+- [ ] **Invoicing for failed payments + dunning** — automated retries, grace periods, tenant-status transitions on persistent failure.
+- [ ] **Tax handling** — sales tax for SaaS where applicable. TaxJar / Stripe Tax integration when crossing nexus.
+
+### Operational maturity
+- [ ] **On-call rotation + paging** — PagerDuty or Opsgenie tied to CloudWatch alarms. Today the alarm email goes to `codenestwebstudios@gmail.com`; that doesn't survive once there's a team.
+- [ ] **Runbooks for every alarm** — every alarm has a linked runbook. Currently only 4 runbooks exist.
+- [ ] **Customer support tooling** — ticketing (Linear / Help Scout / Plain.com with BAA), impersonation [Platform admin P3], audit-log searchability.
+- [ ] **Status page** — public status page (Atlassian Statuspage or Instatus). Required for enterprise sale conversations.
+- [ ] **Documentation site** — customer-facing help docs, API docs (drf-spectacular output published).
+
+### Team hiring (parallel to gate)
+- [ ] **Hire 1: Senior backend engineer** — owns scale-readiness implementation above. Need someone who has run Django at scale.
+- [ ] **Hire 2: Customer success + onboarding** — manual handholding for first 50 spas. Drives the onboarding wizard product spec.
+- [ ] **Hire 3: Sales** — once unit economics are validated by first 10–20 paying spas.
+- [ ] **Hire 4: Frontend engineer** — once the polish backlog (§4.5) is more work than one person can ship per quarter.
+- [ ] **Founder role transition** — at ~10 paying spas, founder time is best spent on product strategy + key customer conversations, not infra debugging. The gate above is the runway to that transition.
+
+**Definition of done for this gate**: the platform can take a new tenant from signup → onboarded → sending real customer SMS/email in <30 min with zero founder intervention, and a sustained 1000-tenant load test passes with p95 < 500ms on the booking flow.
 
 ---
 
