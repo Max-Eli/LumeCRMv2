@@ -16,7 +16,26 @@ read-only) for output, so consumers only have to send a list of integers.
 from django.utils import timezone as djtz
 from rest_framework import serializers
 
+from apps.tenants.permissions import P
+
 from .models import Customer, CustomerTag
+
+
+# Fields the `CustomerDetailSerializer` redacts when the requesting user
+# lacks `VIEW_CLIENT_PHI`. The set tracks 45 CFR 164.514's HIPAA identifiers
+# applicable to a CRM record: birthdate, geographic subdivisions smaller than
+# state, and any free-text field that routinely contains clinical impressions.
+# Contact fields (email, phone) are intentionally NOT redacted: front-desk
+# staff need them to call/email about bookings, and the email/phone of a
+# spa client is not a HIPAA identifier when not combined with diagnosis.
+# See ADR 0017.
+PHI_FIELDS = frozenset({
+    'date_of_birth', 'sex',
+    'address_line1', 'address_line2', 'city', 'state', 'zip_code',
+    'emergency_name', 'emergency_phone', 'emergency_relationship',
+    'medical_history', 'allergies', 'medications', 'skin_type_fitzpatrick',
+    'notes',
+})
 
 
 class CustomerTagSerializer(serializers.ModelSerializer):
@@ -114,6 +133,49 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
             'email_marketing_suppressed_at', 'sms_marketing_suppressed_at',
             'email_marketing_suppression_source', 'sms_marketing_suppression_source',
         ]
+
+    def _requesting_user_can_view_phi(self) -> bool:
+        """True if the request context's membership holds `VIEW_CLIENT_PHI`,
+        or the request is from a platform superuser. False otherwise
+        (anonymous, missing membership, lacking permission)."""
+        request = self.context.get('request')
+        if request is None:
+            return True
+        user = getattr(request, 'user', None)
+        if user is None or not user.is_authenticated:
+            return False
+        if getattr(user, 'is_superuser', False):
+            return True
+        membership = getattr(request, 'tenant_membership', None)
+        if membership is None:
+            return False
+        return membership.has(P.VIEW_CLIENT_PHI)
+
+    def to_representation(self, instance: Customer) -> dict:
+        """Omit PHI fields entirely (not just null them) when the requester
+        lacks `VIEW_CLIENT_PHI`. Frontend renders the absent fields as
+        unavailable rather than empty — see ADR 0017."""
+        data = super().to_representation(instance)
+        if not self._requesting_user_can_view_phi():
+            for f in PHI_FIELDS:
+                data.pop(f, None)
+        return data
+
+    def validate(self, attrs: dict) -> dict:
+        """Defense-in-depth: a user without `VIEW_CLIENT_PHI` cannot WRITE
+        PHI fields either. Otherwise a malicious front-desk user could
+        blind-overwrite a medical-history field they can't read. We
+        reject the request rather than silently dropping, so the caller
+        sees they're not authorized — surfacing the boundary is more
+        defensible than swallowing it."""
+        if not self._requesting_user_can_view_phi():
+            sent_phi = sorted(set(attrs.keys()) & PHI_FIELDS)
+            if sent_phi:
+                raise serializers.ValidationError({
+                    f: 'You do not have permission to set this field.'
+                    for f in sent_phi
+                })
+        return attrs
 
     def update(self, instance: Customer, validated_data: dict) -> Customer:
         """Stamp consent metadata when an operator flips a marketing
