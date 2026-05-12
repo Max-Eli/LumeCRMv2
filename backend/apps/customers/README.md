@@ -46,10 +46,18 @@ The `external_id` field is indexed per tenant. The Zenoti importer (Phase 1J) wi
 
 Tags are tenant-scoped — each tenant defines its own tag list in the admin. Tags are display-only (color + name) and DO NOT grant or restrict permissions.
 
+## PHI redaction (Phase 1A.1 hardening, shipped 2026-05-12)
+
+`CustomerDetailSerializer` redacts PHI fields when the requesting user's `TenantMembership` does not hold `VIEW_CLIENT_PHI`. Both halves are enforced:
+
+- **Read side**: `to_representation` omits the redacted fields entirely (key absent from JSON, not nulled). The `PHI_FIELDS` constant in `serializers.py` defines the set.
+- **Write side**: `validate` rejects the request atomically (HTTP 400, per-field error) if a non-PHI user includes any PHI field in their payload. No partial writes.
+
+Roles without `VIEW_CLIENT_PHI` (front desk, marketing) see the customer's name, email, phone, tags, status, and marketing consent. They do not see DOB, address, emergency contact, medical history, allergies, medications, Fitzpatrick, or free-text notes. See [ADR 0017](../../../docs/decisions/0017-phi-redaction.md) for the full rationale + HIPAA framing.
+
 ## What's NOT here yet
 
-- **PHI field hiding for users without `VIEW_CLIENT_PHI`.** Currently the `CustomerDetailSerializer` returns medical fields to anyone with `VIEW_CLIENT_LIST`. Hardening to drop PHI fields when the user lacks `VIEW_CLIENT_PHI` is on the Phase 1A.1 list.
-- **Customer notes (provider-only, internal).** Separate model coming with the chart system in Phase 4.
+- **Customer notes (provider-only, internal).** Separate model coming with the chart system in Phase 4. (Shipped as `ChartNote` — see [ADR 0015](../../../docs/decisions/0015-clinical-chart-notes.md).)
 - **Photo / file attachments.** Wait for S3 in Phase 0c.
 
 ## Patterns to copy when building the next PHI feature

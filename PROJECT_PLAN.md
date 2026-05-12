@@ -304,7 +304,7 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 - [x] `apps/customers/README.md` documenting the API + the pattern to copy for future PHI features (completed 2026-04-30)
 - [x] Edit mode on detail page — Profile tab is the editable form; Save/Discard with sticky action bar (completed 2026-04-30)
 - [x] `useUpdateCustomer` hook + PATCH `/api/customers/{id}/` round-trip (completed 2026-04-30)
-- [ ] PHI field hiding for users without `VIEW_CLIENT_PHI` (Phase 1A.1 hardening)
+- [x] PHI field hiding for users without `VIEW_CLIENT_PHI` (Phase 1A.1 hardening) — shipped 2026-05-12. `CustomerDetailSerializer` redacts PHI on read (omits keys from response) and rejects PHI on write atomically. Frontend `/clients/[id]` Overview + Profile tabs hide PHI sections for non-PHI roles and render a `PhiRedactedBanner`. 8 tests cover both halves. See [ADR 0017](docs/decisions/0017-phi-redaction.md).
 
 #### 1A.3. Tabbed client detail shell ✅ (completed 2026-04-30)
 *Customer detail page is structured as a "client 360" view with hero (avatar + name + status + referral code chip) persistent across all tabs. Active tab driven by `?tab=` query param so deep links work.*
@@ -324,14 +324,14 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 - [ ] **Notifications** — placeholder; fills in with Phase 1F (SMS reminder send log)
 - [ ] **Gallery** — placeholder; fills in with Phase 4B (before/after photos)
 
-#### 1A.4. Customer notes (provider-only thread)
-*Separate from the single `notes` text field. A timestamped, append-mostly stream of notes per customer — staff can add, see who said what, and when. Provider-only by default with permission gating.*
+#### 1A.4. Customer notes (provider-only thread) ✅ (completed — shipped as clinical chart notes; scope expanded mid-build)
+*Shipped as a clinical chart-notes system rather than a generic notes thread — see [ADR 0015 — Clinical chart notes](docs/decisions/0015-clinical-chart-notes.md). The 5 original items below are subsumed by the expanded scope: addendum-on-locked-note pattern, void-with-reason audit trail, 60-minute edit window with explicit lock badge, clinical-role gate via `canSignCharts` / `canViewCharts`.*
 
-- [ ] `CustomerNote` model — FK to Customer + author (User) + body text + visibility (`provider_only` / `all_staff`) + created_at (immutable after a short edit window, like Slack)
-- [ ] DRF API at `/api/customers/{id}/notes/` (list + create)
-- [ ] Permission gating: `provider_only` notes need `VIEW_CHART` permission
-- [ ] Frontend Notes tab — chronological feed, "Add note" composer at top, author avatar + timestamp on each entry
-- [ ] Audit log on every note read (sensitive — usually contains clinical impressions)
+- [x] `ChartNote` model — author + body + parent_note_id (addenda) + voided_at/voided_reason + signed_at + locks 60 min after signing
+- [x] DRF API at `/api/customers/{id}/chart-notes/` (list + create + update + void + addendum)
+- [x] Permission gating: `VIEW_CHART` / `SIGN_CHART` / `VOID_CHART` permissions; non-clinical roles see explicit "no access" state
+- [x] Frontend Notes tab — chronological feed, "Sign note" composer at top, addendum threading, lock badge with minutes-remaining, void confirmation flow
+- [x] Audit log on every note read + write (sensitive — clinical impressions and procedure-context data)
 
 #### 1A.2. Customer referrals — capture layer
 *Each client gets a unique referral code; new-client form has a "Referred by code" field; admin shows referrer→referred relationships. No reward logic in this phase — that lands with payments in Phase 2H.*
@@ -1238,6 +1238,18 @@ Real-world spas will want richer configuration:
 ### Dark mode
 
 - [ ] **Dark mode tokens** — currently shadcn defaults; needs a parallel pass to match the MP096 palette if dark mode becomes a real product requirement.
+
+---
+
+## 4.55 Week-1 post-launch hardening (must finish within 7 days of first production send)
+
+Short-fuse items committed to during launch. Each one is something we either claimed to AWS / customers / ourselves as "done" or that risks an incident if left unbuilt. These belong above §4.5 polish in priority — they are launch-debt, not polish.
+
+- [ ] **SES bounce/complaint → SNS pipeline**. Currently the SES Account dashboard is checked manually. We told AWS in the production-access request that this will be wired up "within one week of going live." Implementation: SNS topic + `aws_sesv2_configuration_set` with event destination + Django webhook receiver (verify X.509 signature) + `Suppression` model + suppression check in the send path. **Risk if not done:** bounced-address loops degrade sender reputation; complaints aren't honored as global unsubscribes.
+- [ ] **Set the SES configuration set on every outbound message.** Even after the pipeline exists, the Django `send_mail` call must reference the config set name (`ConfigurationSetName` parameter on SES SendEmail) or events don't get published.
+- [ ] **Database backup restore drill**. Take an RDS snapshot, restore it into a new instance, confirm the app can run against it. Untested backups aren't backups. Schedule first drill at the 30-day mark, quarterly after.
+- [ ] **CloudWatch alarm on SES bounce rate** at 3% (warning) and 5% (critical). 5% is where SES starts threatening account pauses.
+- [ ] **Tighten DMARC alignment to strict** (`aspf=s; adkim=s`) after 30 days of clean DMARC reports. MAIL FROM and DKIM are both aligned today; relaxed mode is the safety belt while we watch for false positives in the reports.
 
 ---
 
