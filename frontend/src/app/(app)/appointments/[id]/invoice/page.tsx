@@ -24,6 +24,7 @@ import {
   Gift,
   Layers,
   Loader2,
+  Mail,
   Package as PackageIcon,
   Plus,
   Repeat,
@@ -40,6 +41,14 @@ import { PageHeader } from '@/components/page-header';
 import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import {
   Select,
@@ -61,6 +70,7 @@ import {
   useAddInvoiceLine,
   useApplyGiftCard,
   useCloseInvoice,
+  useEmailInvoice,
   useInvoiceForAppointment,
   useRedeemFromMembership,
   useRedeemFromPackage,
@@ -167,6 +177,96 @@ function parsePdfFilename(header: string | null): string | null {
   return m ? decodeURIComponent(m[1]) : null;
 }
 
+/** Email-this-invoice-to-the-client button.
+ *
+ *  - Disabled (with tooltip) when the customer has no email on file.
+ *    The backend would 400 anyway; disabling the button surfaces the
+ *    boundary before the click and points the operator at the fix
+ *    (update the customer profile).
+ *  - Click → confirmation dialog showing the recipient. No silent
+ *    sends to PHI-bearing addresses. */
+function EmailInvoiceButton({ invoice }: { invoice: Invoice }) {
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const email = invoice.customer.email?.trim() ?? '';
+  const canSend = email.length > 0;
+  const sendEmail = useEmailInvoice(invoice.id);
+
+  const handleConfirm = () => {
+    sendEmail.mutate(undefined, {
+      onSuccess: (data) => {
+        toast.success(`Invoice sent to ${data.recipient}`);
+        setConfirmOpen(false);
+      },
+      onError: (err) => {
+        if (err instanceof ApiError && err.status === 400) {
+          const detail =
+            typeof err.body === 'object' && err.body && 'detail' in err.body
+              ? String((err.body as { detail: unknown }).detail)
+              : 'Could not send invoice.';
+          toast.error(detail);
+        } else {
+          toast.error('Could not send invoice. Please try again.');
+        }
+      },
+    });
+  };
+
+  return (
+    <>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
+        onClick={() => setConfirmOpen(true)}
+        disabled={!canSend}
+        className="gap-1.5"
+        title={canSend ? '' : 'Add an email to the customer profile to send invoices.'}
+      >
+        <Mail className="size-3.5" aria-hidden />
+        Email to client
+      </Button>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle className="font-serif">Send invoice to client</DialogTitle>
+            <DialogDescription>
+              We&rsquo;ll email{' '}
+              <strong>
+                {invoice.invoice_number || `invoice #${invoice.id}`}
+              </strong>{' '}
+              to <strong>{email}</strong> with the PDF attached.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="rounded-md bg-muted/40 px-3 py-2 text-xs text-muted-foreground">
+            The send is logged in the audit trail with your name and a
+            timestamp. Each click sends a fresh copy — no deduplication.
+          </div>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setConfirmOpen(false)}
+              disabled={sendEmail.isPending}
+            >
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              onClick={handleConfirm}
+              disabled={sendEmail.isPending}
+              className="gap-1.5"
+            >
+              <Mail className="size-3.5" aria-hidden />
+              {sendEmail.isPending ? 'Sending…' : 'Send invoice'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
 interface InvoicePageProps {
   params: Promise<{ id: string }>;
 }
@@ -232,6 +332,7 @@ function InvoiceBody({
         back={{ href: '/calendar', label: 'Back to calendar' }}
         actions={
           <div className="flex items-center gap-2">
+            <EmailInvoiceButton invoice={invoice} />
             <DownloadPdfButton invoice={invoice} />
             <StatusBadge tone={INVOICE_STATUS_TONE[invoice.status]}>
               {INVOICE_STATUS_LABELS[invoice.status]}

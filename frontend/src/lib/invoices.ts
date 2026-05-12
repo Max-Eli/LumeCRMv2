@@ -80,6 +80,8 @@ export interface InvoiceCustomerSummary {
   first_name: string;
   last_name: string;
   full_name: string;
+  email: string;
+  phone: string;
 }
 
 export interface InvoiceAppointmentSummary {
@@ -270,6 +272,24 @@ export function useCloseInvoice(invoiceId: number) {
       }
       qc.invalidateQueries({ queryKey: ['appointments'] });
     },
+  });
+}
+
+/** Server response from POST /api/invoices/{id}/email/. */
+export interface EmailInvoiceResponse {
+  recipient: string;
+}
+
+/**
+ * Email the invoice (PDF attached) to the customer of record. 403
+ * if the caller lacks PROCESS_PAYMENT (owner / manager / front desk);
+ * 400 if the customer has no email on file (the operator should fix
+ * the profile first). Each call sends a fresh email — no
+ * deduplication.
+ */
+export function useEmailInvoice(invoiceId: number) {
+  return useMutation<EmailInvoiceResponse, Error, void>({
+    mutationFn: () => api.post<EmailInvoiceResponse>(`/api/invoices/${invoiceId}/email/`, undefined),
   });
 }
 
