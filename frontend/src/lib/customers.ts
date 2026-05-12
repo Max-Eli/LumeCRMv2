@@ -110,6 +110,19 @@ export interface CreateCustomerInput {
   tag_ids?: number[];
 }
 
+/** Role-based UI gate for PHI sections on the customer detail screen.
+ *  Mirrors `VIEW_CLIENT_PHI` in `apps/tenants/permissions.py`. The
+ *  server is the security boundary; this hook only decides whether to
+ *  render the section, since the server already redacts PHI fields
+ *  from the response and rejects PHI writes for these roles.
+ *
+ *  Keep in sync with `ROLE_DEFAULTS` in the backend permission catalog. */
+export function canViewClientPHI(
+  role: 'owner' | 'manager' | 'front_desk' | 'provider' | 'bookkeeper' | 'marketing' | undefined,
+): boolean {
+  return role === 'owner' || role === 'manager' || role === 'provider';
+}
+
 const CUSTOMERS_KEY = ['customers'] as const;
 
 function customerKey(id: number) {

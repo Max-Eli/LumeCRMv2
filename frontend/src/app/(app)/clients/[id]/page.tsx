@@ -24,6 +24,7 @@ import {
   Gift,
   Heart,
   Image as ImageIcon,
+  Lock,
   Mail,
   MapPin,
   Megaphone,
@@ -69,6 +70,7 @@ import {
 import { cn } from '@/lib/utils';
 import {
   type CustomerDetail,
+  canViewClientPHI,
   useCustomer,
   useUpdateCustomer,
 } from '@/lib/customers';
@@ -317,35 +319,43 @@ function TabsNav({ active }: { active: string }) {
 // ── Overview tab ─────────────────────────────────────────────────────────
 
 function OverviewTab({ customer }: { customer: CustomerDetail }) {
-  const dob = customer.date_of_birth ? formatDate(customer.date_of_birth) : null;
-  const age = customer.date_of_birth ? computeAge(customer.date_of_birth) : null;
+  const me = useCurrentMembership();
+  const canPHI = canViewClientPHI(me?.role);
+  const dob = canPHI && customer.date_of_birth ? formatDate(customer.date_of_birth) : null;
+  const age = canPHI && customer.date_of_birth ? computeAge(customer.date_of_birth) : null;
 
   return (
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <ContactCell icon={<Mail className="size-4" />} label="Email" value={customer.email} />
         <ContactCell icon={<Mail className="size-4" />} label="Phone" value={customer.phone} />
-        <ContactCell
-          icon={<User className="size-4" />}
-          label="Date of birth"
-          value={dob ? `${dob}${age ? ` · ${age} yr` : ''}` : null}
-        />
+        {canPHI ? (
+          <ContactCell
+            icon={<User className="size-4" />}
+            label="Date of birth"
+            value={dob ? `${dob}${age ? ` · ${age} yr` : ''}` : null}
+          />
+        ) : null}
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <SectionCard title="Address" icon={<MapPin className="size-4" />}>
-          <Row label="Street" value={customer.address_line1} />
-          <Row label="Apt / Suite" value={customer.address_line2} />
-          <Row label="City" value={customer.city} />
-          <Row label="State" value={customer.state} />
-          <Row label="Zip" value={customer.zip_code} />
-        </SectionCard>
+        {canPHI ? (
+          <>
+            <SectionCard title="Address" icon={<MapPin className="size-4" />}>
+              <Row label="Street" value={customer.address_line1} />
+              <Row label="Apt / Suite" value={customer.address_line2} />
+              <Row label="City" value={customer.city} />
+              <Row label="State" value={customer.state} />
+              <Row label="Zip" value={customer.zip_code} />
+            </SectionCard>
 
-        <SectionCard title="Emergency contact" icon={<Shield className="size-4" />}>
-          <Row label="Name" value={customer.emergency_name} />
-          <Row label="Phone" value={customer.emergency_phone} />
-          <Row label="Relationship" value={customer.emergency_relationship} />
-        </SectionCard>
+            <SectionCard title="Emergency contact" icon={<Shield className="size-4" />}>
+              <Row label="Name" value={customer.emergency_name} />
+              <Row label="Phone" value={customer.emergency_phone} />
+              <Row label="Relationship" value={customer.emergency_relationship} />
+            </SectionCard>
+          </>
+        ) : null}
 
         <SectionCard title="Marketing" icon={<Megaphone className="size-4" />}>
           <Row label="Email opt-in" value={customer.email_opt_in ? 'Yes' : 'No'} />
@@ -353,30 +363,36 @@ function OverviewTab({ customer }: { customer: CustomerDetail }) {
           <Row label="Referral source" value={customer.referral_source} />
         </SectionCard>
 
-        <SectionCard title="Demographics" icon={<Heart className="size-4" />}>
-          <Row label="Sex" value={customer.sex} />
-          <Row
-            label="Skin type (Fitzpatrick)"
-            value={customer.skin_type_fitzpatrick ? `Type ${customer.skin_type_fitzpatrick}` : null}
-          />
-        </SectionCard>
+        {canPHI ? (
+          <SectionCard title="Demographics" icon={<Heart className="size-4" />}>
+            <Row label="Sex" value={customer.sex} />
+            <Row
+              label="Skin type (Fitzpatrick)"
+              value={customer.skin_type_fitzpatrick ? `Type ${customer.skin_type_fitzpatrick}` : null}
+            />
+          </SectionCard>
+        ) : null}
       </div>
 
-      <Card className="border-accent/30 bg-accent/[0.04]">
-        <CardHeader className="flex-row items-center gap-2 space-y-0">
-          <Stethoscope className="size-4 text-accent" />
-          <CardTitle className="text-sm font-medium uppercase tracking-wide">
-            Medical (PHI)
-          </CardTitle>
-        </CardHeader>
-        <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
-          <PhiBlock label="Medical history" value={customer.medical_history} />
-          <PhiBlock label="Allergies" value={customer.allergies} />
-          <PhiBlock label="Medications" value={customer.medications} />
-        </CardContent>
-      </Card>
+      {canPHI ? (
+        <Card className="border-accent/30 bg-accent/[0.04]">
+          <CardHeader className="flex-row items-center gap-2 space-y-0">
+            <Stethoscope className="size-4 text-accent" />
+            <CardTitle className="text-sm font-medium uppercase tracking-wide">
+              Medical (PHI)
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="grid grid-cols-1 md:grid-cols-3 gap-6 text-sm">
+            <PhiBlock label="Medical history" value={customer.medical_history} />
+            <PhiBlock label="Allergies" value={customer.allergies} />
+            <PhiBlock label="Medications" value={customer.medications} />
+          </CardContent>
+        </Card>
+      ) : (
+        <PhiRedactedBanner />
+      )}
 
-      {customer.notes ? (
+      {canPHI && customer.notes ? (
         <Card>
           <CardHeader>
             <CardTitle className="text-sm font-medium uppercase tracking-wide">Notes</CardTitle>
@@ -388,6 +404,24 @@ function OverviewTab({ customer }: { customer: CustomerDetail }) {
       <p className="text-xs text-muted-foreground">
         Created {formatDate(customer.created_at)} · Updated {formatDate(customer.updated_at)}
       </p>
+    </div>
+  );
+}
+
+function PhiRedactedBanner() {
+  return (
+    <div className="rounded-lg border border-dashed bg-muted/20 p-5 flex items-start gap-3">
+      <div className="inline-flex size-9 shrink-0 items-center justify-center rounded-full bg-card text-muted-foreground border">
+        <Lock className="size-4" />
+      </div>
+      <div className="text-sm leading-relaxed">
+        <p className="font-medium text-foreground">PHI hidden for your role</p>
+        <p className="text-muted-foreground text-xs mt-1 max-w-prose">
+          Medical history, address, emergency contact, demographics, and free-text
+          notes are restricted to clinical roles (provider / manager / owner). This
+          is HIPAA minimum-necessary access — by design.
+        </p>
+      </div>
     </div>
   );
 }
@@ -455,6 +489,8 @@ function customerToFormValues(c: CustomerDetail): ProfileFormValues {
 function ProfileTab({ customer }: { customer: CustomerDetail }) {
   const router = useRouter();
   const update = useUpdateCustomer(customer.id);
+  const me = useCurrentMembership();
+  const canPHI = canViewClientPHI(me?.role);
   const form = useForm<ProfileFormValues>({
     resolver: zodResolver(profileSchema),
     defaultValues: customerToFormValues(customer),
@@ -468,12 +504,37 @@ function ProfileTab({ customer }: { customer: CustomerDetail }) {
 
   const onSubmit = (values: ProfileFormValues) => {
     const skin = values.skin_type_fitzpatrick.trim();
-    const payload = {
-      ...values,
+    const phiPayload = canPHI ? {
       date_of_birth: values.date_of_birth || null,
       sex: values.sex || undefined,
       state: values.state ? values.state.toUpperCase() : '',
       skin_type_fitzpatrick: skin === '' ? null : Number(skin),
+      address_line1: values.address_line1,
+      address_line2: values.address_line2,
+      city: values.city,
+      zip_code: values.zip_code,
+      emergency_name: values.emergency_name,
+      emergency_phone: values.emergency_phone,
+      emergency_relationship: values.emergency_relationship,
+      medical_history: values.medical_history,
+      allergies: values.allergies,
+      medications: values.medications,
+      notes: values.notes,
+    } : {};
+    // Always-safe (non-PHI) fields. Server-side IAM is the boundary;
+    // omitting PHI from the payload for non-PHI roles is also how we
+    // avoid surfacing a 400 on a save that was for a non-PHI change.
+    const payload = {
+      first_name: values.first_name,
+      last_name: values.last_name,
+      preferred_name: values.preferred_name,
+      email: values.email,
+      phone: values.phone,
+      status: values.status,
+      referral_source: values.referral_source,
+      email_opt_in: values.email_opt_in,
+      sms_opt_in: values.sms_opt_in,
+      ...phiPayload,
     };
     update.mutate(payload, {
       onSuccess: (updated) => {
@@ -557,116 +618,122 @@ function ProfileTab({ customer }: { customer: CustomerDetail }) {
           </div>
         </Section>
 
-        <Section title="Personal" icon={<Heart className="size-4" />}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Field>
-              <FieldLabel htmlFor="date_of_birth">Date of birth</FieldLabel>
-              <Input id="date_of_birth" type="date" {...form.register('date_of_birth')} />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="sex">Sex</FieldLabel>
-              <Select
-                value={watched.sex}
-                onValueChange={(value) =>
-                  form.setValue('sex', (value || '') as ProfileFormValues['sex'], { shouldDirty: true })
-                }
-              >
-                <SelectTrigger id="sex" className="w-full">
-                  <SelectValue placeholder="Select sex" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="female">Female</SelectItem>
-                  <SelectItem value="male">Male</SelectItem>
-                  <SelectItem value="other">Other</SelectItem>
-                  <SelectItem value="prefer_not_to_say">Prefer not to say</SelectItem>
-                </SelectContent>
-              </Select>
-            </Field>
-          </div>
-          <Field>
-            <FieldLabel htmlFor="skin_type_fitzpatrick">Skin type (Fitzpatrick 1–6)</FieldLabel>
-            <Input
-              id="skin_type_fitzpatrick"
-              type="number"
-              min={1}
-              max={6}
-              className="w-32"
-              {...form.register('skin_type_fitzpatrick')}
-            />
-          </Field>
-        </Section>
+        {canPHI ? (
+          <>
+            <Section title="Personal" icon={<Heart className="size-4" />}>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Field>
+                  <FieldLabel htmlFor="date_of_birth">Date of birth</FieldLabel>
+                  <Input id="date_of_birth" type="date" {...form.register('date_of_birth')} />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="sex">Sex</FieldLabel>
+                  <Select
+                    value={watched.sex}
+                    onValueChange={(value) =>
+                      form.setValue('sex', (value || '') as ProfileFormValues['sex'], { shouldDirty: true })
+                    }
+                  >
+                    <SelectTrigger id="sex" className="w-full">
+                      <SelectValue placeholder="Select sex" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="female">Female</SelectItem>
+                      <SelectItem value="male">Male</SelectItem>
+                      <SelectItem value="other">Other</SelectItem>
+                      <SelectItem value="prefer_not_to_say">Prefer not to say</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </Field>
+              </div>
+              <Field>
+                <FieldLabel htmlFor="skin_type_fitzpatrick">Skin type (Fitzpatrick 1–6)</FieldLabel>
+                <Input
+                  id="skin_type_fitzpatrick"
+                  type="number"
+                  min={1}
+                  max={6}
+                  className="w-32"
+                  {...form.register('skin_type_fitzpatrick')}
+                />
+              </Field>
+            </Section>
 
-        <Section title="Address" icon={<MapPin className="size-4" />}>
-          <Field>
-            <FieldLabel htmlFor="address_line1">Street</FieldLabel>
-            <Input id="address_line1" {...form.register('address_line1')} />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="address_line2">Apt / Suite</FieldLabel>
-            <Input id="address_line2" {...form.register('address_line2')} />
-          </Field>
-          <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
-            <Field className="md:col-span-3">
-              <FieldLabel htmlFor="city">City</FieldLabel>
-              <Input id="city" {...form.register('city')} />
-            </Field>
-            <Field className="md:col-span-1">
-              <FieldLabel htmlFor="state">State</FieldLabel>
-              <Input id="state" maxLength={2} {...form.register('state')} />
-            </Field>
-            <Field className="md:col-span-2">
-              <FieldLabel htmlFor="zip_code">ZIP</FieldLabel>
-              <Input id="zip_code" {...form.register('zip_code')} />
-            </Field>
-          </div>
-        </Section>
+            <Section title="Address" icon={<MapPin className="size-4" />}>
+              <Field>
+                <FieldLabel htmlFor="address_line1">Street</FieldLabel>
+                <Input id="address_line1" {...form.register('address_line1')} />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="address_line2">Apt / Suite</FieldLabel>
+                <Input id="address_line2" {...form.register('address_line2')} />
+              </Field>
+              <div className="grid grid-cols-1 md:grid-cols-6 gap-4">
+                <Field className="md:col-span-3">
+                  <FieldLabel htmlFor="city">City</FieldLabel>
+                  <Input id="city" {...form.register('city')} />
+                </Field>
+                <Field className="md:col-span-1">
+                  <FieldLabel htmlFor="state">State</FieldLabel>
+                  <Input id="state" maxLength={2} {...form.register('state')} />
+                </Field>
+                <Field className="md:col-span-2">
+                  <FieldLabel htmlFor="zip_code">ZIP</FieldLabel>
+                  <Input id="zip_code" {...form.register('zip_code')} />
+                </Field>
+              </div>
+            </Section>
 
-        <Section title="Emergency contact" icon={<Shield className="size-4" />}>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <Field>
-              <FieldLabel htmlFor="emergency_name">Name</FieldLabel>
-              <Input id="emergency_name" {...form.register('emergency_name')} />
-            </Field>
-            <Field>
-              <FieldLabel htmlFor="emergency_phone">Phone</FieldLabel>
-              <Input id="emergency_phone" type="tel" {...form.register('emergency_phone')} />
-            </Field>
-          </div>
-          <Field>
-            <FieldLabel htmlFor="emergency_relationship">Relationship</FieldLabel>
-            <Input id="emergency_relationship" {...form.register('emergency_relationship')} />
-          </Field>
-        </Section>
+            <Section title="Emergency contact" icon={<Shield className="size-4" />}>
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                <Field>
+                  <FieldLabel htmlFor="emergency_name">Name</FieldLabel>
+                  <Input id="emergency_name" {...form.register('emergency_name')} />
+                </Field>
+                <Field>
+                  <FieldLabel htmlFor="emergency_phone">Phone</FieldLabel>
+                  <Input id="emergency_phone" type="tel" {...form.register('emergency_phone')} />
+                </Field>
+              </div>
+              <Field>
+                <FieldLabel htmlFor="emergency_relationship">Relationship</FieldLabel>
+                <Input id="emergency_relationship" {...form.register('emergency_relationship')} />
+              </Field>
+            </Section>
 
-        <Section title="Medical (PHI)" icon={<Stethoscope className="size-4 text-accent" />}>
-          <Field>
-            <FieldLabel htmlFor="medical_history">Medical history</FieldLabel>
-            <textarea
-              id="medical_history"
-              rows={3}
-              className="flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-              {...form.register('medical_history')}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="allergies">Allergies</FieldLabel>
-            <textarea
-              id="allergies"
-              rows={2}
-              className="flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-              {...form.register('allergies')}
-            />
-          </Field>
-          <Field>
-            <FieldLabel htmlFor="medications">Medications</FieldLabel>
-            <textarea
-              id="medications"
-              rows={2}
-              className="flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-              {...form.register('medications')}
-            />
-          </Field>
-        </Section>
+            <Section title="Medical (PHI)" icon={<Stethoscope className="size-4 text-accent" />}>
+              <Field>
+                <FieldLabel htmlFor="medical_history">Medical history</FieldLabel>
+                <textarea
+                  id="medical_history"
+                  rows={3}
+                  className="flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                  {...form.register('medical_history')}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="allergies">Allergies</FieldLabel>
+                <textarea
+                  id="allergies"
+                  rows={2}
+                  className="flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                  {...form.register('allergies')}
+                />
+              </Field>
+              <Field>
+                <FieldLabel htmlFor="medications">Medications</FieldLabel>
+                <textarea
+                  id="medications"
+                  rows={2}
+                  className="flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                  {...form.register('medications')}
+                />
+              </Field>
+            </Section>
+          </>
+        ) : (
+          <PhiRedactedBanner />
+        )}
 
         <Section title="CRM" icon={<ClipboardList className="size-4" />}>
           <Field>
@@ -677,15 +744,17 @@ function ProfileTab({ customer }: { customer: CustomerDetail }) {
               {...form.register('referral_source')}
             />
           </Field>
-          <Field>
-            <FieldLabel htmlFor="notes">General notes</FieldLabel>
-            <textarea
-              id="notes"
-              rows={3}
-              className="flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
-              {...form.register('notes')}
-            />
-          </Field>
+          {canPHI ? (
+            <Field>
+              <FieldLabel htmlFor="notes">General notes</FieldLabel>
+              <textarea
+                id="notes"
+                rows={3}
+                className="flex w-full rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
+                {...form.register('notes')}
+              />
+            </Field>
+          ) : null}
         </Section>
 
         <Section title="Communication preferences" icon={<Megaphone className="size-4" />}>
