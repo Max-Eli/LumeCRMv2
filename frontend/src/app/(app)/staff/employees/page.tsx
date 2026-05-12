@@ -35,7 +35,6 @@
 
 import { Ban, Check, ChevronRight, Clock, Search, Shield, UserPlus } from 'lucide-react';
 import Link from 'next/link';
-import { useRouter } from 'next/navigation';
 import { useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -72,7 +71,6 @@ import { cn } from '@/lib/utils';
 import { AddEmployeeSheet } from '../_components/add-employee-sheet';
 
 export default function StaffSettingsPage() {
-  const router = useRouter();
   // Roster scoped to the active location: this page lives under the
   // sidebar's "Location · {name}" group, so its content should match
   // the calendar / dashboard's scope. Cross-location management lives
@@ -192,11 +190,6 @@ export default function StaffSettingsPage() {
         <AddEmployeeSheet
           open={addOpen}
           onOpenChange={setAddOpen}
-          onCreated={(emp) => {
-            // Pre-warm the detail route so the click after closing the
-            // share-credentials panel feels instant.
-            router.prefetch(`/staff/employees/${emp.id}`);
-          }}
         />
       ) : null}
     </div>

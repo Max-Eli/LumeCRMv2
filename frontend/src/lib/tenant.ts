@@ -364,12 +364,56 @@ export function useUpdateEmployee(membershipId: number) {
 /** Create a new employee. Returns the detail PLUS a one-time
  *  `temp_password` if a brand-new user was created. Caller MUST surface
  *  the password to the operator immediately — it's not stored anywhere
- *  recoverable on the server. */
+ *  recoverable on the server.
+ *
+ *  Legacy direct-add flow. Preferred path for new hires is now
+ *  `useInviteEmployee` (email-tokenized link). The direct-add stays
+ *  around for attaching existing-user accounts who already use Lumè
+ *  at another spa — they can't accept an invitation (the accept
+ *  flow refuses to clobber an existing password). */
 export function useCreateEmployee() {
   const qc = useQueryClient();
   return useMutation<CreateEmployeeResponse, Error, CreateEmployeeInput>({
     mutationFn: (input) =>
       api.post<CreateEmployeeResponse>('/api/memberships/', input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: MEMBERSHIPS_KEY });
+    },
+  });
+}
+
+/** Payload for `POST /api/memberships/invite/`. No first/last name —
+ *  the invitee enters those on the accept page. */
+export interface InviteEmployeeInput {
+  email: string;
+  role: StaffRole;
+  job_title_id?: number | null;
+  is_bookable?: boolean;
+}
+
+export interface Invitation {
+  id: number;
+  email: string;
+  role: StaffRole;
+  role_label: string;
+  job_title_name: string | null;
+  is_bookable: boolean;
+  invited_by_email: string | null;
+  expires_at: string;
+  accepted_at: string | null;
+  is_pending: boolean;
+  is_expired: boolean;
+  created_at: string;
+}
+
+/** Invite a new staff member by email. Sends them a tokenized link;
+ *  they set their own password on the public accept page. Returns
+ *  the Invitation row so the UI can show "Sent — expires Mar 5". */
+export function useInviteEmployee() {
+  const qc = useQueryClient();
+  return useMutation<Invitation, Error, InviteEmployeeInput>({
+    mutationFn: (input) =>
+      api.post<Invitation>('/api/memberships/invite/', input),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: MEMBERSHIPS_KEY });
     },
