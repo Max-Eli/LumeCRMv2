@@ -153,6 +153,66 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
 
+    @extend_schema(
+        request=None,
+        responses={
+            200: OpenApiResponse(description='Email sent. Returns the recipient address used.'),
+            400: OpenApiResponse(description='Customer has no email on file.'),
+            403: OpenApiResponse(description='Caller lacks PROCESS_PAYMENT.'),
+            502: OpenApiResponse(description='Mail backend rejected the send.'),
+        },
+    )
+    @action(detail=True, methods=['post'], url_path='email')
+    def email(self, request, pk=None):
+        """Email the invoice (PDF attached) to the customer of record.
+
+        Same recipient resolution as every other transactional email
+        in the system: `invoice.customer.email`. We do not let the
+        operator override the To address — it's the customer's record
+        of file. If the customer has no email, we 400 with a clear
+        message so the operator can update the profile first.
+
+        Idempotency: each call sends a fresh email. We do not
+        deduplicate; the audit log carries the trail. Future polish
+        could add a `last_emailed_at` field + a "Last sent X min ago"
+        affordance in the UI to prevent accidental spam.
+        """
+        from django.core.mail import BadHeaderError
+
+        from .services import InvoiceEmailError, send_invoice_email
+
+        instance = self.get_object()
+
+        try:
+            recipient = send_invoice_email(instance, sender_user=request.user)
+        except InvoiceEmailError as e:
+            record(
+                action=AuditLog.Action.UPDATE,
+                resource_type='invoice_email',
+                resource_id=instance.id,
+                request=request,
+                metadata={'outcome': 'failed_missing_email'},
+            )
+            raise ValidationError({'detail': str(e)})
+        except BadHeaderError:
+            # Malformed header → almost always means a stale email
+            # field with embedded newlines. Treat as a validation
+            # failure on the customer record, not a system error.
+            raise ValidationError({'detail': 'Recipient email is malformed.'})
+        # Any other exception from msg.send() (SES rejection, SMTP
+        # connection error, etc.) bubbles to DRF's default handler
+        # which returns a 500. We do not want to swallow these —
+        # the operator needs to know the email did not go out.
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='invoice_email',
+            resource_id=instance.id,
+            request=request,
+            metadata={'recipient': recipient, 'outcome': 'sent'},
+        )
+        return Response({'recipient': recipient}, status=status.HTTP_200_OK)
+
     # ── State-changing actions ───────────────────────────────────────────
 
     @extend_schema(

@@ -1,8 +1,8 @@
 """Invoice service helpers.
 
-This module contains the per-tenant invoice-number generator and the
-on-demand PDF renderer. Other invoice-related services (email
-delivery, refund flow) will land here as their features ship.
+Contains the per-tenant invoice-number generator, the on-demand PDF
+renderer, and the email-to-client sender. Other invoice-related
+services (refund flow) will land here as their features ship.
 """
 
 from __future__ import annotations
@@ -10,10 +10,20 @@ from __future__ import annotations
 import io
 from decimal import Decimal
 
+from django.conf import settings
+from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
+from django.template.loader import render_to_string
 from django.utils import timezone
 
 from .models import Invoice
+
+
+class InvoiceEmailError(Exception):
+    """Raised when an invoice can't be emailed for a business reason
+    (e.g. customer has no email on file). View layer turns this into
+    a 400; we keep the exception class here so callers don't need to
+    catch a generic ValueError."""
 
 INVOICE_NUMBER_PREFIX = 'INV'
 
@@ -308,3 +318,67 @@ def render_invoice_pdf(invoice: Invoice) -> bytes:
 
     doc.build(elements)
     return buf.getvalue()
+
+
+# ── Email to client ──────────────────────────────────────────────────
+
+
+def send_invoice_email(invoice: Invoice, *, sender_user) -> str:
+    """Email the invoice PDF to the customer of record.
+
+    Renders the invoice PDF via `render_invoice_pdf` and attaches it
+    to a transactional email sent through Django's mail backend
+    (django-ses in prod, file-based in dev, locmem in tests). Returns
+    the recipient address used. Raises `InvoiceEmailError` if the
+    customer has no email on file — view layer surfaces this as 400.
+
+    `sender_user` is the staff user who initiated the send; it's
+    recorded in the audit log at the view layer. The actual email
+    From is the tenant's configured DEFAULT_FROM_EMAIL — the spa's
+    branded sending identity, not the operator's personal address.
+    HIPAA + SOC 2: the customer should not receive emails that look
+    like they came from a staff member's personal inbox.
+
+    Uses `fail_silently=False` so SES / SMTP errors bubble up — we
+    want the view to return a clear 502/503 if the mail backend is
+    broken, not silently lie about successful delivery.
+    """
+    customer = invoice.customer
+    recipient = (customer.email or '').strip()
+    if not recipient:
+        raise InvoiceEmailError(
+            'Customer has no email on file. Add one to their profile '
+            'before sending the invoice.'
+        )
+
+    pdf_bytes = render_invoice_pdf(invoice)
+
+    invoice_label = invoice.invoice_number or f'#{invoice.pk}'
+    context = {
+        'customer': customer,
+        'invoice': invoice,
+        'invoice_label': invoice_label,
+        'tenant_name': invoice.tenant.name,
+        # ADR 0007: the row, not the PDF, is the legal record. The
+        # email mentions this so a customer doesn't think the PDF
+        # itself is the source of truth.
+        'total_label': f'${invoice.total_cents / 100:,.2f}',
+    }
+
+    text_body = render_to_string('invoices/email/sent.txt', context)
+    html_body = render_to_string('invoices/email/sent.html', context)
+
+    msg = EmailMultiAlternatives(
+        subject=f'Your invoice from {invoice.tenant.name} — {invoice_label}',
+        body=text_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[recipient],
+    )
+    msg.attach_alternative(html_body, 'text/html')
+    msg.attach(
+        filename=f'{invoice_label}.pdf',
+        content=pdf_bytes,
+        mimetype='application/pdf',
+    )
+    msg.send(fail_silently=False)
+    return recipient

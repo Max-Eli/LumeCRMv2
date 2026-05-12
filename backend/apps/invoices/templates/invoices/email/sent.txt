@@ -1,0 +1,20 @@
+{# Plain-text body for the "your invoice" email. Required for
+ # accessibility + spam-score reasons (high-quality senders always
+ # include a text/plain alternative). Keep in sync with sent.html. #}
+Hi {{ customer.first_name|default:"there" }},
+
+Thanks for visiting {{ tenant_name }}. Your invoice {{ invoice_label }}
+is attached as a PDF.
+
+Total: {{ total_label }}
+
+If you have any questions about this invoice, please reply to this
+email or contact us directly.
+
+— {{ tenant_name }}
+
+────────────────────────────────────────────────────────────────────
+This is a transactional message from {{ tenant_name }} sent to the
+address on file for your account. The attached PDF is generated on
+demand from your record at {{ tenant_name }}; the record itself is
+the authoritative copy.

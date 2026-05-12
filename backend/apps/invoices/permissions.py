@@ -1,3 +1,4 @@
+
 """Permission class for the invoices API.
 
 Read access is open to any authenticated tenant member — staff need to
@@ -51,6 +52,13 @@ class InvoicePermission(BasePermission):
             return membership.has(P.REOPEN_INVOICE)
         if action == 'void':
             return membership.has(P.VOID_INVOICE)
+        if action == 'email':
+            # Same role group as PROCESS_PAYMENT — owner / manager /
+            # front_desk. Emailing the customer is a customer-facing
+            # operational action: front desk handles "they lost their
+            # receipt, send another copy" as routine work. Marketing,
+            # bookkeeper, provider don't have this on their job.
+            return membership.has(P.PROCESS_PAYMENT)
         # Adding/removing lines on an open invoice + redeeming
         # credits from a customer's purchased package. Front-desk
         # hand-builds the customer's tab during checkout (Phase 2A

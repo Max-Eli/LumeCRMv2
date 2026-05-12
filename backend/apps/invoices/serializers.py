@@ -27,7 +27,12 @@ class _CustomerSummary(serializers.ModelSerializer):
 
     class Meta:
         model = Customer
-        fields = ['id', 'first_name', 'last_name', 'full_name']
+        # Email + phone are non-PHI contact info, exposed so the invoice
+        # UI can show "Send to pat@example.com" on the Email Invoice
+        # button without a second round-trip to /api/customers/{id}/.
+        # Tracking ADR 0017 — email/phone deliberately excluded from
+        # PHI redaction because operational roles need them.
+        fields = ['id', 'first_name', 'last_name', 'full_name', 'email', 'phone']
         read_only_fields = fields
 
 
