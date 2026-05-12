@@ -543,7 +543,7 @@ permission, full audit trail).*
 - [x] Invoice number sequencing per tenant — shipped 2026-05-02 (concurrency-safe via `select_for_update` in `apps.invoices.services.generate_invoice_number`; INV-YYYY-NNNN format; resets annually; per-tenant unique constraint).
 - [x] Invoice PDF generation — shipped 2026-05-12. Renderer in `apps.invoices.services.render_invoice_pdf` (reportlab platypus, pure Python, ~10ms render). Endpoint `GET /api/invoices/{id}/pdf/` with audit log + tenant scope. Frontend Download button on the invoice page. On-demand projection of the row — no caching. See [ADR 0018](docs/decisions/0018-invoice-pdf-rendering.md). 8 new tests.
 - [ ] Invoice status badge on the calendar block (small pill — paid / open / void)
-- [ ] Email invoice to client (now unblocked — uses [[render_invoice_pdf]] + the verified SES pipeline)
+- [x] Email invoice to client — shipped 2026-05-12. `send_invoice_email` service renders the PDF via [[0018-invoice-pdf-rendering]] and attaches it to a transactional email through Django's mail backend (django-ses in prod). `POST /api/invoices/{id}/email/` action gated by `PROCESS_PAYMENT`. Confirmation dialog on the invoice page; button disabled with tooltip when the customer has no email on file. 8 new tests including roles, missing-email validation, audit log, cross-tenant isolation, no-dedup-on-repeat-sends.
 - [ ] Refund workflow (manual, ledger-tracked) — partially covered by reopen+void; explicit refund flow with negative amounts is Phase 2A territory.
 
 #### 1F. SMS appointment reminders
