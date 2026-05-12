@@ -540,10 +540,10 @@ permission, full audit trail).*
 - [x] **Invoice status pill** visible on the appointment popover (compact: status + total + Take Payment CTA). Invoice status appearing on the calendar block itself is deferred — the popover already surfaces it on click.
 
 **Still to ship for Phase 1E:**
-- [ ] Invoice number sequencing per tenant
-- [ ] Invoice PDF generation
+- [x] Invoice number sequencing per tenant — shipped 2026-05-02 (concurrency-safe via `select_for_update` in `apps.invoices.services.generate_invoice_number`; INV-YYYY-NNNN format; resets annually; per-tenant unique constraint).
+- [x] Invoice PDF generation — shipped 2026-05-12. Renderer in `apps.invoices.services.render_invoice_pdf` (reportlab platypus, pure Python, ~10ms render). Endpoint `GET /api/invoices/{id}/pdf/` with audit log + tenant scope. Frontend Download button on the invoice page. On-demand projection of the row — no caching. See [ADR 0018](docs/decisions/0018-invoice-pdf-rendering.md). 8 new tests.
 - [ ] Invoice status badge on the calendar block (small pill — paid / open / void)
-- [ ] Email invoice to client
+- [ ] Email invoice to client (now unblocked — uses [[render_invoice_pdf]] + the verified SES pipeline)
 - [ ] Refund workflow (manual, ledger-tracked) — partially covered by reopen+void; explicit refund flow with negative amounts is Phase 2A territory.
 
 #### 1F. SMS appointment reminders
