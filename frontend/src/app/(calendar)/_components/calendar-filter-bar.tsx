@@ -149,12 +149,14 @@ export function CalendarFilterBar({
             <span className="hidden sm:inline">Hide cancelled</span>
           </button>
 
-          {/* Display + view toggles are desktop-only. Mobile is forced
-              into list view by the page (a 390 px screen can't render a
-              multi-column day grid usefully), so the toggles would be
-              misleading no-ops there. */}
-          <div className="hidden sm:flex items-center gap-2">
-            <DisplayModeToggle value={displayMode} onChange={onChangeDisplayMode} />
+          {/* DisplayMode (calendar grid vs list) is meaningful on every
+              size — the mobile day-view now uses horizontal swipe-between-
+              providers, so the user can still pick list view if they
+              prefer a vertical timeline. ViewToggle (Day/Week/Month) is
+              desktop-only since Week + Month aren't built yet — showing
+              disabled buttons on a phone is more clutter than signal. */}
+          <DisplayModeToggle value={displayMode} onChange={onChangeDisplayMode} />
+          <div className="hidden sm:flex items-center">
             <ViewToggle value={view} onChange={onChangeView} />
           </div>
         </div>

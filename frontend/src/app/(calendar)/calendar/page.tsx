@@ -95,20 +95,6 @@ export default function CalendarPage() {
   const [pxPerMin, setPxPerMin] = useState<number>(PX_PER_MIN_DEFAULT);
   const [columnWidthPx, setColumnWidthPx] = useState<number>(COLUMN_PX_DEFAULT);
   const [hideCancelled, setHideCancelled] = useState(false);
-  // Mobile clients are forced into list view: the day-view grid is a
-  // multi-column timetable that needs ≥ ~640 px to render legibly.
-  // We start as `false` (matches SSR's "assume desktop") and flip on
-  // mount via matchMedia. The user's `displayMode` preference is
-  // preserved untouched; we just override the render decision below.
-  const [isNarrow, setIsNarrow] = useState(false);
-  useEffect(() => {
-    if (typeof window === 'undefined') return;
-    const mql = window.matchMedia('(max-width: 639px)');
-    const update = () => setIsNarrow(mql.matches);
-    update();
-    mql.addEventListener('change', update);
-    return () => mql.removeEventListener('change', update);
-  }, []);
 
   // Restore preferences on mount. Numeric prefs are clamped to the slider
   // bounds so a stale or hand-edited value can't render the calendar broken.
@@ -283,7 +269,7 @@ export default function CalendarPage() {
             <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
               Loading calendar…
             </div>
-          ) : displayMode === 'list' || isNarrow ? (
+          ) : displayMode === 'list' ? (
             <ListView
               timezone={tenantTimezone}
               appointments={filteredAppointments}

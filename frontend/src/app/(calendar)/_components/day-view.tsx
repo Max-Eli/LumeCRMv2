@@ -517,7 +517,16 @@ export function DayView({
       onDragEnd={onDragEnd}
       onDragCancel={() => setActiveAppt(null)}
     >
-      <div className="flex-1 min-h-0 overflow-auto bg-card">
+      <div
+        className={cn(
+          'flex-1 min-h-0 overflow-auto bg-card',
+          // Mobile: snap to one provider column at a time. Scroll-padding
+          // matches the sticky time axis width (w-20 = 80px) so the snap
+          // start aligns with the visible edge of the columns, not under
+          // the time axis. md+ uses normal scroll (multi-column visible).
+          'snap-x snap-mandatory scroll-pl-20 md:snap-none md:scroll-pl-0',
+        )}
+      >
         <div className="flex min-w-full">
           {/* Time axis (sticky-left so labels stay visible on horizontal scroll) */}
           <div className="sticky left-0 z-20 w-20 shrink-0 bg-card border-r">
@@ -794,8 +803,13 @@ function ProviderColumn({
 
   return (
     <div
-      className="flex flex-col shrink-0 border-r last:border-r-0"
-      style={{ width: widthPx }}
+      // Mobile: each provider column fills the viewport minus the
+      // sticky time axis (w-20 = 80px). Combined with snap-x on the
+      // parent, swiping advances exactly one provider at a time.
+      // md+: use the configured column width from the view-settings
+      // slider so multiple columns remain visible side-by-side.
+      className="flex flex-col shrink-0 border-r last:border-r-0 snap-start snap-always w-[calc(100vw-5rem)] md:w-[var(--col-w)]"
+      style={{ '--col-w': `${widthPx}px` } as React.CSSProperties}
     >
       <div
         className={cn(
@@ -1057,7 +1071,7 @@ function AppointmentBlock({
       {...attributes}
       {...listeners}
       className={cn(
-        'absolute rounded-md text-left transition-shadow shadow-xs',
+        'absolute rounded-md text-left transition-shadow shadow-xs overflow-hidden',
         'border bg-card hover:shadow-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none',
         cancelled && 'opacity-60',
         isDragging && 'opacity-0',
@@ -1088,25 +1102,27 @@ function AppointmentBlock({
           >
             {timeText}
           </p>
-          <p
-            className={cn(
-              'font-medium truncate',
-              cancelled && 'line-through',
-              tight ? 'text-xs' : 'text-sm',
-            )}
-            style={{ color }}
-          >
-            {appointment.service.name}
-          </p>
           {!tightVertical ? (
-            <p
-              className={cn(
-                'text-foreground/80 truncate',
-                isNarrow ? 'text-[11px]' : 'text-xs',
-              )}
-            >
-              {appointment.customer.full_name}
-            </p>
+            <>
+              <p
+                className={cn(
+                  'font-medium truncate',
+                  cancelled && 'line-through',
+                  tight ? 'text-xs' : 'text-sm',
+                )}
+                style={{ color }}
+              >
+                {appointment.service.name}
+              </p>
+              <p
+                className={cn(
+                  'text-foreground/80 truncate',
+                  isNarrow ? 'text-[11px]' : 'text-xs',
+                )}
+              >
+                {appointment.customer.full_name}
+              </p>
+            </>
           ) : null}
         </div>
       </div>

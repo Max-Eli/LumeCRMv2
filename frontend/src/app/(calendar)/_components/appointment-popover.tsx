@@ -26,6 +26,7 @@ import { InitialsAvatar } from '@/components/initials-avatar';
 import { StatusBadge } from '@/components/status-badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { ApiError } from '@/lib/api';
 import {
   STATUS_LABELS,
@@ -54,6 +55,26 @@ export interface AppointmentPopoverProps {
 
 export function AppointmentPopover({ appointment, timezone, trigger }: AppointmentPopoverProps) {
   const [open, setOpen] = useState(false);
+  const isMobile = useIsMobileViewport();
+
+  // On phones, anchored popovers next to a tiny appointment block render
+  // off-screen or in a cramped corner. Bottom-sheet is the native mobile
+  // pattern for action-rich detail surfaces — full-width, full-content,
+  // dismissable by swipe-down or tap-outside.
+  if (isMobile) {
+    return (
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetTrigger render={trigger} />
+        <SheetContent side="bottom" className="max-h-[85vh] overflow-y-auto p-0">
+          <PopoverBody
+            appointment={appointment}
+            timezone={timezone}
+            onClose={() => setOpen(false)}
+          />
+        </SheetContent>
+      </Sheet>
+    );
+  }
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -72,6 +93,23 @@ export function AppointmentPopover({ appointment, timezone, trigger }: Appointme
       </PopoverContent>
     </Popover>
   );
+}
+
+/** Live-tracks the `(max-width: 639px)` breakpoint (Tailwind sm boundary).
+ *  Starts as `false` to match SSR-assumes-desktop; flips on mount via
+ *  matchMedia. Used to switch the appointment surface between Popover
+ *  (desktop) and bottom Sheet (phone). */
+function useIsMobileViewport(): boolean {
+  const [isMobile, setIsMobile] = useState(false);
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    const mql = window.matchMedia('(max-width: 639px)');
+    const update = () => setIsMobile(mql.matches);
+    update();
+    mql.addEventListener('change', update);
+    return () => mql.removeEventListener('change', update);
+  }, []);
+  return isMobile;
 }
 
 // ── Body ─────────────────────────────────────────────────────────────────
