@@ -630,7 +630,7 @@ category; Sessions 2 + 3 fill out the catalog and add CSV export.*
 - [x] Cancellation policy text — shipped (built earlier on `/org/online-booking`; full form with placeholder, schema validation, surfaces on the public booking page).
 - [x] Job title inline edit on `/staff/employees/[id]` — shipped 2026-05-12. Read-only Input swapped for a Select sourced from `useJobTitles`. 'none' option maps to backend null; numeric values coerce to integer on submit. Existing schema field `job_title_id` already validated; only the UI changed.
 - [ ] Notification templates (SMS reminder copy, etc.) — lights up with Phase 1F (SMS / email plumbing — needs Twilio).
-- [ ] Staff invitation flow (email tokenized link → set password → join tenant) — replaces the temp-password reveal panel. **Now unblocked** by the verified SES production pipeline.
+- [x] Staff invitation flow (email tokenized link → set password → join tenant) — shipped 2026-05-12. New `Invitation` model + `POST /api/memberships/invite/` + public `GET/POST /api/auth/invitation/...` endpoints. 256-bit URL-safe tokens, 7-day expiry, atomic accept (`select_for_update`). `AddEmployeeSheet` now collects email + role + job_title + bookable only; recipient sets name + password on the public `/accept-invitation/<token>` page. 12 backend tests + ADR 0019. The legacy temp-password reveal is retired for new hires (still available via the direct-add flow for existing-user attaches).
 - [ ] Logo upload (S3 in prod, local FS in dev) — currently URL paste only; tracked in polish backlog
 
 #### 1J. Zenoti migration tooling
