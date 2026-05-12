@@ -1,0 +1,19 @@
+{# Plain-text body for the "you're invited" email. Required for
+ # accessibility + spam-score. Keep in sync with invitation.html. #}
+Hi,
+
+{% if invited_by_name %}{{ invited_by_name }} invited you{% else %}You've been invited{% endif %} to join {{ tenant_name }} on Lumè CRM as {{ role_label }}.
+
+Accept the invitation and set your password:
+{{ accept_url }}
+
+This link expires on {{ expires_at|date:"F j, Y" }}. If you weren't
+expecting this invitation, you can ignore this email.
+
+— Lumè CRM
+
+────────────────────────────────────────────────────────────────────
+Lumè CRM is a HIPAA-eligible practice management system for medical
+spas. Once you accept the invitation, you'll have access to
+{{ tenant_name }}'s schedule, customer records, and other workspace
+features your role allows.

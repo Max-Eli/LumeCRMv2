@@ -33,8 +33,9 @@ from django.contrib.auth import get_user_model
 from django.db import IntegrityError, transaction
 from django.utils.text import slugify
 from rest_framework import serializers, status, viewsets
+from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -43,6 +44,7 @@ from apps.audit.services import record
 
 from .context import get_current_location, get_current_tenant
 from .models import (
+    Invitation,
     JobTitle,
     Location,
     MembershipLocation,
@@ -51,6 +53,7 @@ from .models import (
     TenantMembership,
 )
 from .permissions import P
+from .services import InvitationError, accept_invitation, invite_staff
 
 User = get_user_model()
 
@@ -1006,6 +1009,126 @@ class MembershipViewSet(viewsets.ModelViewSet):
             status=status.HTTP_405_METHOD_NOT_ALLOWED,
         )
 
+    # ── Invitation flow ──────────────────────────────────────────────────
+
+    @action(detail=False, methods=['post'], url_path='invite')
+    def invite(self, request):
+        """Send an email invitation to a prospective staff member.
+
+        Replaces the legacy temp-password reveal (the existing `create`
+        action stays around to attach existing-user accounts who can't
+        get an emailed link — e.g. they already use Lumè at another spa).
+
+        Payload mirrors `create`: email + role + job_title_id + is_bookable.
+        On success returns 201 with the invitation row so the frontend
+        can show "Invitation sent to {email}" with the expiry date.
+
+        Audit-logged with the recipient email + invited_by user. The
+        Invitation row itself carries the same metadata for posterity.
+        """
+        if not request.user.is_superuser:
+            membership = getattr(request, 'tenant_membership', None)
+            if not membership or not membership.has(P.MANAGE_STAFF):
+                raise PermissionDenied('You do not have permission to invite employees.')
+
+        tenant = get_current_tenant()
+        if tenant is None:
+            raise PermissionDenied('No tenant context resolved for this request.')
+
+        input_serializer = MembershipInviteInputSerializer(
+            data=request.data, context={'tenant': tenant},
+        )
+        input_serializer.is_valid(raise_exception=True)
+        data = input_serializer.validated_data
+
+        try:
+            invitation = invite_staff(
+                tenant,
+                email=data['email'],
+                role=data['role'],
+                job_title=data.get('job_title'),
+                is_bookable=data.get('is_bookable', False),
+                invited_by=request.user,
+            )
+        except InvitationError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        record(
+            action=AuditLog.Action.CREATE,
+            resource_type='invitation',
+            resource_id=invitation.id,
+            request=request,
+            metadata={
+                'email': invitation.email,
+                'role': invitation.role,
+                'is_bookable': invitation.is_bookable,
+            },
+        )
+
+        return Response(
+            InvitationSerializer(invitation).data,
+            status=status.HTTP_201_CREATED,
+        )
+
+
+# ── Invitation serializers ───────────────────────────────────────────────
+
+
+class MembershipInviteInputSerializer(serializers.Serializer):
+    """Input shape for POST /api/memberships/invite/."""
+
+    email = serializers.EmailField()
+    role = serializers.ChoiceField(choices=TenantMembership.Role.choices)
+    is_bookable = serializers.BooleanField(required=False, default=False)
+    job_title_id = serializers.IntegerField(required=False, allow_null=True)
+
+    def validate_job_title_id(self, value):
+        if value is None:
+            return None
+        tenant = self.context.get('tenant')
+        try:
+            jt = JobTitle.objects.get(pk=value, tenant=tenant)
+        except JobTitle.DoesNotExist:
+            raise serializers.ValidationError('Job title not found in this tenant.')
+        return jt
+
+    def to_internal_value(self, data):
+        ret = super().to_internal_value(data)
+        # Surface the JobTitle instance under `job_title` for the
+        # service-layer signature (which expects an instance, not an id).
+        if 'job_title_id' in ret:
+            ret['job_title'] = ret.pop('job_title_id')
+        return ret
+
+
+class InvitationSerializer(serializers.ModelSerializer):
+    """Read shape returned by the invite endpoint + invitations list."""
+
+    invited_by_email = serializers.CharField(
+        source='invited_by.email', read_only=True, allow_null=True,
+    )
+    job_title_name = serializers.CharField(
+        source='job_title.name', read_only=True, allow_null=True,
+    )
+    role_label = serializers.SerializerMethodField()
+    is_pending = serializers.BooleanField(read_only=True)
+    is_expired = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = Invitation
+        fields = [
+            'id', 'email', 'role', 'role_label', 'job_title_name',
+            'is_bookable',
+            'invited_by_email',
+            'expires_at', 'accepted_at',
+            'is_pending', 'is_expired',
+            'created_at',
+        ]
+        read_only_fields = fields
+
+    def get_role_label(self, obj: Invitation) -> str:
+        return dict(TenantMembership.Role.choices).get(obj.role, obj.role)
+
 
 # ── Locations ────────────────────────────────────────────────────────────
 
@@ -1306,3 +1429,119 @@ class ScheduleView(APIView):
         )
 
         return Response({'membership_location_id': ml.id, 'weekly_hours': weekly})
+
+
+# ── Public invitation accept endpoints ───────────────────────────────────
+
+
+class InvitationLookupView(APIView):
+    """`GET /api/auth/invitation/<token>/` — public.
+
+    Returns the basic details a recipient needs to render the accept
+    page (tenant name, role, who invited them) without revealing
+    membership details of other staff or anything PHI-bearing. We
+    don't surface the recipient's email here — the accept form
+    requires the recipient to type their first + last name + password,
+    not their email; the token IS the identifier.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []  # Public — no CSRF / session needed.
+
+    def get(self, request, token: str):  # noqa: ARG002
+        try:
+            invitation = (
+                Invitation.objects
+                .select_related('tenant', 'invited_by', 'job_title')
+                .get(token=token)
+            )
+        except Invitation.DoesNotExist:
+            return Response(
+                {'detail': 'Invitation not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        invited_by_name = ''
+        if invitation.invited_by_id:
+            u = invitation.invited_by
+            invited_by_name = f'{u.first_name} {u.last_name}'.strip() or u.email
+
+        return Response({
+            'tenant_name': invitation.tenant.name,
+            'tenant_slug': invitation.tenant.slug,
+            'role': invitation.role,
+            'role_label': dict(TenantMembership.Role.choices).get(
+                invitation.role, invitation.role,
+            ),
+            'job_title_name': invitation.job_title.name if invitation.job_title_id else None,
+            'invited_by_name': invited_by_name,
+            'expires_at': invitation.expires_at,
+            'accepted_at': invitation.accepted_at,
+            'is_pending': invitation.is_pending,
+            'is_expired': invitation.is_expired,
+        })
+
+
+class InvitationAcceptView(APIView):
+    """`POST /api/auth/invitation/accept/` — public.
+
+    Accepts a pending invitation by creating a new User + new
+    TenantMembership. Token + password + first_name + last_name in
+    the body. On success, the user is logged into the new tenant
+    (Django session set on this response) and the response carries
+    a redirect target so the SPA knows where to land.
+
+    For "I already have an account" — out of scope here. That path
+    is the legacy attach-existing flow (POST /api/memberships/) and
+    requires the spa owner to add the user directly.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def post(self, request):
+        from django.contrib.auth import login
+
+        payload = request.data or {}
+        token = (payload.get('token') or '').strip()
+        password = payload.get('password') or ''
+        first_name = (payload.get('first_name') or '').strip()
+        last_name = (payload.get('last_name') or '').strip()
+
+        if not token:
+            return Response({'detail': 'Token is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(password) < 12:
+            return Response(
+                {'password': 'Password must be at least 12 characters.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not first_name or not last_name:
+            return Response(
+                {'detail': 'First name and last name are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            user, membership = accept_invitation(
+                token, password=password,
+                first_name=first_name, last_name=last_name,
+            )
+        except InvitationError as e:
+            return Response({'detail': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        login(request, user)
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='invitation_accept',
+            resource_id=membership.id,
+            request=request,
+            metadata={
+                'tenant_slug': membership.tenant.slug,
+                'role': membership.role,
+            },
+        )
+
+        return Response({
+            'tenant_slug': membership.tenant.slug,
+            'redirect': '/dashboard',
+        }, status=status.HTTP_200_OK)

@@ -6,9 +6,29 @@ canonical onboarding entry point — call it from the admin onboarding flow, sig
 view, or management command.
 """
 
+from django.conf import settings
+from django.contrib.auth import get_user_model
+from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
+from django.template.loader import render_to_string
+from django.utils import timezone as djtz
 
-from .models import JobTitle, Location, MembershipLocation, Tenant, TenantMembership
+from .models import (
+    Invitation,
+    JobTitle,
+    Location,
+    MembershipLocation,
+    Tenant,
+    TenantMembership,
+)
+
+User = get_user_model()
+
+
+class InvitationError(Exception):
+    """Raised when an invitation can't be created or accepted for a
+    business reason (email already a member, token expired, etc.).
+    View layer turns this into a 400 with detail from str(e)."""
 
 
 DEFAULT_JOB_TITLES = [
@@ -94,3 +114,188 @@ def create_tenant_with_defaults(*, name: str, slug: str, owner_user, **tenant_kw
     )
 
     return tenant
+
+
+# ── Staff invitations ────────────────────────────────────────────────
+
+
+def invite_staff(
+    tenant: Tenant,
+    *,
+    email: str,
+    role: str,
+    job_title: JobTitle | None = None,
+    is_bookable: bool = False,
+    invited_by,
+) -> Invitation:
+    """Create a pending Invitation and email the recipient.
+
+    Raises `InvitationError` when:
+      - the email is already an active member of this tenant
+      - there's an unaccepted, unexpired invitation outstanding for
+        this email + tenant (operator should resend the existing one
+        rather than duplicating)
+
+    Existing-User-different-tenant is fine — the same person can be
+    invited to multiple spas. The accept flow attaches a new
+    membership to the existing User.
+    """
+    email = email.strip().lower()
+
+    # Already a member of this tenant?
+    existing_member = TenantMembership.objects.filter(
+        tenant=tenant, user__email__iexact=email,
+    ).first()
+    if existing_member is not None:
+        raise InvitationError(
+            f'{email} is already a member of this tenant '
+            f'({existing_member.get_role_display()}).'
+        )
+
+    # Already an outstanding invitation?
+    outstanding = Invitation.objects.filter(
+        tenant=tenant, email__iexact=email,
+        accepted_at__isnull=True,
+        expires_at__gt=djtz.now(),
+    ).first()
+    if outstanding is not None:
+        raise InvitationError(
+            f'There is already a pending invitation for {email} '
+            f'(expires {outstanding.expires_at:%b %d, %Y}). '
+            'Resend or revoke the existing one before creating a new one.'
+        )
+
+    invitation = Invitation.objects.create(
+        tenant=tenant,
+        email=email,
+        role=role,
+        job_title=job_title,
+        is_bookable=is_bookable,
+        invited_by=invited_by,
+    )
+
+    _send_invitation_email(invitation)
+    return invitation
+
+
+def _send_invitation_email(invitation: Invitation) -> None:
+    """Render + send the invitation email. Pulled out so a future
+    "resend" action can reuse it without re-creating the Invitation
+    row (preserves audit trail of original invite_by + created_at)."""
+    base = settings.PUBLIC_BASE_URL.rstrip('/')
+    accept_url = f'{base}/accept-invitation/{invitation.token}'
+    invited_by_name = ''
+    if invitation.invited_by_id:
+        u = invitation.invited_by
+        invited_by_name = (
+            f'{u.first_name} {u.last_name}'.strip() or u.email
+        )
+
+    context = {
+        'invitation': invitation,
+        'tenant_name': invitation.tenant.name,
+        'invited_by_name': invited_by_name,
+        'accept_url': accept_url,
+        'expires_at': invitation.expires_at,
+        'role_label': dict(TenantMembership.Role.choices).get(
+            invitation.role, invitation.role,
+        ),
+    }
+
+    text_body = render_to_string('tenants/email/invitation.txt', context)
+    html_body = render_to_string('tenants/email/invitation.html', context)
+
+    msg = EmailMultiAlternatives(
+        subject=f'You\'re invited to join {invitation.tenant.name} on Lumè CRM',
+        body=text_body,
+        from_email=settings.DEFAULT_FROM_EMAIL,
+        to=[invitation.email],
+    )
+    msg.attach_alternative(html_body, 'text/html')
+    # fail_silently=False — caller (the invite endpoint) needs to know
+    # if SES rejected the send so it can return a clear error.
+    msg.send(fail_silently=False)
+
+
+@transaction.atomic
+def accept_invitation(
+    token: str,
+    *,
+    password: str,
+    first_name: str,
+    last_name: str,
+) -> tuple:
+    """Accept a pending invitation: create-or-attach the User, create
+    the TenantMembership, mark invitation accepted.
+
+    Atomic: either the whole acceptance succeeds or none of it does.
+    The invitation row is locked via `select_for_update` so two
+    simultaneous accepts of the same token can't both create
+    memberships.
+
+    Returns `(user, membership)`.
+
+    Raises `InvitationError` when:
+      - the token isn't recognized
+      - the invitation already accepted
+      - the invitation expired
+      - a user already exists with this email (this path is reserved
+        for new-user signup; existing users must use the legacy
+        attach-existing flow to avoid clobbering passwords)
+    """
+    try:
+        # Lock only the Invitation row, not the joined tables — the
+        # nullable `job_title` FK would otherwise yield a LEFT OUTER
+        # JOIN that Postgres rejects with "FOR UPDATE cannot be
+        # applied to the nullable side of an outer join."
+        invitation = (
+            Invitation.objects
+            .select_for_update(of=('self',))
+            .select_related('tenant', 'job_title')
+            .get(token=token)
+        )
+    except Invitation.DoesNotExist:
+        raise InvitationError('Invitation not found.')
+
+    if invitation.accepted_at is not None:
+        raise InvitationError('This invitation has already been accepted.')
+    if invitation.expires_at <= djtz.now():
+        raise InvitationError('This invitation has expired.')
+
+    existing_user = User.objects.filter(email__iexact=invitation.email).first()
+    if existing_user is not None:
+        raise InvitationError(
+            'An account already exists for this email. Sign in with your '
+            'existing password instead; the spa owner can attach you '
+            'directly without an invitation.'
+        )
+
+    user = User.objects.create_user(
+        email=invitation.email,
+        password=password,
+        first_name=first_name.strip(),
+        last_name=last_name.strip(),
+    )
+
+    membership = TenantMembership.objects.create(
+        user=user,
+        tenant=invitation.tenant,
+        role=invitation.role,
+        job_title=invitation.job_title,
+        is_bookable=invitation.is_bookable,
+        is_active=True,
+    )
+
+    default_location = invitation.tenant.locations.filter(is_default=True).first()
+    if default_location is not None:
+        MembershipLocation.objects.create(
+            membership=membership,
+            location=default_location,
+            is_active=True,
+        )
+
+    invitation.accepted_at = djtz.now()
+    invitation.accepted_by_user = user
+    invitation.save(update_fields=['accepted_at', 'accepted_by_user', 'updated_at'])
+
+    return user, membership

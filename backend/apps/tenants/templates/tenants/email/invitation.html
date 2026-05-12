@@ -1,0 +1,56 @@
+{# HTML body for the "you're invited" email. Single-column, table-based
+ # layout for max email-client compatibility. Inline styles only. Keep
+ # in sync with invitation.txt. #}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>You're invited to {{ tenant_name }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f7f5f1;font-family:Helvetica,Arial,sans-serif;color:#2a2a2a;">
+  <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="background:#f7f5f1;padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" cellpadding="0" cellspacing="0" border="0" width="100%" style="max-width:560px;background:#ffffff;border:1px solid #e8e3d8;border-radius:6px;">
+          <tr>
+            <td style="padding:32px 32px 16px 32px;">
+              <p style="margin:0 0 8px 0;font-size:12px;letter-spacing:0.08em;color:#8a8170;text-transform:uppercase;">Lumè CRM</p>
+              <h1 style="margin:0;font-size:22px;font-weight:600;color:#1a1a1a;">You're invited to join {{ tenant_name }}</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 32px 24px 32px;font-size:15px;line-height:1.55;">
+              <p style="margin:0 0 16px 0;">
+                {% if invited_by_name %}<strong>{{ invited_by_name }}</strong> invited you{% else %}You've been invited{% endif %}
+                to join <strong>{{ tenant_name }}</strong> as <strong>{{ role_label }}</strong>.
+              </p>
+              <p style="margin:24px 0;text-align:center;">
+                <a href="{{ accept_url }}"
+                   style="display:inline-block;padding:12px 28px;background:#2a2a2a;color:#ffffff;text-decoration:none;border-radius:6px;font-weight:500;">
+                  Accept invitation
+                </a>
+              </p>
+              <p style="margin:16px 0 0 0;font-size:13px;color:#737373;">
+                Or copy this link into your browser:<br>
+                <span style="color:#404040;word-break:break-all;">{{ accept_url }}</span>
+              </p>
+              <p style="margin:16px 0 0 0;font-size:13px;color:#737373;">
+                This link expires on <strong>{{ expires_at|date:"F j, Y" }}</strong>.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 32px 24px 32px;border-top:1px solid #f0ece1;font-size:11px;line-height:1.5;color:#8a8170;">
+              Lumè CRM is a HIPAA-eligible practice management system for
+              medical spas. Once you accept, you'll have access to
+              {{ tenant_name }}'s schedule, customer records, and other
+              workspace features your role allows. If you weren't expecting
+              this invitation, you can safely ignore this email.
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

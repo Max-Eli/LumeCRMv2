@@ -35,9 +35,15 @@ multi-location work moves that page to read/write `Location`, after which the
 duplicate fields can be dropped from `Tenant` in a cleanup migration.
 """
 
+import datetime as _dt
+import secrets
+
 from django.conf import settings
 from django.db import models
 from django.db.models import Q, UniqueConstraint
+from django.utils import timezone as djtz
+
+from apps.tenants.abstract_models import TenantedModel
 
 
 class Tenant(models.Model):
@@ -443,3 +449,100 @@ class ProviderSchedule(models.Model):
         default when a schedule hasn't been set yet, so the API can
         return a consistent shape regardless of whether the row exists."""
         return {day: [] for day in ProviderSchedule.WEEKDAYS}
+
+
+# ── Staff invitations ─────────────────────────────────────────────────
+
+
+def _default_invitation_expiry() -> _dt.datetime:
+    """7-day default validity window. Tunable later via tenant settings
+    if a spa wants longer / shorter; 7d covers a busy spa owner who's
+    not in the CRM every day."""
+    return djtz.now() + _dt.timedelta(days=7)
+
+
+def _generate_invitation_token() -> str:
+    """43-char URL-safe random token. 256 bits of entropy via
+    `secrets.token_urlsafe(32)` — adequate for a 7-day-validity
+    single-use invitation token. Stored in the DB as plaintext (it's
+    already a secret-class identifier; hashing would prevent
+    legitimate token-lookup on accept)."""
+    return secrets.token_urlsafe(32)
+
+
+class Invitation(TenantedModel):
+    """A pending invitation to join a tenant as staff.
+
+    Created by an owner / manager via `POST /api/memberships/invite/`.
+    The recipient gets an email with a tokenized link
+    (`/accept-invitation/<token>`). On accept, a `TenantMembership` is
+    created with the role + job_title + is_bookable captured here.
+
+    Replaces the legacy temp-password-on-direct-add flow (still
+    available for attaching existing-user accounts that bypass email).
+    See ADR 0019.
+    """
+
+    email = models.EmailField(
+        help_text=(
+            'Recipient address. Case-insensitive uniqueness within a tenant '
+            'for pending (unaccepted, unexpired) invitations is enforced by '
+            'service-layer check before insert — partial-unique-index in DB '
+            'is hard to express across `accepted_at IS NULL AND expires_at > now()`.'
+        ),
+    )
+    role = models.CharField(
+        max_length=20,
+        choices=TenantMembership.Role.choices,
+    )
+    job_title = models.ForeignKey(
+        JobTitle,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        help_text='Optional job-title assignment to apply on accept.',
+    )
+    is_bookable = models.BooleanField(default=False)
+
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        default=_generate_invitation_token,
+        editable=False,
+    )
+    expires_at = models.DateTimeField(default=_default_invitation_expiry)
+
+    invited_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='invitations_sent',
+    )
+    accepted_at = models.DateTimeField(null=True, blank=True)
+    accepted_by_user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='invitations_accepted',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        indexes = [
+            models.Index(fields=['tenant', 'email']),
+            models.Index(fields=['tenant', 'accepted_at']),
+        ]
+        ordering = ['-created_at']
+
+    def __str__(self) -> str:
+        suffix = ' (accepted)' if self.accepted_at else ' (pending)'
+        return f'Invitation<{self.email} → {self.tenant.slug}>{suffix}'
+
+    @property
+    def is_pending(self) -> bool:
+        return self.accepted_at is None and self.expires_at > djtz.now()
+
+    @property
+    def is_expired(self) -> bool:
+        return self.accepted_at is None and self.expires_at <= djtz.now()
