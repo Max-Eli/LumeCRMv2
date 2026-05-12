@@ -23,7 +23,7 @@ from apps.tenants.permissions import P
 
 
 class InvoicePermission(BasePermission):
-    READ_ACTIONS = frozenset({'list', 'retrieve'})
+    READ_ACTIONS = frozenset({'list', 'retrieve', 'pdf'})
     DISALLOWED_ACTIONS = frozenset({'create', 'update', 'partial_update', 'destroy'})
 
     def has_permission(self, request, view):

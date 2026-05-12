@@ -12,6 +12,7 @@ psycopg==3.3.3
 psycopg-binary==3.3.3
 PyYAML==6.0.3
 referencing==0.37.0
+reportlab==4.5.1
 rpds-py==0.30.0
 sqlparse==0.5.5
 typing_extensions==4.15.0

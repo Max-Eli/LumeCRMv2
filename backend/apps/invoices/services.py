@@ -1,11 +1,14 @@
 """Invoice service helpers.
 
-Right now this module contains the per-tenant invoice-number
-generator. Other invoice-related services (PDF rendering, email
+This module contains the per-tenant invoice-number generator and the
+on-demand PDF renderer. Other invoice-related services (email
 delivery, refund flow) will land here as their features ship.
 """
 
 from __future__ import annotations
+
+import io
+from decimal import Decimal
 
 from django.db import transaction
 from django.utils import timezone
@@ -99,3 +102,209 @@ def assign_invoice_number(invoice: Invoice) -> None:
             if attempt == MAX_RETRIES - 1:
                 raise
             continue
+
+
+# ── PDF rendering ────────────────────────────────────────────────────
+
+
+def _format_money(cents: int) -> str:
+    """Return cents as a USD-formatted string like '$123.45'."""
+    return f'${cents / 100:,.2f}'
+
+
+def render_invoice_pdf(invoice: Invoice) -> bytes:
+    """Render `invoice` as an A4 PDF and return the raw bytes.
+
+    Rendering is **on-demand** — the database row is the source of
+    truth, and the PDF is a deterministic projection of it. We do
+    not store the PDF; subsequent requests re-render. PAID and VOID
+    invoices have immutable line items + totals (enforced by state
+    machine + CheckConstraints), so the projection is stable for the
+    invoice's lifetime. OPEN invoices may change line items, which
+    is fine — the rendered PDF reflects the current state at request
+    time.
+
+    See ADR 0018 for the trade-offs (on-demand vs S3-cached, the
+    immutability argument, why we don't store).
+    """
+    # Lazy imports keep the reportlab dependency out of the import
+    # graph of every Django startup — only loaded on first PDF render.
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_RIGHT
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=LETTER,
+        leftMargin=0.6 * inch, rightMargin=0.6 * inch,
+        topMargin=0.6 * inch, bottomMargin=0.6 * inch,
+        title=invoice.invoice_number or f'Invoice #{invoice.pk}',
+        author=invoice.tenant.name,
+    )
+
+    styles = getSampleStyleSheet()
+    body = styles['BodyText']
+    small = ParagraphStyle('small', parent=body, fontSize=9, leading=11)
+    h1 = ParagraphStyle('h1', parent=styles['Heading1'], spaceAfter=4)
+    h_right = ParagraphStyle('hr', parent=body, alignment=TA_RIGHT, fontSize=18, leading=20)
+    label = ParagraphStyle(
+        'label', parent=body, fontSize=8, leading=10,
+        textColor=colors.HexColor('#737373'),
+    )
+
+    elements: list = []
+
+    tenant = invoice.tenant
+    customer = invoice.customer
+    # Status -> display label.
+    status_display = {
+        Invoice.Status.OPEN: 'Open',
+        Invoice.Status.PAID: 'Paid',
+        Invoice.Status.VOID: 'Void',
+    }.get(invoice.status, invoice.status)
+
+    # ── Header: tenant name (left) + INVOICE label + number (right) ──
+    header = Table(
+        [[
+            Paragraph(f'<b>{tenant.name}</b>', h1),
+            Paragraph(f'<font color="#737373">INVOICE</font>', h_right),
+        ], [
+            Paragraph(
+                f'Issued {invoice.created_at:%b %d, %Y}',
+                small,
+            ),
+            Paragraph(
+                f'<b>{invoice.invoice_number or f"#{invoice.pk}"}</b>',
+                ParagraphStyle('num', parent=body, alignment=TA_RIGHT, fontSize=12),
+            ),
+        ]],
+        colWidths=[3.6 * inch, 3.6 * inch],
+    )
+    header.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 2),
+    ]))
+    elements.append(header)
+    elements.append(Spacer(1, 0.25 * inch))
+
+    # ── Bill-to + status block ──
+    bill_to_lines = [f'<b>{customer.first_name} {customer.last_name}</b>']
+    if customer.email:
+        bill_to_lines.append(customer.email)
+    if customer.phone:
+        bill_to_lines.append(customer.phone)
+    bill_to = Paragraph('<br/>'.join(bill_to_lines), body)
+
+    status_lines = [
+        Paragraph('STATUS', label),
+        Paragraph(f'<b>{status_display}</b>', body),
+    ]
+    if invoice.status == Invoice.Status.PAID and invoice.closed_at:
+        status_lines.append(Paragraph(
+            f'Paid {invoice.closed_at:%b %d, %Y at %-I:%M %p}', small,
+        ))
+        if invoice.payment_method:
+            label_method = invoice.get_payment_method_display() if hasattr(invoice, 'get_payment_method_display') else invoice.payment_method
+            status_lines.append(Paragraph(f'via {label_method}', small))
+        if invoice.payment_reference:
+            status_lines.append(Paragraph(f'Ref: {invoice.payment_reference}', small))
+    elif invoice.status == Invoice.Status.VOID and invoice.voided_at:
+        status_lines.append(Paragraph(
+            f'Voided {invoice.voided_at:%b %d, %Y}', small,
+        ))
+
+    bill_status = Table(
+        [[
+            [Paragraph('BILL TO', label), bill_to],
+            status_lines,
+        ]],
+        colWidths=[4.2 * inch, 3.0 * inch],
+    )
+    bill_status.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(bill_status)
+    elements.append(Spacer(1, 0.3 * inch))
+
+    # ── Line items table ──
+    line_rows = [['Description', 'Qty', 'Unit price', 'Tax', 'Line total']]
+    for line in invoice.line_items.all().order_by('id'):
+        line_total = line.line_subtotal_cents + line.line_tax_cents
+        tax_label = (
+            f'{line.tax_rate_percent.normalize()}%'
+            if isinstance(line.tax_rate_percent, Decimal) and line.tax_rate_percent != 0
+            else '—'
+        )
+        line_rows.append([
+            Paragraph(line.description, body),
+            str(line.quantity),
+            _format_money(line.unit_price_cents),
+            tax_label,
+            _format_money(line_total),
+        ])
+
+    lines_table = Table(
+        line_rows,
+        colWidths=[3.4 * inch, 0.6 * inch, 1.1 * inch, 0.7 * inch, 1.4 * inch],
+        repeatRows=1,
+    )
+    lines_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#f5f5f5')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.HexColor('#404040')),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+        ('ALIGN', (0, 0), (0, -1), 'LEFT'),
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('LINEBELOW', (0, 0), (-1, 0), 0.5, colors.HexColor('#cccccc')),
+        ('LINEBELOW', (0, -1), (-1, -1), 0.25, colors.HexColor('#eeeeee')),
+    ]))
+    elements.append(lines_table)
+    elements.append(Spacer(1, 0.15 * inch))
+
+    # ── Totals block (right-aligned) ──
+    totals_rows = [
+        ['Subtotal', _format_money(invoice.subtotal_cents)],
+        ['Tax', _format_money(invoice.tax_cents)],
+    ]
+    if invoice.gift_card_credits_cents > 0:
+        totals_rows.append(['Gift card credits', f'− {_format_money(invoice.gift_card_credits_cents)}'])
+    totals_rows.append(['Total', _format_money(invoice.total_cents)])
+
+    totals = Table(totals_rows, colWidths=[1.5 * inch, 1.4 * inch], hAlign='RIGHT')
+    totals.setStyle(TableStyle([
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ('LINEABOVE', (0, -1), (-1, -1), 0.5, colors.HexColor('#404040')),
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, -1), (-1, -1), 12),
+    ]))
+    elements.append(totals)
+    elements.append(Spacer(1, 0.4 * inch))
+
+    # ── Footer ──
+    elements.append(Paragraph(
+        f'<font color="#a3a3a3">Generated {timezone.now():%b %d, %Y at %-I:%M %p}. '
+        f'This invoice is a projection of record {invoice.invoice_number or invoice.pk} '
+        f'and is regenerated on demand.</font>',
+        small,
+    ))
+
+    doc.build(elements)
+    return buf.getvalue()

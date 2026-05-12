@@ -2105,3 +2105,121 @@ class InvoiceMembershipRedemptionTests(TestCase):
         )
         with self.assertRaises(InvoiceStateError):
             self.sale_invoice.reopen(by_user=self.owner, reason='oops')
+
+
+# ── PDF rendering + download endpoint ─────────────────────────────────
+
+
+class InvoicePDFTests(TestCase):
+    """Covers ADR 0018 — on-demand invoice PDF rendering.
+
+    Read-only endpoint; no state changes. Tests focus on:
+      - Renderer produces a valid PDF for OPEN / PAID / VOID invoices.
+      - Endpoint returns the bytes with the right content-type +
+        Content-Disposition.
+      - Permission gate: any authenticated tenant member can download,
+        cross-tenant access is rejected (404 via queryset isolation).
+      - Audit-log entry on every download.
+    """
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('pdf-tenant')
+        self.provider_user = _make_user('pdf-provider@test.local')
+        self.provider = _make_membership(
+            user=self.provider_user, tenant=self.tenant,
+            role=TenantMembership.Role.PROVIDER, is_bookable=True,
+        )
+        self.customer = _make_customer(self.tenant)
+        self.service = _make_service(self.tenant, price_cents=15000, tax='8.875')
+        self.appt = _make_appointment(
+            self.tenant, customer=self.customer, service=self.service,
+            provider=self.provider, status=Appointment.Status.CHECKED_IN,
+            created_by=self.owner,
+        )
+        self.invoice = Invoice.objects.get(appointment=self.appt)
+
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def _pdf_url(self, pk: int) -> str:
+        return reverse('invoice-pdf', args=[pk])
+
+    # ── Renderer (unit-level) ───────────────────────────────────────
+
+    def test_renderer_returns_valid_pdf_for_open_invoice(self):
+        from apps.invoices.services import render_invoice_pdf
+        pdf = render_invoice_pdf(self.invoice)
+        self.assertTrue(pdf.startswith(b'%PDF-'), 'Output is not a PDF file')
+        self.assertTrue(pdf.rstrip().endswith(b'%%EOF'), 'PDF trailer missing')
+        self.assertGreater(len(pdf), 1000, 'PDF suspiciously small')
+
+    def test_renderer_works_for_paid_invoice(self):
+        self.invoice.close(
+            by_user=self.owner,
+            payment_method=Invoice.PaymentMethod.CASH,
+            payment_reference='',
+        )
+        from apps.invoices.services import render_invoice_pdf
+        pdf = render_invoice_pdf(self.invoice)
+        self.assertTrue(pdf.startswith(b'%PDF-'))
+
+    def test_renderer_works_for_void_invoice(self):
+        self.invoice.void(by_user=self.owner, reason='Test void')
+        from apps.invoices.services import render_invoice_pdf
+        pdf = render_invoice_pdf(self.invoice)
+        self.assertTrue(pdf.startswith(b'%PDF-'))
+
+    # ── Endpoint ─────────────────────────────────────────────────────
+
+    def test_owner_can_download_pdf(self):
+        response = self.client.get(
+            self._pdf_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn('attachment', response['Content-Disposition'])
+        self.assertIn(self.invoice.invoice_number, response['Content-Disposition'])
+        self.assertTrue(response.content.startswith(b'%PDF-'))
+
+    def test_anonymous_blocked(self):
+        anon = APIClient()
+        response = anon.get(
+            self._pdf_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_cross_tenant_returns_404(self):
+        other_tenant, other_owner = _make_tenant_with_owner('pdf-other-tenant')
+        other_client = APIClient()
+        other_client.force_login(other_owner)
+        response = other_client.get(
+            self._pdf_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=other_tenant.slug,
+        )
+        # `for_current_tenant()` filters the queryset, so the
+        # invoice is invisible — DRF 404s rather than 403s.
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_provider_can_download_pdf(self):
+        provider_client = APIClient()
+        provider_client.force_login(self.provider_user)
+        response = provider_client.get(
+            self._pdf_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_download_writes_audit_log(self):
+        self.client.get(
+            self._pdf_url(self.invoice.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = AuditLog.objects.filter(
+            resource_type='invoice_pdf',
+            resource_id=str(self.invoice.pk),
+            action=AuditLog.Action.READ,
+        ).first()
+        self.assertIsNotNone(log, 'No audit log entry for PDF download')
+        self.assertGreater(log.metadata.get('bytes', 0), 0)

@@ -19,6 +19,7 @@ Audit logging on every action; tenant scoping via
 `select_for_update` inside the model methods themselves.
 """
 
+from django.http import HttpResponse
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
@@ -114,6 +115,43 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
         )
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
+
+    @extend_schema(
+        responses={
+            200: OpenApiResponse(
+                response={'type': 'string', 'format': 'binary'},
+                description='application/pdf — the rendered invoice. Generated on demand from the current invoice row.',
+            ),
+            404: OpenApiResponse(description='Invoice not found in this tenant.'),
+        },
+    )
+    @action(detail=True, methods=['get'], url_path='pdf')
+    def pdf(self, request, pk=None):
+        """Render this invoice as a PDF and stream it as an attachment.
+
+        The PDF is **a projection of the invoice row at request time** —
+        we don't cache or store the rendered bytes. PAID + VOID invoices
+        have immutable totals (state machine + CheckConstraints), so the
+        projection is stable for the invoice's lifetime; OPEN invoices
+        reflect the current line-item state. See ADR 0018.
+        """
+        from .services import render_invoice_pdf
+
+        instance = self.get_object()
+        pdf_bytes = render_invoice_pdf(instance)
+
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='invoice_pdf',
+            resource_id=instance.id,
+            request=request,
+            metadata={'bytes': len(pdf_bytes)},
+        )
+
+        filename = f'{instance.invoice_number or f"invoice-{instance.pk}"}.pdf'
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
     # ── State-changing actions ───────────────────────────────────────────
 
