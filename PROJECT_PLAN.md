@@ -366,8 +366,8 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 - [x] `<CategoryEligibilitySelector>` reusable component — clinical / non-clinical groups, quick-select chips ("All clinical", "Everyone", "No restriction") (completed 2026-04-30)
 - [x] Category create + edit pages at `/services/categories/new` and `/services/categories/[id]` (completed 2026-04-30)
 - [x] Eligibility seeded for the 5 sample categories (Injectables → NP/RN/PA; Massage → Massage Therapist only; Body → unrestricted) (completed 2026-04-30)
-- [ ] **Eligibility enforcement** at appointment-creation time — booking calendar must filter the provider dropdown to staff whose `TenantMembership.job_title` is in the category's `eligible_job_titles` (Phase 1D)
-- [ ] Per-service eligibility override (rare case where one service in a category needs different rules) — defer; add only if a real spa requests it
+- [x] **Eligibility enforcement** at appointment-creation time — shipped. Backend filters slots + provider lists by `Category.eligible_job_titles` (`apps.booking.views:161`, re-validated in the booking serializer's cross-field check). Frontend has `lib/eligibility.ts` + the New Appointment modal + drag-drop drop-target highlighting both filter by `ServiceCategory.eligible_job_titles`. Defense in depth: server is the source of truth; frontend filters as a UX hint. Documented in `apps/booking/README.md`.
+- [ ] Per-service eligibility override (rare case where one service in a category needs different rules) — defer; add only if a real spa requests it.
 - [x] **Service code (SKU)** — auto-generated on save (e.g. `BTX20`), user-overridable, unique within tenant via partial constraint (completed 2026-04-30)
 - [x] **Tax rate per service** (`tax_rate_percent`, decimal up to 99.999, applied at invoice time) (completed 2026-04-30)
 - [x] **Service type** — Regular vs Add-on enum on each service (completed 2026-04-30)
@@ -436,9 +436,9 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 **Out of scope this session (still future):**
 - [ ] **`ScheduleException`** for one-off overrides ("Sarah off Christmas Eve") — today's PUT is full-replace and operator handles ad-hoc by editing the day inline. Real exception model lands when calendar consumption needs date-keyed overrides.
 - [ ] Drag-drop respects schedules — calendar lets bookings outside working hours today (with the visible overlay showing they're off-schedule). Hard rejection + warning banner when drops land outside working hours is a follow-up.
-- [ ] Online booking only offers slots inside provider hours — Phase 1I work; the schedule data is already in shape for it to consume.
+- [x] Online booking only offers slots inside provider hours — shipped. `apps.booking.availability.compute_provider_slots` reads `ProviderSchedule.weekly_hours` and only emits slots inside the day's blocks; closed days produce empty result.
 - [ ] Block-off slots (lunch / training / personal holds created from the calendar) — leans on `ScheduleException`.
-- [ ] Mobile-responsive scheduler grid (front desk on iPad) — works in a pinch today via horizontal scroll; needs proper responsive treatment.
+- [x] Mobile-responsive scheduler grid — shipped 2026-05-12. Horizontal scroll-snap on `<md`: each provider column fills the viewport (minus the 80px sticky time axis), swipe-left/right advances providers. Top bar collapses (icon-only "+", brand icon), appointment popover renders as a bottom Sheet. Right tool rail already hidden on `<sm`. Multi-provider supported by swipe; managers can browse staff days without changing filters.
 
 **Calendar workspace command center** — the calendar is the front-desk's primary screen, so all day-to-day tools hang off it via a right-side icon rail with slide-out panels. Some are wired live now; most are placeholders that fill in as the underlying features ship.
 
@@ -496,7 +496,7 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 - [x] **"Email signed copy" button** on completed submissions in two places: customer profile Forms tab (full button with Mail icon) + appointment popover Forms section (compact text button). Both use a two-click confirm pattern ("Email" → "Cancel | Confirm send") so accidental clicks don't fire PHI emails. Toast on success names the recipient.
 
 **What's still future (PHI-email roadmap):**
-- [ ] **AWS SES wiring + BAA verification** — Phase 0c: confirm AWS account is BAA-signed, SES domain verification, DKIM/SPF/DMARC, SNS bounce/complaint webhooks.
+- [x] **AWS SES wiring + BAA verification** — shipped 2026-05-09. AWS BAA in place, SES domain `mail.lumècrm.com` verified with DKIM (3 CNAMEs), SPF, DMARC `quarantine`, custom MAIL FROM `bounce.mail.lumècrm.com` aligned. Production access GRANTED (50k/day quota, 14/sec). SNS bounce/complaint webhooks listed in §4.55 week-1 hardening (still open).
 - [ ] **Per-customer email-PHI consent + auto-on-sign** — intake form gains an "OK to email me PHI" field; signed submissions auto-email when the flag is True. Avoids the operator-confirms-each-time friction once the consent model is in place.
 - [ ] **PDF attachment** — server-side render of the signed submission (WeasyPrint). Currently HTML inline + link.
 - [ ] **Pending-form invitation emails** — "Hi, you have a form to sign before your appointment, click here." Same template engine; needs the operator-asks-customer-to-fill flow + per-customer consent. Phase 1F.
@@ -508,7 +508,7 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 - [ ] **Minimum-necessary refinement** on the detail endpoint — v1 lets any authenticated tenant member read full PHI (answers + signature). Refines to clinical-only (`VIEW_CLIENT_PHI` permission) when the permission catalog supports it. HIPAA §164.502(b).
 - [ ] **Image / file upload field types** — needs S3 in prod (Phase 0c).
 - [ ] **Conditional field logic** ("show field B only if answer to A is yes") — polish.
-- [ ] **`X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`** on the public sign route to block embedding attacks. Phase 0c middleware.
+- [x] **`X-Frame-Options: DENY` + CSP `frame-ancestors 'none'`** — shipped. `lume_crm/security_headers.py` middleware sets both globally; covered by `test_security_headers.py`.
 - [ ] **Re-issue UX** — operator must void + manually trigger a new submission today. Polish: an "Issue another" button on the customer chart.
 
 **Out of scope for the whole feature:**
