@@ -871,13 +871,36 @@ User started Meta App registration. Status as of pause:
 - [ ] UTM tracking through to booking → revenue attribution
 - [ ] Pixel/conversion API integrations (Meta CAPI, Google Enhanced Conversions)
 
-#### 3E. Client portal
-- [ ] Self-service login (magic link)
-- [ ] View upcoming + past appointments
-- [ ] Self-reschedule / cancel (within policy)
-- [ ] View completed forms
-- [ ] View invoices + receipts
-- [ ] Rebook last service
+#### 3E. Client portal — table-stakes parity with Mindbody / Boulevard / Fresha
+
+Every modern medspa CRM gives the spa's customers a self-service portal where they can see their relationship with the spa without having to call the front desk. Mindbody, Boulevard, Fresha, Vagaro, Booker — they all have this. Spa owners ask for it on first call. It's the difference between &ldquo;Lumè is a back-office tool&rdquo; and &ldquo;Lumè is the spa's customer-facing brand surface.&rdquo;
+
+**Provisioning + auth:**
+- [ ] **Auto-provision portal access** when the operator adds a client. No separate &ldquo;create portal account&rdquo; step — the moment a customer record exists with an email, the portal is reachable for them.
+- [ ] **Magic-link login** (SES-delivered) — no password to remember, no password to leak. One-time tokens with short expiry, single-use, replay-protected. Same pattern as the staff-invitation accept flow (ADR 0019) and the public form-fill tokens (ADR 0011).
+- [ ] **Optional password sign-in** for clients who prefer it — opt-in on first magic-link login.
+- [ ] **Tenant-branded URL** — `portal.{tenant_slug}.lumècrm.com` or `{tenant_slug}.lumècrm.com/portal`. Tenant logo + colors apply to the portal shell.
+- [ ] **HIPAA: portal session is the customer's PHI-bearing surface.** 15-minute idle timeout (matches staff session policy), `Content-Security-Policy` + `frame-ancestors 'none'`, full audit log on every read.
+
+**Self-service surfaces:**
+- [ ] **Account overview / dashboard** — next appointment, last visit, loyalty points / package balances at a glance.
+- [ ] **Appointment history** — upcoming + past, filterable by date range. Each row shows service, provider, location, status, and an inline action (reschedule / cancel within policy, view receipt, rebook).
+- [ ] **Self-reschedule + cancel** within tenant policy (cancellation window, fee rules). Surfaces the same `Tenant.online_booking_cancellation_policy` text the public booking page shows so the client sees the rule before they commit.
+- [ ] **Rebook last service** — one-tap reorder of the customer's most recent service with the same provider when available.
+- [ ] **Packages + memberships** — balances remaining (e.g., &ldquo;4 of 6 facials remaining, expires Aug 12&rdquo;), redemption history, upcoming renewal date. Customers ask the front desk this constantly; offloading it to the portal is real value.
+- [ ] **Forms** — completed intake/consent forms (read-only PDF download via ADR 0020), pending forms with a one-click sign link (same tokenized fill flow as the email invitations).
+- [ ] **Invoices + payment history** — itemized receipts (PDF via ADR 0018), payment method, tip amount. Filterable + searchable.
+- [ ] **Profile management** — name, contact info, marketing consent toggles (so the client can opt out of campaigns without contacting the spa), address, emergency contact. PHI updates go through the same audit-logged path staff use.
+- [ ] **Gift card balance + redemption history** — &ldquo;You have $40 on a gift card; here's when you used it last.&rdquo;
+- [ ] **Document upload** (front-desk-requested items: insurance card, ID, before-photo) — needs S3 in prod, sized + virus-scanned.
+
+**Cross-cutting:**
+- [ ] **Tenant-aware portal layout** — branded shell, mobile-first (most clients open from a phone), accessible (WCAG AA contrast on tenant colors with a fallback).
+- [ ] **Per-tenant feature flags** on which portal sections are exposed — a spa that doesn't sell packages shouldn't see an empty Packages tab.
+- [ ] **Notification preferences** — clients control what they receive (booking confirmations, marketing campaigns, package-expiry warnings, birthday outreach).
+- [ ] **Re-engagement hooks** — &ldquo;It's been 90 days since your last visit, book again?&rdquo; surfaces in-portal as well as via the campaign / automation system.
+
+**Phase staging:** the portal is in Phase 3 because building it well requires the underlying data surfaces (packages, memberships, invoices, gift cards, forms) to all be solid first. **Pulling it forward** would mean shipping a thin first version after Phase 1 stabilizes — appointments + forms + invoices only — and adding packages / memberships / gift cards as those phases (2B / 2C) land. The customer-portal *frame* (auth, shell, navigation, branding, audit posture) is the heavier lift; individual data surfaces drop in once their data model is in place.
 
 #### 3F. Tenant connected accounts (social + ads hub)
 Per-tenant OAuth plumbing so each spa can link the platforms they actually run their business on. Surfaces under **Settings → Integrations**, scoped per tenant. Each connection stores refresh tokens in Secrets Manager (KMS-encrypted), not in Postgres. PHI must never be transmitted to any of these platforms — only marketing/identity data the client has consented to.
