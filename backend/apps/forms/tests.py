@@ -1082,3 +1082,161 @@ class EmailSignedCopyTests(TestCase):
 def djtz_now():
     from django.utils import timezone
     return timezone.now()
+
+
+# ── PDF rendering + download endpoint ─────────────────────────────────
+
+
+class FormSubmissionPDFTests(TestCase):
+    """Covers ADR 0020 — on-demand form-submission PDF rendering.
+
+    Same architecture as the invoice PDF (ADR 0018): bytes generated
+    on demand, no caching, no S3 storage. Tests verify the renderer
+    produces a valid PDF for COMPLETED and VOIDED states, refuses for
+    PENDING, and the endpoint enforces tenant scope + audit logging.
+    """
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant('pdf-form-tenant')
+        self.template = FormTemplate.objects.create(
+            tenant=self.tenant,
+            name='Botox consent',
+            form_type=FormTemplate.FormType.CONSENT,
+            schema={
+                'fields': [
+                    {'id': 'pregnant', 'type': 'choice_single', 'label': 'Pregnant?',
+                     'required': True,
+                     'options': [{'value': 'no', 'label': 'No'},
+                                 {'value': 'yes', 'label': 'Yes'}]},
+                    {'id': 'allergies', 'type': 'long_text', 'label': 'Allergies',
+                     'required': False},
+                    {'id': 'sig', 'type': 'signature', 'label': 'Sign', 'required': True},
+                ],
+            },
+        )
+        self.customer = _make_customer(self.tenant)
+
+        # A real 1x1 transparent PNG, base64-encoded — the smallest
+        # valid signature payload we can pass to reportlab Image.
+        self.tiny_png_b64 = (
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR4nGNgAAIA'
+            'AAUAAarVyFEAAAAASUVORK5CYII='
+        )
+
+        self.completed_submission = FormSubmission.objects.create(
+            tenant=self.tenant,
+            form_template=self.template,
+            template_version_at_assignment=1,
+            schema_snapshot=self.template.schema,
+            customer=self.customer,
+            status=FormSubmission.Status.COMPLETED,
+            answers={'pregnant': 'no', 'allergies': 'Latex'},
+            signature_data=f'data:image/png;base64,{self.tiny_png_b64}',
+            signed_at=djtz_now(),
+            ip_address='198.51.100.42',
+        )
+
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def _pdf_url(self, pk: int) -> str:
+        return reverse('form-submission-pdf', args=[pk])
+
+    # ── Renderer (unit-level) ───────────────────────────────────
+
+    def test_renderer_produces_valid_pdf_for_completed(self):
+        from apps.forms.services import render_form_submission_pdf
+        pdf = render_form_submission_pdf(self.completed_submission)
+        self.assertTrue(pdf.startswith(b'%PDF-'))
+        self.assertTrue(pdf.rstrip().endswith(b'%%EOF'))
+        self.assertGreater(len(pdf), 1000)
+
+    def test_renderer_produces_valid_pdf_for_voided(self):
+        from apps.forms.services import render_form_submission_pdf
+        self.completed_submission.status = FormSubmission.Status.VOIDED
+        self.completed_submission.voided_at = djtz_now()
+        self.completed_submission.voided_reason = 'Signed in error'
+        self.completed_submission.save()
+        pdf = render_form_submission_pdf(self.completed_submission)
+        self.assertTrue(pdf.startswith(b'%PDF-'))
+
+    def test_renderer_refuses_pending(self):
+        from apps.forms.services import render_form_submission_pdf
+        pending = FormSubmission.objects.create(
+            tenant=self.tenant,
+            form_template=self.template,
+            template_version_at_assignment=1,
+            schema_snapshot=self.template.schema,
+            customer=self.customer,
+            status=FormSubmission.Status.PENDING,
+        )
+        with self.assertRaises(ValueError):
+            render_form_submission_pdf(pending)
+
+    def test_renderer_handles_corrupt_signature_gracefully(self):
+        # Should not crash the whole PDF — renders a placeholder.
+        from apps.forms.services import render_form_submission_pdf
+        self.completed_submission.signature_data = 'data:image/png;base64,not-valid-base64'
+        self.completed_submission.save()
+        pdf = render_form_submission_pdf(self.completed_submission)
+        self.assertTrue(pdf.startswith(b'%PDF-'))
+
+    # ── Endpoint ────────────────────────────────────────────────
+
+    def test_owner_can_download(self):
+        response = self.client.get(
+            self._pdf_url(self.completed_submission.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response['Content-Type'], 'application/pdf')
+        self.assertIn('attachment', response['Content-Disposition'])
+        self.assertTrue(response.content.startswith(b'%PDF-'))
+
+    def test_pending_returns_400(self):
+        pending = FormSubmission.objects.create(
+            tenant=self.tenant,
+            form_template=self.template,
+            template_version_at_assignment=1,
+            schema_snapshot=self.template.schema,
+            customer=self.customer,
+            status=FormSubmission.Status.PENDING,
+        )
+        response = self.client.get(
+            self._pdf_url(pending.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('pending', str(response.data).lower())
+
+    def test_anonymous_blocked(self):
+        anon = APIClient()
+        response = anon.get(
+            self._pdf_url(self.completed_submission.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_cross_tenant_returns_404(self):
+        other_tenant, other_owner = _make_tenant('pdf-form-other')
+        other_client = APIClient()
+        other_client.force_login(other_owner)
+        response = other_client.get(
+            self._pdf_url(self.completed_submission.pk),
+            HTTP_X_TENANT_SLUG=other_tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_download_writes_audit_log(self):
+        self.client.get(
+            self._pdf_url(self.completed_submission.pk),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = AuditLog.objects.filter(
+            resource_type='form_submission_pdf',
+            resource_id=str(self.completed_submission.pk),
+            action=AuditLog.Action.READ,
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertGreater(log.metadata.get('bytes', 0), 0)
+        self.assertEqual(log.metadata.get('customer_id'), self.customer.id)
