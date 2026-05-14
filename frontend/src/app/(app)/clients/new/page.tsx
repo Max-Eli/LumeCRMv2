@@ -43,6 +43,16 @@ const schema = z.object({
   emergency_relationship: z.string().max(50).optional(),
   email_opt_in: z.boolean(),
   sms_opt_in: z.boolean(),
+  // Promotional marketing consent — separate from transactional
+  // confirmations above (ADR 0016). Pre-checked so the operator's
+  // common-path doesn't require an extra click, but visible on
+  // screen so leaving the checkbox checked counts as an explicit
+  // operator-affirmed consent action. Same pattern Mindbody and
+  // Boulevard use for front-desk-added clients. Consent source
+  // stamps as 'manual' on the backend so the audit trail is
+  // defensible under TCPA / CAN-SPAM.
+  email_marketing_opt_in: z.boolean(),
+  sms_marketing_opt_in: z.boolean(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -71,6 +81,8 @@ export default function NewClientPage() {
       emergency_relationship: '',
       email_opt_in: true,
       sms_opt_in: true,
+      email_marketing_opt_in: true,
+      sms_marketing_opt_in: true,
     },
   });
 
@@ -260,23 +272,51 @@ export default function NewClientPage() {
             </Section>
 
             <Section title="Communication preferences" icon={<Megaphone className="size-4" />}>
-              <div className="space-y-3">
-                <CheckboxRow
-                  id="email_opt_in"
-                  label="Send appointment confirmations and reminders by email"
-                  checked={watched.email_opt_in}
-                  onChange={(v) => form.setValue('email_opt_in', v)}
-                />
-                <CheckboxRow
-                  id="sms_opt_in"
-                  label="Send appointment confirmations and reminders by text message"
-                  checked={watched.sms_opt_in}
-                  onChange={(v) => form.setValue('sms_opt_in', v)}
-                />
+              <div className="space-y-1">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                  Transactional (booking confirmations, reminders)
+                </p>
+                <div className="space-y-3 mt-2">
+                  <CheckboxRow
+                    id="email_opt_in"
+                    label="Send appointment confirmations and reminders by email"
+                    checked={watched.email_opt_in}
+                    onChange={(v) => form.setValue('email_opt_in', v)}
+                  />
+                  <CheckboxRow
+                    id="sms_opt_in"
+                    label="Send appointment confirmations and reminders by text message"
+                    checked={watched.sms_opt_in}
+                    onChange={(v) => form.setValue('sms_opt_in', v)}
+                  />
+                </div>
               </div>
+
+              <div className="space-y-1 pt-2 border-t">
+                <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mt-3">
+                  Promotional marketing (campaigns)
+                </p>
+                <div className="space-y-3 mt-2">
+                  <CheckboxRow
+                    id="email_marketing_opt_in"
+                    label="Include in promotional email campaigns"
+                    checked={watched.email_marketing_opt_in}
+                    onChange={(v) => form.setValue('email_marketing_opt_in', v)}
+                  />
+                  <CheckboxRow
+                    id="sms_marketing_opt_in"
+                    label="Include in promotional SMS campaigns"
+                    checked={watched.sms_marketing_opt_in}
+                    onChange={(v) => form.setValue('sms_marketing_opt_in', v)}
+                  />
+                </div>
+              </div>
+
               <p className="text-xs text-muted-foreground">
-                Clients can update these preferences themselves later. SMS opt-in is required by
-                TCPA before any marketing texts.
+                Promotional channels are separate from transactional confirmations.
+                Leaving these checked records the client&apos;s consent at the time you
+                added them (front-desk consent pattern). Clients can unsubscribe at
+                any time from the footer of any campaign email or SMS.
               </p>
             </Section>
           </div>

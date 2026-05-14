@@ -177,6 +177,23 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
                 })
         return attrs
 
+    def create(self, validated_data: dict) -> Customer:
+        """Stamp consent metadata when the operator marks marketing
+        opt-in at create time. Mirrors the same stamping logic in
+        `update()` — the create form on the front-end pre-checks the
+        promotional-consent boxes (front-desk implicit-consent
+        pattern, matches Mindbody/Boulevard); leaving them checked is
+        treated as an explicit operator-affirmed consent so we record
+        `consent_at = now` + `consent_source = 'manual'` per ADR 0016."""
+        now = djtz.now()
+        if validated_data.get('email_marketing_opt_in') is True:
+            validated_data.setdefault('email_marketing_consent_at', now)
+            validated_data.setdefault('email_marketing_consent_source', 'manual')
+        if validated_data.get('sms_marketing_opt_in') is True:
+            validated_data.setdefault('sms_marketing_consent_at', now)
+            validated_data.setdefault('sms_marketing_consent_source', 'manual')
+        return super().create(validated_data)
+
     def update(self, instance: Customer, validated_data: dict) -> Customer:
         """Stamp consent metadata when an operator flips a marketing
         opt-in. Suppression is left untouched here — the customer
