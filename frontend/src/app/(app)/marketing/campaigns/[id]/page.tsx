@@ -139,7 +139,7 @@ export default function CampaignDetailPage({
         actions={<CampaignStatusPill status={campaign.status} />}
       />
 
-      <SendNotReadyBanner />
+      <SendChannelStatusBanner channel={campaign.channel} />
 
       {/* Action row */}
       <section className="rounded-lg border bg-card p-5 space-y-3">
@@ -264,20 +264,29 @@ export default function CampaignDetailPage({
 
 // ── Sub-components ───────────────────────────────────────────────────
 
-function SendNotReadyBanner() {
+function SendChannelStatusBanner({ channel }: { channel: 'email' | 'sms' }) {
+  // Email goes through SES (BAA in place, production access granted
+  // 2026-05-09 — real delivery). SMS still routes to Twilio stub mode
+  // until per-tenant 10DLC / toll-free verification lands (Phase 1L
+  // session 3). Banner is channel-aware so the operator gets accurate
+  // info instead of a one-size-fits-all warning.
+  if (channel === 'email') {
+    return null;
+  }
   return (
     <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2.5 flex items-start gap-2 text-xs">
       <AlertCircle className="size-4 shrink-0 text-amber-600 mt-0.5" />
       <div>
         <p className="font-medium text-amber-900">
-          Send infrastructure not yet connected.
+          SMS delivery not yet connected.
         </p>
         <p className="text-amber-800 mt-0.5">
-          Campaigns flow through the data model end-to-end, but actual email
-          (AWS SES) + SMS (Twilio HIPAA-eligible) delivery wires up once the
-          processor accounts + BAAs are set up. Until then, scheduled
-          campaigns stay in <span className="font-mono">scheduled</span>{' '}
-          status without dispatching.
+          Email campaigns send via AWS SES (live). SMS is still in stub
+          mode — sends write to the send log with a synthetic provider
+          ID but no Twilio API call until per-tenant toll-free /
+          10DLC registration lands. Schedule + dispatch flow works
+          end-to-end; recipients just won&apos;t actually receive the
+          text.
         </p>
       </div>
     </div>
