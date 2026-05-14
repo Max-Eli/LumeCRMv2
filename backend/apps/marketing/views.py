@@ -673,6 +673,149 @@ class CampaignViewSet(viewsets.ModelViewSet):
         campaign.refresh_from_db()
         return Response(CampaignSerializer(campaign).data)
 
+    @action(detail=True, methods=['post'], url_path='preview')
+    def preview(self, request, pk=None):
+        """Render the campaign's template against a sample (or real)
+        customer and return the expanded subject + body.
+
+        Same shape as the template-level preview endpoint, just
+        resolved through the campaign so the operator can preview
+        what THIS campaign will send without navigating away. Read-
+        only — no SendLog rows written, no real email sent.
+        """
+        from types import SimpleNamespace
+
+        from apps.customers.models import Customer
+
+        campaign = self.get_object()
+        template = campaign.template
+
+        ser = MarketingTemplatePreviewSerializer(data=request.data or {})
+        ser.is_valid(raise_exception=True)
+        customer_id = ser.validated_data.get('customer_id')
+
+        if customer_id:
+            try:
+                customer = Customer.objects.get(pk=customer_id, tenant=campaign.tenant)
+            except Customer.DoesNotExist:
+                raise ValidationError({'customer_id': 'Customer not found.'})
+        else:
+            import datetime as dt
+            customer = SimpleNamespace(
+                first_name='Jane',
+                last_name='Sample',
+                date_of_birth=dt.date(1990, 5, 15),
+            )
+
+        rendered_body = render_preview(
+            template.body, customer=customer, tenant=campaign.tenant,
+        )
+        rendered_subject = render_preview(
+            template.subject or '', customer=customer, tenant=campaign.tenant,
+        )
+        return Response(MarketingTemplatePreviewResultSerializer({
+            'subject': rendered_subject,
+            'body': rendered_body,
+            'discovered_tokens': sorted(set(discover_tokens(template.body or ''))),
+        }).data)
+
+    @action(detail=True, methods=['post'], url_path='send-test')
+    def send_test(self, request, pk=None):
+        """Send a single test email to the address in the body.
+
+        Operator-only verification step before scheduling a real
+        campaign. Renders the template against a synthetic sample
+        customer (no real PHI), prefixes the subject with [TEST] so
+        the recipient knows, and sends one message via SES. Does NOT
+        write a SendLog row, does NOT increment campaign counters,
+        does NOT honor opt-in / suppression / quiet-hours (the
+        operator is sending to their own / known address).
+
+        Payload: `{ "recipient_email": "qa@spa.com" }`
+        Permission: same as dispatch (MANAGE_TENANT_SETTINGS via the
+        existing CampaignPermission).
+        Channel: email-only. SMS test-send would follow once Twilio
+        is wired; for now SMS campaigns return 400.
+        """
+        from types import SimpleNamespace
+
+        from django.conf import settings
+        from django.core.mail import EmailMultiAlternatives
+
+        campaign = self.get_object()
+
+        if campaign.channel != Channel.EMAIL:
+            raise ValidationError({
+                'detail': (
+                    'Test sends are email-only today. SMS test-send '
+                    'lands with the Twilio integration.'
+                ),
+            })
+
+        recipient = (request.data or {}).get('recipient_email', '').strip()
+        if not recipient:
+            raise ValidationError({'recipient_email': 'A recipient email is required.'})
+
+        import datetime as dt
+        sample_customer = SimpleNamespace(
+            first_name='Jane',
+            last_name='Sample',
+            date_of_birth=dt.date(1990, 5, 15),
+        )
+
+        template = campaign.template
+        rendered_subject = render_preview(
+            template.subject or '', customer=sample_customer, tenant=campaign.tenant,
+        )
+        rendered_body = render_preview(
+            template.body, customer=sample_customer, tenant=campaign.tenant,
+        )
+
+        # [TEST] subject prefix so the recipient knows this isn't a
+        # real campaign send. Keeps QA out of the analytics noise
+        # too — no SendLog row written.
+        subject = f'[TEST] {rendered_subject or "(no subject)"}'
+
+        try:
+            msg = EmailMultiAlternatives(
+                subject=subject,
+                body=rendered_body,
+                from_email=settings.DEFAULT_FROM_EMAIL,
+                to=[recipient],
+            )
+            if '<html' in rendered_body.lower() or '<p' in rendered_body.lower():
+                msg.attach_alternative(rendered_body, 'text/html')
+            msg.send(fail_silently=False)
+        except Exception as e:
+            # Surface the failure to the operator. Same approach as
+            # the rest of the campaign-detail UX — "Failed" status
+            # plus the detail in audit / logs.
+            record(
+                action=AuditLog.Action.UPDATE,
+                resource_type='marketing_campaign',
+                resource_id=campaign.pk,
+                request=request,
+                metadata={
+                    'event': 'test_send_failed',
+                    'recipient_domain': recipient.split('@')[-1].lower(),
+                    'error': str(e)[:300],
+                },
+            )
+            raise ValidationError({'detail': f'Test send failed: {e}'})
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='marketing_campaign',
+            resource_id=campaign.pk,
+            request=request,
+            metadata={
+                'event': 'test_send_sent',
+                'recipient_domain': recipient.split('@')[-1].lower(),
+            },
+        )
+
+        return Response({'recipient': recipient, 'subject': subject})
+
 
 # ── Automations (always-on triggered campaigns) ─────────────────────
 

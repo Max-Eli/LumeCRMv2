@@ -1362,3 +1362,185 @@ class OperatorMarketingOptInTests(TestCase):
             self.customer.email_marketing_consent_at.replace(microsecond=0),
             original.replace(microsecond=0),
         )
+
+
+# ── Campaign preview + test-send ─────────────────────────────────────
+
+
+class CampaignPreviewAndTestSendTests(TestCase):
+    """`POST /campaigns/<id>/preview/` returns rendered subject + body.
+    `POST /campaigns/<id>/send-test/` sends a single test email.
+
+    Both are operator verification steps before scheduling a real
+    campaign. Preview is read-only; test-send writes no SendLog rows
+    and doesn't touch campaign counters."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('mkt-preview')
+        cls.audience = Audience.objects.create(
+            tenant=cls.tenant, name='All', filter_spec={},
+        )
+        cls.email_template = MarketingTemplate.objects.create(
+            tenant=cls.tenant, name='Hello',
+            channel=Channel.EMAIL,
+            subject='Hi {{first_name}}',
+            body='Hi {{first_name}}, welcome to {{tenant_name}}. '
+                 '{{unsubscribe_url}}',
+        )
+        cls.sms_template = MarketingTemplate.objects.create(
+            tenant=cls.tenant, name='SMS-text',
+            channel=Channel.SMS,
+            subject='',
+            body='Hi {{first_name}}, reply STOP to opt out.',
+        )
+
+    def setUp(self):
+        from django.core import mail
+        mail.outbox = []
+        self.client = _client_for(self.owner)
+
+    def _create_email_campaign(self):
+        response = self.client.post(
+            reverse('marketing-campaign-list'),
+            data={
+                'name': 'preview test',
+                'audience': self.audience.pk,
+                'template': self.email_template.pk,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        return response.data['id']
+
+    def _create_sms_campaign(self):
+        response = self.client.post(
+            reverse('marketing-campaign-list'),
+            data={
+                'name': 'sms preview test',
+                'audience': self.audience.pk,
+                'template': self.sms_template.pk,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        return response.data['id']
+
+    # ── Preview ──────────────────────────────────────────────────
+
+    def test_preview_renders_subject_and_body_with_synthetic_sample(self):
+        cid = self._create_email_campaign()
+        response = self.client.post(
+            reverse('marketing-campaign-preview', kwargs={'pk': cid}),
+            data={},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        # Default sample is "Jane Sample" — verifies tokens get
+        # substituted without a real customer.
+        self.assertIn('Jane', response.data['subject'])
+        self.assertIn('Jane', response.data['body'])
+        self.assertIn(self.tenant.name, response.data['body'])
+
+    def test_preview_with_real_customer(self):
+        c = Customer.objects.create(
+            tenant=self.tenant, first_name='Pat', last_name='Real',
+            email='pat@real.test',
+        )
+        cid = self._create_email_campaign()
+        response = self.client.post(
+            reverse('marketing-campaign-preview', kwargs={'pk': cid}),
+            data={'customer_id': c.pk},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('Pat', response.data['subject'])
+        self.assertIn('Pat', response.data['body'])
+
+    def test_preview_cross_tenant_customer_400(self):
+        other_tenant, _ = _make_tenant('mkt-preview-other')
+        other_customer = Customer.objects.create(
+            tenant=other_tenant, first_name='X', last_name='Other', email='x@x.test',
+        )
+        cid = self._create_email_campaign()
+        response = self.client.post(
+            reverse('marketing-campaign-preview', kwargs={'pk': cid}),
+            data={'customer_id': other_customer.pk},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    # ── Test-send ────────────────────────────────────────────────
+
+    def test_test_send_dispatches_one_email_with_test_prefix(self):
+        from django.core import mail
+        cid = self._create_email_campaign()
+        response = self.client.post(
+            reverse('marketing-campaign-send-test', kwargs={'pk': cid}),
+            data={'recipient_email': 'qa@spa.test'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['recipient'], 'qa@spa.test')
+        self.assertTrue(response.data['subject'].startswith('[TEST] '))
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ['qa@spa.test'])
+        self.assertTrue(sent.subject.startswith('[TEST] '))
+        # Synthetic sample's first_name = 'Jane'
+        self.assertIn('Jane', sent.body)
+
+    def test_test_send_writes_no_send_log(self):
+        from apps.marketing.models import MarketingSendLog
+        cid = self._create_email_campaign()
+        self.client.post(
+            reverse('marketing-campaign-send-test', kwargs={'pk': cid}),
+            data={'recipient_email': 'qa@spa.test'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(MarketingSendLog.objects.filter(campaign_id=cid).count(), 0)
+
+    def test_test_send_rejects_missing_recipient(self):
+        cid = self._create_email_campaign()
+        response = self.client.post(
+            reverse('marketing-campaign-send-test', kwargs={'pk': cid}),
+            data={},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_test_send_rejects_sms_campaigns_for_now(self):
+        # SMS test-send returns 400 with a clear message until Twilio
+        # is wired (Phase 1L session 3).
+        cid = self._create_sms_campaign()
+        response = self.client.post(
+            reverse('marketing-campaign-send-test', kwargs={'pk': cid}),
+            data={'recipient_email': 'qa@spa.test'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('email-only', response.data['detail'].lower())
+
+    def test_test_send_writes_audit_log(self):
+        from apps.audit.models import AuditLog
+        cid = self._create_email_campaign()
+        self.client.post(
+            reverse('marketing-campaign-send-test', kwargs={'pk': cid}),
+            data={'recipient_email': 'qa@spa.test'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = AuditLog.objects.filter(
+            resource_type='marketing_campaign',
+            resource_id=str(cid),
+            metadata__event='test_send_sent',
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('recipient_domain'), 'spa.test')
