@@ -498,12 +498,12 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 **What's still future (PHI-email roadmap):**
 - [x] **AWS SES wiring + BAA verification** — shipped 2026-05-09. AWS BAA in place, SES domain `mail.lumècrm.com` verified with DKIM (3 CNAMEs), SPF, DMARC `quarantine`, custom MAIL FROM `bounce.mail.lumècrm.com` aligned. Production access GRANTED (50k/day quota, 14/sec). SNS bounce/complaint webhooks listed in §4.55 week-1 hardening (still open).
 - [ ] **Per-customer email-PHI consent + auto-on-sign** — intake form gains an "OK to email me PHI" field; signed submissions auto-email when the flag is True. Avoids the operator-confirms-each-time friction once the consent model is in place.
-- [ ] **PDF attachment** — server-side render of the signed submission (WeasyPrint). Currently HTML inline + link.
+- [x] **PDF attachment / download** — shipped 2026-05-13. `render_form_submission_pdf` (reportlab, reuses ADR 0018 pattern) drives `GET /api/form-submissions/<id>/pdf/`. Frontend Download PDF button on the customer Forms tab for completed + voided submissions. On-demand projection, no caching. 9 tests covering renderer correctness + endpoint auth + tenant scope + audit log. See [ADR 0020](docs/decisions/0020-form-submission-pdfs.md).
 - [ ] **Pending-form invitation emails** — "Hi, you have a form to sign before your appointment, click here." Same template engine; needs the operator-asks-customer-to-fill flow + per-customer consent. Phase 1F.
 - [ ] **SMS reminders / form-link delivery** — full Phase 1F territory; needs Twilio + per-tenant phone provisioning + TCPA opt-in/opt-out + scheduled sending.
 
 **Other Forms polish (not email-related):**
-- [ ] **PDF generation** for signed submissions (server-side render, WeasyPrint or similar). Customer profile shows "Signed" + read-only view today; downloadable PDF is a follow-up.
+- [x] **PDF generation** for signed submissions — shipped 2026-05-13 (same as above; tracked as one item). See [ADR 0020](docs/decisions/0020-form-submission-pdfs.md).
 - [ ] **Token expiry policy** — v1 tokens live forever until status flips. Polish item: invalidate when the related appointment is cancelled or > N days past.
 - [ ] **Minimum-necessary refinement** on the detail endpoint — v1 lets any authenticated tenant member read full PHI (answers + signature). Refines to clinical-only (`VIEW_CLIENT_PHI` permission) when the permission catalog supports it. HIPAA §164.502(b).
 - [ ] **Image / file upload field types** — needs S3 in prod (Phase 0c).
