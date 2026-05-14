@@ -19,10 +19,11 @@ survive. Operators deactivate (`is_active=false`) to retire a template.
 """
 
 from django.db import transaction
+from django.http import HttpResponse
 from django.utils import timezone as djtz
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -315,6 +316,49 @@ class FormSubmissionViewSet(viewsets.ReadOnlyModelViewSet):
             },
         )
         return Response(self.get_serializer(instance).data)
+
+    @action(detail=True, methods=['get'], url_path='pdf')
+    def pdf(self, request, *args, **kwargs):
+        """Render this submission as a PDF and stream it as an attachment.
+
+        Same pattern as the invoice PDF endpoint (ADR 0018) — on-demand
+        projection of the row, no caching. Pending submissions return
+        400 (nothing to render before the signature). SIGNED and
+        VOIDED submissions both render; voided shows a red VOIDED
+        banner at the top.
+
+        Permission: any authenticated tenant member (matches list +
+        retrieve). The signature + answers are PHI; every PDF download
+        writes an `AuditLog` entry with the submission id + customer id
+        for HIPAA §164.312(b) coverage.
+        """
+        from .services import render_form_submission_pdf
+
+        instance = self.get_object()
+        try:
+            pdf_bytes = render_form_submission_pdf(instance)
+        except ValueError as e:
+            raise ValidationError({'detail': str(e)})
+
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='form_submission_pdf',
+            resource_id=instance.id,
+            request=request,
+            metadata={
+                'customer_id': instance.customer_id,
+                'template_id': instance.form_template_id,
+                'bytes': len(pdf_bytes),
+            },
+        )
+
+        filename = (
+            f'{instance.form_template.name} — {instance.pk}.pdf'
+            .replace('/', '-')
+        )
+        response = HttpResponse(pdf_bytes, content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
     @action(detail=True, methods=['post'])
     def void(self, request, *args, **kwargs):

@@ -302,3 +302,167 @@ def _format_field_value(field: dict, value) -> str:
             labels.append(opt_map.get(v, v))
         return ', '.join(labels)
     return str(value)
+
+
+# ── PDF rendering ─────────────────────────────────────────────────────
+
+
+def render_form_submission_pdf(submission: 'FormSubmission') -> bytes:
+    """Render a signed form submission as a PDF and return the raw bytes.
+
+    Same architecture as `apps.invoices.services.render_invoice_pdf`
+    (ADR 0018): on-demand projection of the row, no caching, no S3
+    storage. The submission's `schema_snapshot` + `answers` + frozen
+    `signed_at` + `signature_data` are the authoritative record; the
+    PDF is a deterministic view of those.
+
+    Renders for both SIGNED and VOIDED submissions. Pending (unsigned)
+    submissions raise — there's nothing meaningful to PDF until the
+    signature is present. View layer maps that to 400.
+
+    See ADR 0020 for the design rationale and HIPAA framing.
+    """
+    if submission.status == FormSubmission.Status.PENDING:
+        raise ValueError(
+            'Cannot render PDF for a pending submission. Sign or void it first.'
+        )
+
+    # Lazy imports keep reportlab out of every Django request's
+    # import graph.
+    import base64
+    import io as _io
+
+    from reportlab.lib import colors
+    from reportlab.lib.enums import TA_LEFT
+    from reportlab.lib.pagesizes import LETTER
+    from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
+    from reportlab.lib.units import inch
+    from reportlab.platypus import (
+        Image,
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
+
+    buf = _io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=LETTER,
+        leftMargin=0.7 * inch, rightMargin=0.7 * inch,
+        topMargin=0.7 * inch, bottomMargin=0.7 * inch,
+        title=f'{submission.form_template.name} — signed',
+        author=submission.tenant.name,
+    )
+
+    styles = getSampleStyleSheet()
+    body = styles['BodyText']
+    small = ParagraphStyle('small', parent=body, fontSize=9, leading=11)
+    label_style = ParagraphStyle(
+        'label', parent=body, fontSize=8, leading=10,
+        textColor=colors.HexColor('#737373'),
+    )
+    value_style = ParagraphStyle(
+        'val', parent=body, fontSize=10, leading=14, alignment=TA_LEFT,
+    )
+    h1 = ParagraphStyle('h1', parent=styles['Heading1'], spaceAfter=4)
+
+    elements: list = []
+
+    customer = submission.customer
+    customer_name = (
+        f'{customer.first_name} {customer.last_name}'.strip()
+        if customer else '—'
+    )
+
+    # ── Header ───────────────────────────────────────────────
+    elements.append(Paragraph(
+        f'<font color="#737373">{submission.tenant.name}</font>', small,
+    ))
+    elements.append(Paragraph(submission.form_template.name, h1))
+    if submission.status == FormSubmission.Status.VOIDED:
+        elements.append(Paragraph(
+            f'<font color="#b91c1c"><b>VOIDED</b> on '
+            f'{submission.voided_at:%b %d, %Y at %-I:%M %p} — '
+            f'{submission.voided_reason or "no reason given"}</font>',
+            small,
+        ))
+    elements.append(Spacer(1, 0.15 * inch))
+
+    # ── Bill/sign-to header ──────────────────────────────────
+    signed_at_str = (
+        submission.signed_at.strftime('%B %-d, %Y at %-I:%M %p')
+        if submission.signed_at else '—'
+    )
+    header_table = Table(
+        [[
+            [Paragraph('CLIENT', label_style), Paragraph(customer_name, value_style)],
+            [Paragraph('SIGNED', label_style), Paragraph(signed_at_str, value_style)],
+        ]],
+        colWidths=[3.6 * inch, 3.4 * inch],
+    )
+    header_table.setStyle(TableStyle([
+        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+    ]))
+    elements.append(header_table)
+    elements.append(Spacer(1, 0.25 * inch))
+
+    # ── Field-by-field render ────────────────────────────────
+    # Drive off schema_snapshot.fields (frozen at submission time) so
+    # the PDF reflects what was signed even if the live template has
+    # changed.
+    fields = submission.schema_snapshot.get('fields', [])
+    for field in fields:
+        if field.get('type') == 'signature':
+            # Signature rendered separately below as an image.
+            continue
+        label = field.get('label', field.get('id', ''))
+        value = submission.answers.get(field['id'])
+        formatted = _format_field_value(field, value) or '—'
+
+        elements.append(Paragraph(label.upper(), label_style))
+        elements.append(Paragraph(formatted.replace('\n', '<br/>'), value_style))
+        elements.append(Spacer(1, 0.12 * inch))
+
+    # ── Signature ────────────────────────────────────────────
+    if submission.signature_data:
+        elements.append(Spacer(1, 0.2 * inch))
+        elements.append(Paragraph('SIGNATURE', label_style))
+        # signature_data is a `data:image/png;base64,...` URL or a raw
+        # base64 string — strip the URL prefix if present.
+        raw = submission.signature_data
+        if raw.startswith('data:'):
+            raw = raw.split(',', 1)[1] if ',' in raw else ''
+        try:
+            png_bytes = base64.b64decode(raw)
+            sig_buf = _io.BytesIO(png_bytes)
+            sig = Image(sig_buf, width=3 * inch, height=1.2 * inch, kind='proportional')
+            elements.append(sig)
+        except (ValueError, TypeError):
+            # Corrupt base64 — render a clear placeholder rather than
+            # failing the whole PDF.
+            elements.append(Paragraph(
+                '<font color="#b91c1c">(signature image could not be rendered)</font>',
+                small,
+            ))
+
+    # ── Footer ───────────────────────────────────────────────
+    elements.append(Spacer(1, 0.3 * inch))
+    footer_lines = [
+        f'Submission ID: {submission.pk}',
+        f'Form template: {submission.form_template.name}',
+    ]
+    if submission.signed_at:
+        footer_lines.append(f'Signed at: {signed_at_str}')
+    if submission.ip_address:
+        footer_lines.append(f'Signed from IP: {submission.ip_address}')
+    elements.append(Paragraph(
+        '<br/>'.join(f'<font color="#a3a3a3" size="8">{line}</font>' for line in footer_lines),
+        small,
+    ))
+
+    doc.build(elements)
+    return buf.getvalue()
