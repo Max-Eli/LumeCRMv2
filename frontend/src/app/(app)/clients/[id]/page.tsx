@@ -986,7 +986,13 @@ function SubmissionRow({
       </div>
       <div className="flex items-center gap-1.5 shrink-0">
         {submission.status === 'completed' ? (
-          <EmailSignedCopyButton submissionId={submission.id} />
+          <>
+            <DownloadFormPdfButton
+              submissionId={submission.id}
+              templateName={submission.template_name}
+            />
+            <EmailSignedCopyButton submissionId={submission.id} />
+          </>
         ) : null}
         {submission.status === 'pending' ? (
           <a
@@ -1010,6 +1016,70 @@ function SubmissionRow({
       </div>
     </li>
   );
+}
+
+/** Download-PDF button for a signed (or voided) form submission.
+ *  Same fetch+Blob+anchor pattern as the invoice + CSV downloads —
+ *  a plain <a href> would skip the X-Tenant-Slug header in dev. */
+function DownloadFormPdfButton({
+  submissionId,
+  templateName,
+}: {
+  submissionId: number;
+  templateName: string;
+}) {
+  const [downloading, setDownloading] = useState(false);
+
+  const handleClick = async () => {
+    setDownloading(true);
+    try {
+      const tenantSlug = readTenantCookie();
+      const headers: Record<string, string> = { Accept: 'application/pdf' };
+      if (tenantSlug) headers['X-Tenant-Slug'] = tenantSlug;
+
+      const apiBase = process.env.NEXT_PUBLIC_API_URL ?? 'http://localhost:8000';
+      const res = await fetch(`${apiBase}/api/form-submissions/${submissionId}/pdf/`, {
+        credentials: 'include',
+        headers,
+      });
+      if (!res.ok) {
+        toast.error(`Could not download PDF (HTTP ${res.status}).`);
+        return;
+      }
+      const blob = await res.blob();
+      const fallback = `${templateName} — ${submissionId}.pdf`;
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = fallback;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch {
+      toast.error('Could not download PDF. Please try again.');
+    } finally {
+      setDownloading(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={handleClick}
+      disabled={downloading}
+      className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md border bg-card text-xs font-medium hover:bg-muted transition-colors disabled:opacity-60"
+      title="Download a PDF of the signed form"
+    >
+      {downloading ? 'Downloading…' : 'PDF'}
+    </button>
+  );
+}
+
+function readTenantCookie(): string | null {
+  if (typeof document === 'undefined') return null;
+  const match = document.cookie.match(/(?:^|; )lume_active_tenant=([^;]*)/);
+  return match ? decodeURIComponent(match[1]) : null;
 }
 
 /**
