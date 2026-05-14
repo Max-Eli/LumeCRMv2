@@ -1634,3 +1634,274 @@ class BookableMembershipScheduleEmbedTests(TestCase):
         for row in response.data:
             self.assertIsNone(row.get('membership_location_id'))
             self.assertIsNone(row.get('schedule_for_location'))
+
+
+# ── Invitation flow ──────────────────────────────────────────────────
+
+
+class StaffInvitationTests(TestCase):
+    """Covers ADR 0019 — email invite-and-accept flow that replaces
+    the temp-password reveal."""
+
+    def setUp(self):
+        from django.core import mail
+        mail.outbox = []
+
+        self.tenant, self.owner = _make_tenant('invite-tenant')
+        self.manager_user = _make_user('mgr@test.local', first_name='Mac', last_name='Manager')
+        self.manager_membership = TenantMembership.objects.create(
+            user=self.manager_user, tenant=self.tenant,
+            role=TenantMembership.Role.MANAGER, is_active=True,
+        )
+        self.fd_user = _make_user('fd@test.local', first_name='Front', last_name='Desk')
+        self.fd_membership = TenantMembership.objects.create(
+            user=self.fd_user, tenant=self.tenant,
+            role=TenantMembership.Role.FRONT_DESK, is_active=True,
+        )
+
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def _invite_url(self) -> str:
+        return reverse('membership-invite')
+
+    def test_owner_can_invite(self):
+        from django.core import mail
+        response = self.client.post(
+            self._invite_url(),
+            data={
+                'email': 'new-hire@example.test',
+                'role': 'provider',
+                'is_bookable': True,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(response.data['email'], 'new-hire@example.test')
+        self.assertEqual(response.data['role'], 'provider')
+        self.assertTrue(response.data['is_pending'])
+        self.assertEqual(len(mail.outbox), 1)
+        sent = mail.outbox[0]
+        self.assertEqual(sent.to, ['new-hire@example.test'])
+        self.assertIn(self.tenant.name, sent.subject)
+        from apps.tenants.models import Invitation
+        invitation = Invitation.objects.get(email='new-hire@example.test')
+        self.assertIn(invitation.token, sent.body)
+
+    def test_manager_can_invite(self):
+        c = APIClient()
+        c.force_login(self.manager_user)
+        response = c.post(
+            self._invite_url(),
+            data={'email': 'mgr-hire@example.test', 'role': 'front_desk'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+
+    def test_front_desk_cannot_invite(self):
+        c = APIClient()
+        c.force_login(self.fd_user)
+        response = c.post(
+            self._invite_url(),
+            data={'email': 'sneak@example.test', 'role': 'front_desk'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_cannot_invite_existing_member(self):
+        response = self.client.post(
+            self._invite_url(),
+            data={'email': self.manager_user.email, 'role': 'provider'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('already a member', response.data['detail'])
+
+    def test_duplicate_pending_invitation_rejected(self):
+        from django.core import mail
+        first = self.client.post(
+            self._invite_url(),
+            data={'email': 'dup@example.test', 'role': 'provider'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(first.status_code, status.HTTP_201_CREATED)
+        mail.outbox = []
+        second = self.client.post(
+            self._invite_url(),
+            data={'email': 'dup@example.test', 'role': 'provider'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(second.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('pending invitation', second.data['detail'])
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_lookup_returns_tenant_and_role(self):
+        from apps.tenants.models import Invitation
+        self.client.post(
+            self._invite_url(),
+            data={'email': 'lookup@example.test', 'role': 'provider', 'is_bookable': True},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        invitation = Invitation.objects.get(email='lookup@example.test')
+        anon = APIClient()
+        response = anon.get(
+            reverse('auth-invitation-lookup', kwargs={'token': invitation.token}),
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['tenant_name'], self.tenant.name)
+        self.assertEqual(response.data['role'], 'provider')
+        self.assertTrue(response.data['is_pending'])
+        # Recipient email is intentionally NOT exposed in the lookup.
+        self.assertNotIn('email', response.data)
+
+    def test_lookup_unknown_token_returns_404(self):
+        anon = APIClient()
+        response = anon.get(
+            reverse('auth-invitation-lookup', kwargs={'token': 'not-a-real-token'}),
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+    def test_accept_creates_user_and_membership(self):
+        from apps.tenants.models import Invitation
+        self.client.post(
+            self._invite_url(),
+            data={'email': 'accept@example.test', 'role': 'provider', 'is_bookable': True},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        invitation = Invitation.objects.get(email='accept@example.test')
+        anon = APIClient()
+        response = anon.post(
+            reverse('auth-invitation-accept'),
+            data={
+                'token': invitation.token,
+                'password': 'a-strong-password-123',
+                'first_name': 'New',
+                'last_name': 'Hire',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        self.assertEqual(response.data['tenant_slug'], self.tenant.slug)
+        self.assertEqual(response.data['redirect'], '/dashboard')
+        new_user = User.objects.get(email='accept@example.test')
+        self.assertEqual(new_user.first_name, 'New')
+        self.assertEqual(new_user.last_name, 'Hire')
+        self.assertTrue(new_user.check_password('a-strong-password-123'))
+        membership = TenantMembership.objects.get(user=new_user, tenant=self.tenant)
+        self.assertEqual(membership.role, 'provider')
+        self.assertTrue(membership.is_bookable)
+        self.assertTrue(membership.is_active)
+        invitation.refresh_from_db()
+        self.assertIsNotNone(invitation.accepted_at)
+        self.assertEqual(invitation.accepted_by_user_id, new_user.id)
+
+    def test_accept_rejects_short_password(self):
+        from apps.tenants.models import Invitation
+        self.client.post(
+            self._invite_url(),
+            data={'email': 'shortpw@example.test', 'role': 'provider'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        invitation = Invitation.objects.get(email='shortpw@example.test')
+        anon = APIClient()
+        response = anon.post(
+            reverse('auth-invitation-accept'),
+            data={
+                'token': invitation.token,
+                'password': 'short',
+                'first_name': 'Short', 'last_name': 'PW',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_accept_rejects_existing_email(self):
+        User.objects.create_user(
+            email='already-here@example.test',
+            password='their-real-password',
+            first_name='Existing', last_name='User',
+        )
+        from apps.tenants.models import Invitation
+        self.client.post(
+            self._invite_url(),
+            data={'email': 'already-here@example.test', 'role': 'provider'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        invitation = Invitation.objects.get(email='already-here@example.test')
+        anon = APIClient()
+        response = anon.post(
+            reverse('auth-invitation-accept'),
+            data={
+                'token': invitation.token,
+                'password': 'new-attempted-password-xyz',
+                'first_name': 'Hacker', 'last_name': 'Attempt',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('already exists', response.data['detail'].lower())
+        existing = User.objects.get(email='already-here@example.test')
+        self.assertTrue(existing.check_password('their-real-password'))
+
+    def test_accept_idempotent_rejects_replay(self):
+        from apps.tenants.models import Invitation
+        self.client.post(
+            self._invite_url(),
+            data={'email': 'replay@example.test', 'role': 'provider'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        invitation = Invitation.objects.get(email='replay@example.test')
+        anon = APIClient()
+        first = anon.post(
+            reverse('auth-invitation-accept'),
+            data={
+                'token': invitation.token,
+                'password': 'a-strong-password-123',
+                'first_name': 'R', 'last_name': 'P',
+            },
+            format='json',
+        )
+        self.assertEqual(first.status_code, status.HTTP_200_OK)
+        replay = anon.post(
+            reverse('auth-invitation-accept'),
+            data={
+                'token': invitation.token,
+                'password': 'second-strong-password-456',
+                'first_name': 'R2', 'last_name': 'P2',
+            },
+            format='json',
+        )
+        self.assertEqual(replay.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('already been accepted', replay.data['detail'])
+
+    def test_accept_rejects_expired_token(self):
+        from datetime import timedelta
+        from django.utils import timezone as djtz
+
+        from apps.tenants.models import Invitation
+        self.client.post(
+            self._invite_url(),
+            data={'email': 'expired@example.test', 'role': 'provider'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        invitation = Invitation.objects.get(email='expired@example.test')
+        invitation.expires_at = djtz.now() - timedelta(seconds=1)
+        invitation.save(update_fields=['expires_at'])
+        anon = APIClient()
+        response = anon.post(
+            reverse('auth-invitation-accept'),
+            data={
+                'token': invitation.token,
+                'password': 'a-strong-password-123',
+                'first_name': 'X', 'last_name': 'P',
+            },
+            format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('expired', response.data['detail'].lower())
