@@ -134,6 +134,22 @@ data "aws_iam_policy_document" "backend_task" {
       values   = [var.ses_from_address]
     }
   }
+
+  # SES read-only quota + stats. django-ses calls GetSendQuota
+  # before every send as a throttle check; without this the
+  # library treats AccessDenied as fatal and never attempts the
+  # send. GetSendStatistics is parallel (used for stats reporting)
+  # and harmless to grant. Neither exposes message content or
+  # recipient lists — they return only aggregate counters scoped
+  # to this account.
+  statement {
+    sid = "SESReadOwnAccountQuota"
+    actions = [
+      "ses:GetSendQuota",
+      "ses:GetSendStatistics",
+    ]
+    resources = ["*"]
+  }
 }
 
 resource "aws_iam_role_policy" "backend_task" {
