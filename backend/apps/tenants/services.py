@@ -205,11 +205,16 @@ def _send_invitation_email(invitation: Invitation) -> None:
     text_body = render_to_string('tenants/email/invitation.txt', context)
     html_body = render_to_string('tenants/email/invitation.html', context)
 
+    from .email import tenant_from_email, tenant_reply_to
+
+    reply_to = tenant_reply_to(invitation.tenant)
+
     msg = EmailMultiAlternatives(
         subject=f'You\'re invited to join {invitation.tenant.name} on Lumè CRM',
         body=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=tenant_from_email(invitation.tenant),
         to=[invitation.email],
+        reply_to=[reply_to] if reply_to else None,
     )
     msg.attach_alternative(html_body, 'text/html')
     # fail_silently=False — caller (the invite endpoint) needs to know

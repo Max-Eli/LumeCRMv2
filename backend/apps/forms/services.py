@@ -258,16 +258,16 @@ def email_signed_copy(
     text_body = render_to_string('forms/email/signed_copy.txt', context)
     html_body = render_to_string('forms/email/signed_copy.html', context)
 
+    from apps.tenants.email import tenant_from_email, tenant_reply_to
+
+    reply_to = tenant_reply_to(submission.tenant)
+
     msg = EmailMultiAlternatives(
         subject=f'Your signed {submission.form_template.name}',
         body=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=tenant_from_email(submission.tenant),
         to=[recipient],
-        # Reply-To set to the tenant's general contact would be a
-        # nice touch — Phase 0c per-tenant from-address work. v1
-        # leaves it as the central from-address; replies bounce to
-        # noreply (acceptable; the email tells the customer to
-        # contact the spa directly if they have questions).
+        reply_to=[reply_to] if reply_to else None,
     )
     msg.attach_alternative(html_body, 'text/html')
 

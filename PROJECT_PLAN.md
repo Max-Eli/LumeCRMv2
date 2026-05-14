@@ -1098,8 +1098,8 @@ The platform-admin-facing portal (`platform.lumècrm.com`) currently does the ba
 - [ ] **Admin UI**: provisioning status dashboard (brand: pending/approved, campaign: pending/approved/rejected, number: provisioned, webhooks: healthy). One-glance "is this tenant ready to send SMS yet?"
 
 #### P2. SES per-tenant identity (optional)
-- [ ] **Default**: shared `noreply@lumècrm.com` From address (works in SES sandbox until exit).
-- [ ] **Tenant-branded sending**: optionally provision a tenant subdomain (`mail.<tenant>.lumècrm.com`) with DKIM keys per tenant, so emails From the spa's own brand. Adds DNS automation (Route 53 records per tenant) and SES configuration sets. Defer until a spa actually asks.
+- [x] **Tenant-branded display name** — shipped 2026-05-14. Every outbound email uses `{tenant.name} <noreply@mail.lumècrm.com>` instead of the platform name. Reply-To resolves to the default location's email so customer replies route to a real human inbox at the spa, not noreply. `List-Unsubscribe` + `List-Unsubscribe-Post: One-Click` headers added to marketing campaign sends (RFC 8058) — Gmail/Outlook surface a native one-click unsubscribe button, the single biggest "this is a legit sender" signal a campaign carries.
+- [ ] **Per-tenant subdomain sending** (e.g., `mail.<tenant_slug>.lumècrm.com` or the spa's own domain): true per-spa DKIM key, isolated sender reputation so one spa's bounces don't taint another's deliverability. Adds: DNS automation per tenant, SES configuration sets, verification status tracking, admin UI for the operator to walk through DNS setup. **Defer until** a spa hits the shared-reputation ceiling (~10k+ sends/mo across the fleet) or a spa specifically asks for a vanity sending domain.
 
 #### P3. Tenant lifecycle controls
 - [ ] **Status transitions** — Trial → Active → Suspended → Deleted (with grace period). Currently status is set manually; admin portal exposes the transitions with audit log.

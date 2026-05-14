@@ -368,11 +368,16 @@ def send_invoice_email(invoice: Invoice, *, sender_user) -> str:
     text_body = render_to_string('invoices/email/sent.txt', context)
     html_body = render_to_string('invoices/email/sent.html', context)
 
+    from apps.tenants.email import tenant_from_email, tenant_reply_to
+
+    reply_to = tenant_reply_to(invoice.tenant)
+
     msg = EmailMultiAlternatives(
         subject=f'Your invoice from {invoice.tenant.name} — {invoice_label}',
         body=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=tenant_from_email(invoice.tenant),
         to=[recipient],
+        reply_to=[reply_to] if reply_to else None,
     )
     msg.attach_alternative(html_body, 'text/html')
     msg.attach(

@@ -288,11 +288,16 @@ def send_booking_confirmation(
     text_body = render_to_string('booking/email/confirmation.txt', context)
     html_body = render_to_string('booking/email/confirmation.html', context)
 
+    from apps.tenants.email import tenant_from_email, tenant_reply_to
+
+    reply_to = tenant_reply_to(tenant) or (location.email or None)
+
     msg = EmailMultiAlternatives(
         subject=subject,
         body=text_body,
-        from_email=settings.DEFAULT_FROM_EMAIL,
+        from_email=tenant_from_email(tenant),
         to=[recipient],
+        reply_to=[reply_to] if reply_to else None,
     )
     msg.attach_alternative(html_body, 'text/html')
 

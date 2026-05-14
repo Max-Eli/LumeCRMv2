@@ -776,12 +776,17 @@ class CampaignViewSet(viewsets.ModelViewSet):
         # too — no SendLog row written.
         subject = f'[TEST] {rendered_subject or "(no subject)"}'
 
+        from apps.tenants.email import tenant_from_email, tenant_reply_to
+
+        reply_to = tenant_reply_to(campaign.tenant)
+
         try:
             msg = EmailMultiAlternatives(
                 subject=subject,
                 body=rendered_body,
-                from_email=settings.DEFAULT_FROM_EMAIL,
+                from_email=tenant_from_email(campaign.tenant),
                 to=[recipient],
+                reply_to=[reply_to] if reply_to else None,
             )
             if '<html' in rendered_body.lower() or '<p' in rendered_body.lower():
                 msg.attach_alternative(rendered_body, 'text/html')

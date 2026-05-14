@@ -229,16 +229,49 @@ def _dispatch_one(
         provider_ok = _email_provider_ready()
         if provider_ok:
             try:
-                # Stub send via Django's mail backend. When SES is
-                # wired (EMAIL_BACKEND=django_ses.SESBackend), this
-                # is a real send; until then it writes to the file
-                # backend in dev so operators can inspect.
+                # Real send via Django's mail backend. In production
+                # EMAIL_BACKEND is django_ses.SESBackend (live SES);
+                # dev writes to filebased so operators can inspect.
                 from django.core.mail import EmailMultiAlternatives
+
+                from apps.tenants.email import (
+                    from_address_domain,
+                    tenant_from_email,
+                    tenant_reply_to,
+                )
+
+                # Tenant-branded From + Reply-To (spa's contact email)
+                # so the recipient sees "Acme Spa" — not "Lumè CRM" —
+                # and replies actually go to the spa, not a noreply
+                # mailbox we don't read. Big deliverability + UX win.
+                reply_to = tenant_reply_to(tenant)
+
+                # One-click unsubscribe URL the same UnsubscribeToken
+                # row drives. Lives in the body (already rendered via
+                # {{unsubscribe_url}}) AND in the List-Unsubscribe
+                # header below so Gmail / Outlook surface a native
+                # unsubscribe button — the single biggest "this is a
+                # legit marketing sender" signal a campaign carries.
+                base = settings.PUBLIC_BASE_URL.rstrip('/')
+                unsub_url = f'{base}/marketing/unsubscribe/{token_row.token}'
+
                 msg = EmailMultiAlternatives(
                     subject=rendered_subject or template.subject or '(no subject)',
                     body=rendered_body,
-                    from_email=settings.DEFAULT_FROM_EMAIL,
+                    from_email=tenant_from_email(tenant),
                     to=[customer.email],
+                    reply_to=[reply_to] if reply_to else None,
+                    headers={
+                        # RFC 8058 one-click unsubscribe. Header value
+                        # is a comma-separated list of unsubscribe
+                        # methods; we give the HTTPS URL + a mailto
+                        # for clients that prefer it.
+                        'List-Unsubscribe': f'<{unsub_url}>, <mailto:unsubscribe+{token_row.token}@{from_address_domain()}>',
+                        # Required to enable Gmail/Outlook's native
+                        # one-click button (vs the "preview the
+                        # unsubscribe page" two-step).
+                        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+                    },
                 )
                 if '<html' in rendered_body.lower() or '<p' in rendered_body.lower():
                     msg.attach_alternative(rendered_body, 'text/html')
