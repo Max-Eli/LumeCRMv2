@@ -32,7 +32,7 @@ class MembershipLocationInline(admin.TabularInline):
 
 @admin.register(Tenant)
 class TenantAdmin(admin.ModelAdmin):
-    list_display = ('name', 'slug', 'status', 'created_at')
+    list_display = ('name', 'slug', 'status', 'twilio_from_number', 'created_at')
     list_filter = ('status',)
     search_fields = ('name', 'slug')
     readonly_fields = ('created_at', 'updated_at')
@@ -40,10 +40,17 @@ class TenantAdmin(admin.ModelAdmin):
     # Per-site fields (timezone, address, hours, phone, email) live on
     # `Location` after the Phase 4E cleanup — they're managed via the
     # `LocationInline` below (or the dedicated Location admin). What
-    # stays here is purely account-level identity + branding.
+    # stays here is purely account-level identity + branding +
+    # platform-provisioned resources (e.g. the assigned Twilio TFN).
     fieldsets = (
         (None, {'fields': ('name', 'slug', 'status')}),
         ('Branding', {'fields': ('primary_color', 'logo_url')}),
+        # SMS sender per spa. Platform admin sets this manually after
+        # the Twilio TFN is provisioned + verified. E.164 format —
+        # e.g. "+18885551234". When blank, outbound SMS falls back to
+        # the platform-default TWILIO_FROM_NUMBER (one shared toll-free
+        # used for the first cohort of spas before each gets their own).
+        ('SMS sending', {'fields': ('twilio_from_number',)}),
         ('Timestamps', {'fields': ('created_at', 'updated_at'), 'classes': ('collapse',)}),
     )
 
