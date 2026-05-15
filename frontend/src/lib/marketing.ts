@@ -400,6 +400,38 @@ export function useCreateCampaign() {
   });
 }
 
+/** Renders the campaign's template against a sample (or real) customer
+ *  and returns the expanded subject + body. Read-only — no SendLog
+ *  rows, no real send. Used by the campaign-detail Preview panel. */
+export function usePreviewCampaign(id: number) {
+  return useMutation<TemplatePreviewResult, Error, { customer_id?: number }>({
+    mutationFn: (input) =>
+      api.post<TemplatePreviewResult>(
+        `/api/marketing/campaigns/${id}/preview/`,
+        input,
+      ),
+  });
+}
+
+export interface SendTestEmailResult {
+  recipient: string;
+  subject: string;
+}
+
+/** Sends a single test email with `[TEST]` subject prefix to the
+ *  given recipient. Does NOT write a SendLog row or increment
+ *  campaign counters. Email-only — SMS test-send returns 400 until
+ *  Twilio lands. */
+export function useSendTestCampaignEmail(id: number) {
+  return useMutation<SendTestEmailResult, Error, { recipient_email: string }>({
+    mutationFn: (input) =>
+      api.post<SendTestEmailResult>(
+        `/api/marketing/campaigns/${id}/send-test/`,
+        input,
+      ),
+  });
+}
+
 export function useUpdateCampaign(id: number) {
   const qc = useQueryClient();
   return useMutation<Campaign, Error, UpdateCampaignInput>({

@@ -14,8 +14,10 @@ import {
   AlertCircle,
   Ban,
   ChevronLeft,
+  Eye,
   Loader2,
   Mail,
+  MailCheck,
   MessageSquare,
   Send,
   Trash2,
@@ -27,15 +29,19 @@ import { toast } from 'sonner';
 
 import { PageHeader } from '@/components/page-header';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { ApiError } from '@/lib/api';
 import {
   type SendLogRow,
+  type TemplatePreviewResult,
   useCampaign,
   useCampaignSendLog,
   useCancelCampaign,
   useDeleteCampaign,
   useDispatchCampaign,
+  usePreviewCampaign,
   useScheduleCampaign,
+  useSendTestCampaignEmail,
 } from '@/lib/marketing';
 import { cn } from '@/lib/utils';
 
@@ -221,6 +227,11 @@ export default function CampaignDetailPage({
         ) : null}
       </section>
 
+      {/* Preview + test send (email only) */}
+      {campaign.channel === 'email' ? (
+        <PreviewAndTestSendSection campaignId={cid} />
+      ) : null}
+
       {/* Send aggregates */}
       <section className="rounded-lg border bg-card p-5 space-y-3">
         <h2 className="font-serif text-base font-semibold tracking-tight">Recipients</h2>
@@ -263,6 +274,176 @@ export default function CampaignDetailPage({
 }
 
 // ── Sub-components ───────────────────────────────────────────────────
+
+/** Campaign-detail preview + test-send panel.
+ *
+ *  Two operator-verification surfaces every modern email tool ships,
+ *  both calling read-only / no-side-effect endpoints:
+ *
+ *    - Preview — renders the template against a synthetic sample
+ *      ("Jane Sample") so the operator sees exactly what tokens
+ *      will expand to before scheduling a real send.
+ *    - Send test — sends a single [TEST]-prefixed email to an
+ *      address the operator types in. Writes no SendLog row, doesn't
+ *      touch campaign counters. Lets the operator QA the actual
+ *      rendering at the recipient end (Gmail / Outlook spam check,
+ *      inbox preview, list-unsubscribe button etc.).
+ *
+ *  Email-only — SMS preview/test lands when Twilio is wired. */
+function PreviewAndTestSendSection({ campaignId }: { campaignId: number }) {
+  const preview = usePreviewCampaign(campaignId);
+  const sendTest = useSendTestCampaignEmail(campaignId);
+
+  const [testRecipient, setTestRecipient] = useState('');
+  const [previewData, setPreviewData] = useState<TemplatePreviewResult | null>(null);
+
+  const handlePreview = () => {
+    preview.mutate(
+      {},
+      {
+        onSuccess: (data) => {
+          setPreviewData(data);
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && err.body && typeof err.body === 'object') {
+            const detail = (err.body as { detail?: unknown }).detail;
+            toast.error(typeof detail === 'string' ? detail : "Couldn't render preview.");
+          } else {
+            toast.error("Couldn't render preview.");
+          }
+        },
+      },
+    );
+  };
+
+  const handleSendTest = () => {
+    const recipient = testRecipient.trim();
+    if (!recipient) {
+      toast.error('Enter an email address to send the test to.');
+      return;
+    }
+    sendTest.mutate(
+      { recipient_email: recipient },
+      {
+        onSuccess: (data) => {
+          toast.success(`Test sent to ${data.recipient}`);
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && err.body && typeof err.body === 'object') {
+            const body = err.body as { detail?: unknown; recipient_email?: unknown };
+            const detail = body.detail ?? body.recipient_email;
+            toast.error(typeof detail === 'string' ? detail : 'Test send failed.');
+          } else {
+            toast.error('Test send failed. Please try again.');
+          }
+        },
+      },
+    );
+  };
+
+  return (
+    <section className="rounded-lg border bg-card p-5 space-y-4">
+      <div className="flex items-baseline justify-between flex-wrap gap-2">
+        <h2 className="font-serif text-base font-semibold tracking-tight">
+          Preview & test send
+        </h2>
+        <p className="text-xs text-muted-foreground">
+          QA the email before scheduling — render against a sample, or send a
+          one-off test to your own inbox.
+        </p>
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2">
+        <Button
+          type="button"
+          variant="outline"
+          onClick={handlePreview}
+          disabled={preview.isPending}
+        >
+          {preview.isPending ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <Eye className="size-4" />
+          )}
+          {previewData ? 'Refresh preview' : 'Preview email'}
+        </Button>
+      </div>
+
+      {previewData ? (
+        <div className="rounded-md border bg-muted/20 overflow-hidden">
+          <div className="border-b bg-card px-3 py-2 space-y-1">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Subject
+            </p>
+            <p className="text-sm font-medium text-foreground">
+              {previewData.subject || '(no subject)'}
+            </p>
+          </div>
+          <div className="p-4 max-h-[480px] overflow-auto bg-card">
+            {/* Render the body. If it's HTML the operator wants to
+                see it formatted; if plain text, wrap in <pre> so
+                whitespace is preserved. Detected by sniffing the
+                content same way the dispatcher does. */}
+            {/<\b(html|p|div|h[1-6]|table)\b/i.test(previewData.body) ? (
+              <div
+                className="prose prose-sm max-w-none"
+                /* eslint-disable-next-line react/no-danger -- preview-only,
+                   rendered against a synthetic sample customer, sandboxed
+                   inside the campaign-detail page (CSP frame-ancestors
+                   already blocks embedding upstream). */
+                dangerouslySetInnerHTML={{ __html: previewData.body }}
+              />
+            ) : (
+              <pre className="font-sans text-sm whitespace-pre-wrap leading-relaxed text-foreground">
+                {previewData.body}
+              </pre>
+            )}
+          </div>
+          {previewData.discovered_tokens.length > 0 ? (
+            <div className="border-t bg-card px-3 py-2 text-[11px] text-muted-foreground">
+              Tokens in template:{' '}
+              <span className="font-mono">
+                {previewData.discovered_tokens.join(', ')}
+              </span>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+
+      <div className="border-t pt-4">
+        <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2 font-medium">
+          Send a real test email
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          <Input
+            type="email"
+            value={testRecipient}
+            onChange={(e) => setTestRecipient(e.target.value)}
+            placeholder="you@yourspa.com"
+            className="max-w-xs"
+            disabled={sendTest.isPending}
+          />
+          <Button
+            type="button"
+            onClick={handleSendTest}
+            disabled={sendTest.isPending || !testRecipient.trim()}
+          >
+            {sendTest.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : (
+              <MailCheck className="size-4" />
+            )}
+            {sendTest.isPending ? 'Sending…' : 'Send test'}
+          </Button>
+        </div>
+        <p className="text-[11px] text-muted-foreground mt-1.5">
+          Subject is prefixed with <span className="font-mono">[TEST]</span>.
+          The send doesn&apos;t touch campaign counters or write to the send log.
+        </p>
+      </div>
+    </section>
+  );
+}
 
 function SendChannelStatusBanner({ channel }: { channel: 'email' | 'sms' }) {
   // Email goes through SES (BAA in place, production access granted
