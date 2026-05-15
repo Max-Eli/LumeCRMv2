@@ -36,7 +36,7 @@ from apps.customers.models import Customer
 from apps.tenants.models import Tenant
 from apps.tenants.services import create_tenant_with_defaults
 
-from .models import Direction, Message, MessageStatus
+from .models import Direction, Message, MessageStatus, SavedReply
 
 User = get_user_model()
 
@@ -584,3 +584,107 @@ class TwilioInboundTests(TestCase):
             )
         self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
         self.assertFalse(Message.objects.filter(provider_message_id='SMunsigned').exists())
+
+
+# ── Saved replies ────────────────────────────────────────────────────
+
+
+class SavedReplyTests(TestCase):
+    """Covers tenant scoping, name-uniqueness, the audit trail, and
+    create/update/delete happy paths."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('reply-spa')
+        cls.other_tenant, _ = _make_tenant('reply-other', tfn='+18445558888')
+        SavedReply.objects.create(
+            tenant=cls.other_tenant, name='Foreign', body='not ours',
+        )
+
+    def setUp(self):
+        self.client = _client_for(self.owner)
+
+    def test_create_saved_reply(self):
+        response = self.client.post(
+            reverse('messaging-saved-reply-list'),
+            data={'name': 'Address', 'body': '123 Main St, Suite 4'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        self.assertEqual(SavedReply.objects.filter(tenant=self.tenant).count(), 1)
+        row = SavedReply.objects.get(tenant=self.tenant, name='Address')
+        self.assertEqual(row.body, '123 Main St, Suite 4')
+        self.assertEqual(row.created_by, self.owner)
+
+    def test_list_is_tenant_scoped(self):
+        SavedReply.objects.create(tenant=self.tenant, name='Mine', body='ours')
+        response = self.client.get(
+            reverse('messaging-saved-reply-list'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        names = [r['name'] for r in response.data]
+        self.assertIn('Mine', names)
+        self.assertNotIn('Foreign', names)
+
+    def test_duplicate_name_per_tenant_rejected(self):
+        SavedReply.objects.create(tenant=self.tenant, name='Hours', body='9-7')
+        response = self.client.post(
+            reverse('messaging-saved-reply-list'),
+            data={'name': 'Hours', 'body': 'different'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('name', response.data)
+
+    def test_duplicate_name_across_tenants_allowed(self):
+        SavedReply.objects.create(tenant=self.tenant, name='Hours', body='9-7')
+        # Other tenant can have its own "Hours" reply.
+        SavedReply.objects.create(tenant=self.other_tenant, name='Hours', body='10-6')
+        self.assertEqual(SavedReply.objects.filter(name='Hours').count(), 2)
+
+    def test_update_saved_reply(self):
+        row = SavedReply.objects.create(tenant=self.tenant, name='Wifi', body='lume2026')
+        response = self.client.patch(
+            reverse('messaging-saved-reply-detail', kwargs={'pk': row.pk}),
+            data={'body': 'lume2027'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        row.refresh_from_db()
+        self.assertEqual(row.body, 'lume2027')
+
+    def test_delete_saved_reply(self):
+        row = SavedReply.objects.create(tenant=self.tenant, name='ToDelete', body='bye')
+        response = self.client.delete(
+            reverse('messaging-saved-reply-detail', kwargs={'pk': row.pk}),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_204_NO_CONTENT)
+        self.assertFalse(SavedReply.objects.filter(pk=row.pk).exists())
+
+    def test_cannot_access_other_tenant_reply(self):
+        foreign = SavedReply.objects.get(tenant=self.other_tenant, name='Foreign')
+        response = self.client.patch(
+            reverse('messaging-saved-reply-detail', kwargs={'pk': foreign.pk}),
+            data={'body': 'pwned'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+        foreign.refresh_from_db()
+        self.assertEqual(foreign.body, 'not ours')
+
+    def test_blank_name_rejected(self):
+        response = self.client.post(
+            reverse('messaging-saved-reply-list'),
+            data={'name': '   ', 'body': 'x'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_requires_auth(self):
+        response = APIClient().get(
+            reverse('messaging-saved-reply-list'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertIn(response.status_code, (status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN))

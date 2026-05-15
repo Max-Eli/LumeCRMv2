@@ -850,13 +850,17 @@ User started Meta App registration. Status as of pause:
 
 #### 3A. Two-way SMS inbox
 - [x] **Customer messaging v1 (SMS + MMS)** — `apps.messaging` Message model + Twilio inbound webhook + threads list / conversation detail / send / mark-read endpoints + `/messages` page (thread list left + conversation right + compose). Per-tenant TFN resolution, X-Twilio-Signature verification, audit-logged operator reads/writes with PHI-redacted metadata. ADR 0022.
-- [ ] Conversation thread per client *(shipped — `/messages?c=<id>`)*
+- [x] **Saved replies (canned templates)** — `apps.messaging.SavedReply` tenant-scoped model + CRUD endpoints + composer popover picker + manage dialog. Inserts at cursor position with smart whitespace handling.
+- [x] **Editable automated SMS templates** — `Tenant.confirmation_sms_template` / `reminder_sms_template` / `review_request_sms_template` fields + token substitution (`{{first_name}}`, `{{spa_name}}`, `{{appointment_time}}`, `{{review_url}}`) + settings dialog in the inbox. Defaults shipped; tenant overrides per spa. ADR 0023.
+- [x] **Post-appointment review-request automation** — new `send_review_request_sms()` + `manage.py send_review_requests` cron command, gated on `tenant.review_request_enabled` + `google_review_url`. Sends N hours after completion (`review_request_hours_after`, default 24). ADR 0023.
+- [x] **Automated SMS mirrored into the thread** — `Message.kind` discriminator (manual / confirmation / reminder / review_request) + `_mirror_automated_to_inbox()` in `apps.appointments.sms` writes a Message row for every automated send. Operator sees the full chronological customer experience, with badged bubbles distinguishing automated from manual. ADR 0023.
+- [x] Conversation thread per client *(shipped — `/messages?c=<id>`)*
 - [ ] Staff inbox (assigned, unassigned)
-- [ ] Templated quick replies
 - [ ] MMS (photos) — inbound shipped; future polish: copy bytes to S3 + signed URLs (Twilio retains ~24h)
 - [ ] Real-time updates via SSE / websockets — currently 15s polling
 - [ ] PHI-view role gate (`VIEW_CLIENT_PHI` parity with chart notes, ADR 0017)
 - [ ] "Message" button on `/clients/<id>` that deep-links to the thread
+- [ ] EventBridge schedule for `send_review_requests` cron (ships alongside the reminder cron infra)
 
 #### 3B. Email marketing
 - [ ] Campaign builder
@@ -1118,6 +1122,39 @@ The platform-admin-facing portal (`platform.lumècrm.com`) currently does the ba
 - [ ] **Self-serve trial signup** (vs admin-driven only): public marketing site → trial signup → auto-provision tenant + redirect to onboarding wizard. Gates: prove the manual path works for the first 10–20 spas first.
 - [ ] **Onboarding wizard** (tenant-facing, but triggered by platform admin tenant creation): collect business info, hours, providers, services, hours, branding colors/logo → seeds tenant with realistic defaults so they're not staring at an empty dashboard.
 - [ ] **CSV imports** — staff list, customer list, services. Hand-rolled tooling is fine for first 10 spas; build a UI when the same import is requested 3+ times.
+
+### Phase 5 — Native mobile apps (iOS phone + iPad, future)
+
+*Boulevard, Mindbody, and Fresha all ship native iOS apps for the spa-staff workflow. Web works for the front desk on a desk machine, but providers on the floor with an iPad need: faster touch interactions, offline tolerance during spotty wifi, push notifications, and Apple Pencil for chart sketches. Defer until the web app's surfaces are stable — building two clients against a moving API is expensive.*
+
+#### 5A. Staff iOS app (iPhone)
+- [ ] **React Native + Expo** target (shares ~80% of the data-fetching + types with the web app; native modules where Expo doesn't cover it — push notifications via APNs, Apple Pencil, biometric login).
+- [ ] **Auth**: Sign in with Apple (frictionless), magic-link fallback, biometric (Face ID / Touch ID) unlock for the daily-driver mode.
+- [ ] **Today view**: today's appointments at a glance, swipe-to-check-in, push notifications for new bookings + cancellations + SMS replies.
+- [ ] **Customer SMS inbox** (native): push-notified, reply from lock screen quick-action; mirrors the web `/messages` surface.
+- [ ] **Clock in / out** with location services (geofence the spa so a staff member can't accidentally clock in from home).
+- [ ] **Quick-look client profile**: PHI gated, swipe through next 5 appointments, last visit notes, allergies banner.
+- [ ] **Offline tolerance**: read-only cache so a provider can pull up a chart in the back room with bad wifi; writes queue and sync when reconnected.
+
+#### 5B. Provider iPad app (clinical workflow)
+- [ ] Same React Native codebase, iPad-optimised layout: split view with appointment list on the left, active chart on the right.
+- [ ] **Native chart canvas with Apple Pencil** — pressure-sensitive sketching for injection sites, before/after annotations. Saves to the existing PHI-storage path.
+- [ ] **Photo capture** (front + back cameras) directly into the chart, EXIF-stripped on upload, consent gate enforced.
+- [ ] **Treatment note dictation** via on-device Speech framework (no audio leaves the device — HIPAA-conscious).
+- [ ] **Form filling with Apple Pencil signature** — the public `/sign/<token>` flow becomes a native PencilKit canvas inside the iPad app for in-spa intake.
+- [ ] **Side-by-side photo comparison** with Pencil-drawn annotations.
+
+#### 5C. Distribution + ops
+- [ ] **TestFlight** for early-access tenants before App Store submission.
+- [ ] **App Store listing**: per-tenant branding deferred to Phase 5D (one app, generic Lumè branding, login picks tenant); tenant-skinned apps (white-labelled per spa) is a Phase 6 / enterprise-tier feature.
+- [ ] **Push-notification infra**: APNs key in AWS Secrets Manager, FCM for future Android, per-user device-token registry on `User`.
+- [ ] **MDM-friendly**: support managed app config so spa-IT can deploy to staff iPads via MDM (Apple Business Manager / Jamf).
+
+#### 5D. Tenant-branded apps (Phase 6 / enterprise tier)
+- [ ] White-label App Store builds per tenant (their logo, name, theming) — significant operational lift (Apple Developer accounts per tenant, app submission per tenant) — only justified when a tenant pays for the enterprise tier.
+
+#### 5E. Customer-facing iOS app (different deferral)
+- [ ] Native version of the customer portal (Phase 3E) — booking, appointment management, gift cards, packages. Lower priority than staff-facing because the **web portal is sufficient for customers**; a native customer app is a "nice to have" once the staff apps are stable.
 
 ---
 

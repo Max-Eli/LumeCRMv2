@@ -18,12 +18,19 @@ import { InboxView } from '../../(app)/messages/_inbox-view';
 
 export default function InboxPopoutPage() {
   return (
-    <div className="flex flex-col h-screen bg-background">
-      <header className="shrink-0 border-b bg-card px-4 py-2.5 flex items-center gap-2">
-        <MessageSquare className="size-4 text-muted-foreground" />
-        <h1 className="text-sm font-semibold tracking-tight">Messages</h1>
+    <div className="flex flex-col h-screen bg-muted/40">
+      <header className="shrink-0 border-b bg-card px-5 py-3 flex items-center gap-2.5">
+        <div className="inline-flex size-7 items-center justify-center rounded-md bg-accent/15 text-accent-foreground">
+          <MessageSquare className="size-4" />
+        </div>
+        <div className="leading-tight">
+          <h1 className="text-sm font-serif font-semibold tracking-tight">Messages</h1>
+          <p className="text-[10px] uppercase tracking-wide text-muted-foreground">
+            Customer inbox · SMS &amp; MMS
+          </p>
+        </div>
       </header>
-      <div className="flex-1 min-h-0 p-3">
+      <div className="flex-1 min-h-0 p-3 flex flex-col">
         <InboxView basePath="/inbox" />
       </div>
     </div>

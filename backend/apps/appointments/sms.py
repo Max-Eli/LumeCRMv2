@@ -132,6 +132,50 @@ def _phone_redact(phone: str) -> str:
     return f'***-***-{digits[-4:]}' if len(digits) >= 4 else '***'
 
 
+def _mirror_automated_to_inbox(*, appointment, kind: str, body: str, sid: str) -> None:
+    """Write a `messaging.Message` row mirroring an automated send.
+
+    The transactional-SMS path lives in this module because it has
+    distinct consent / quiet-hours / template semantics from manual
+    sends. But the customer experiences ALL these messages as one
+    thread on their phone — there's no separation at the SMS layer.
+    Mirroring into the inbox keeps the operator's view of the thread
+    truthful: they can scroll up and see the confirmation that went
+    out, then the customer's reply, then the reminder, all in one
+    chronological flow.
+
+    Idempotency is already enforced by the caller (won't be invoked
+    twice for the same appointment-kind combination), so this just
+    writes the row.
+    """
+    from apps.messaging.models import Direction, Message, MessageKind, MessageStatus
+
+    customer = appointment.customer
+    tenant = appointment.tenant
+    from_number = _resolve_from_number(tenant)
+    Message.objects.create(
+        tenant=tenant,
+        customer=customer,
+        direction=Direction.OUTBOUND,
+        kind=kind,
+        body=body,
+        status=MessageStatus.SENT if sid else MessageStatus.QUEUED,
+        provider_message_id=sid,
+        from_number=from_number,
+        to_number=(customer.phone or '').strip(),
+        sent_at=djtz.now() if sid else None,
+    )
+
+
+# Map from internal `kind` strings (used in audit logs + this module)
+# to the public MessageKind values mirrored into the inbox.
+_AUDIT_KIND_TO_MESSAGE_KIND = {
+    'confirmation': 'confirmation',
+    'reminder': 'reminder',
+    'review_request': 'review_request',
+}
+
+
 # ── Body renderers ───────────────────────────────────────────────────
 
 
@@ -156,34 +200,68 @@ def _format_appt_time(appointment) -> str:
     return local.strftime('%a, %b %-d at %-I:%M %p')
 
 
-def render_confirmation_body(appointment) -> str:
-    """Render the appointment confirmation SMS body. Hardcoded for
-    v1 — tenant-customizable templates land later (Phase 1H
-    notification templates).
+# Default bodies — shipped when the tenant hasn't customized.
+#
+# Bodies are intentionally short. Twilio segments at 160 chars (GSM-7)
+# or 70 chars (UCS-2); over-length texts split into multiple billable
+# segments + are more likely to be filtered by carriers. Keep it tight.
 
-    Body is intentionally short. Twilio segments at 160 chars (GSM-7)
-    or 70 chars (UCS-2 / Unicode); over-length texts split into
-    multiple billable segments + are more likely to be filtered by
-    carriers. Keep it tight.
-    """
+DEFAULT_CONFIRMATION_BODY = (
+    'Hi {{first_name}}, your appointment at {{spa_name}} is '
+    'confirmed for {{appointment_time}}. Reply STOP to opt out.'
+)
+DEFAULT_REMINDER_BODY = (
+    'Hi {{first_name}}, reminder: your appointment at {{spa_name}} '
+    'is tomorrow ({{appointment_time}}). Reply STOP to opt out.'
+)
+DEFAULT_REVIEW_REQUEST_BODY = (
+    'Hi {{first_name}}, thanks for visiting {{spa_name}}! Would you '
+    'mind leaving us a review? {{review_url}} Reply STOP to opt out.'
+)
+
+# Tokens recognised at render time. Anything not in this set is left
+# as-is (so a tenant who pastes "{{my_typo}}" sees their typo in the
+# message and can fix it). Token substitution is a literal
+# `str.replace` — never call any Python expression from operator text.
+
+
+def render_template(template: str, *, appointment, review_url: str = '') -> str:
+    """Substitute appointment context into `template`. Used by all
+    three automated-SMS surfaces (confirmation + reminder + review
+    request). The `review_url` token is review-only; pass empty
+    string from the other two paths."""
     customer = appointment.customer
-    when = _format_appt_time(appointment)
     spa = appointment.tenant.name
+    when = _format_appt_time(appointment)
     return (
-        f'Hi {customer.first_name}, your appointment at {spa} is '
-        f'confirmed for {when}. Reply STOP to opt out.'
+        template
+        .replace('{{first_name}}', customer.first_name)
+        .replace('{{spa_name}}', spa)
+        .replace('{{appointment_time}}', when)
+        .replace('{{review_url}}', review_url)
     )
+
+
+def render_confirmation_body(appointment) -> str:
+    """Resolve the tenant's confirmation template (empty falls back
+    to the platform default) and substitute tokens."""
+    template = (appointment.tenant.confirmation_sms_template or '').strip() or DEFAULT_CONFIRMATION_BODY
+    return render_template(template, appointment=appointment)
 
 
 def render_reminder_body(appointment) -> str:
-    """Render the 24h-out appointment reminder body."""
-    customer = appointment.customer
-    when = _format_appt_time(appointment)
-    spa = appointment.tenant.name
-    return (
-        f'Hi {customer.first_name}, reminder: your appointment at '
-        f'{spa} is tomorrow ({when}). Reply STOP to opt out.'
-    )
+    """Resolve the tenant's 24h reminder template and substitute
+    tokens."""
+    template = (appointment.tenant.reminder_sms_template or '').strip() or DEFAULT_REMINDER_BODY
+    return render_template(template, appointment=appointment)
+
+
+def render_review_request_body(appointment) -> str:
+    """Resolve the tenant's review-request template, substituting
+    `{{review_url}}` with the tenant's Google review URL."""
+    template = (appointment.tenant.review_request_sms_template or '').strip() or DEFAULT_REVIEW_REQUEST_BODY
+    review_url = (appointment.tenant.google_review_url or '').strip()
+    return render_template(template, appointment=appointment, review_url=review_url)
 
 
 # ── Caller-facing entry points ───────────────────────────────────────
@@ -249,6 +327,13 @@ def send_confirmation_sms(appointment) -> bool:
     appointment.confirmation_sms_provider_id = sid
     appointment.save(update_fields=['confirmation_sms_sent_at', 'confirmation_sms_provider_id'])
 
+    # Mirror into the customer's inbox thread so the operator can see
+    # exactly what the customer saw, interleaved with any manual
+    # replies. See `_mirror_automated_to_inbox` for the rationale.
+    _mirror_automated_to_inbox(
+        appointment=appointment, kind='confirmation', body=body, sid=sid,
+    )
+
     record(
         action=AuditLog.Action.UPDATE,
         resource_type='appointment_sms',
@@ -294,12 +379,102 @@ def send_reminder_sms(appointment) -> bool:
     appointment.reminder_sms_provider_id = sid
     appointment.save(update_fields=['reminder_sms_sent_at', 'reminder_sms_provider_id'])
 
+    _mirror_automated_to_inbox(
+        appointment=appointment, kind='reminder', body=body, sid=sid,
+    )
+
     record(
         action=AuditLog.Action.UPDATE,
         resource_type='appointment_sms',
         resource_id=appointment.id,
         metadata={
             'kind': 'reminder',
+            'outcome': 'sent' if sid else 'stub_no_provider',
+            'recipient_last4': _phone_redact(appointment.customer.phone)[-4:],
+            'provider_message_id': sid,
+        },
+    )
+    return True
+
+
+def send_review_request_sms(appointment) -> bool:
+    """Send the post-appointment review-request SMS.
+
+    Gates beyond the shared consent check:
+
+    - Tenant must have `review_request_enabled = True` (explicit
+      opt-in — defaults False so tenants don't accidentally send
+      reviews requests on day one).
+    - Tenant must have `google_review_url` set (a review request
+      with a broken/missing link is worse than no request at all —
+      we'd train the customer to ignore the spa's texts).
+    - Appointment must be in `completed` status (not cancelled, not
+      no-show, not pending).
+
+    Idempotency: `review_request_sms_sent_at` is the boundary.
+    """
+    from apps.audit.models import AuditLog
+    from apps.audit.services import record
+    from .models import Appointment
+
+    if appointment.review_request_sms_sent_at is not None:
+        return False
+
+    tenant = appointment.tenant
+    if not getattr(tenant, 'review_request_enabled', False):
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment_sms',
+            resource_id=appointment.id,
+            metadata={'kind': 'review_request', 'outcome': 'skipped', 'reason': 'tenant_disabled'},
+        )
+        return False
+    if not (tenant.google_review_url or '').strip():
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment_sms',
+            resource_id=appointment.id,
+            metadata={'kind': 'review_request', 'outcome': 'skipped', 'reason': 'no_review_url'},
+        )
+        return False
+    if appointment.status != Appointment.Status.COMPLETED:
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment_sms',
+            resource_id=appointment.id,
+            metadata={'kind': 'review_request', 'outcome': 'skipped', 'reason': 'not_completed'},
+        )
+        return False
+
+    can_send, reason = _can_send_appointment_sms(appointment)
+    if not can_send:
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment_sms',
+            resource_id=appointment.id,
+            metadata={'kind': 'review_request', 'outcome': 'skipped', 'reason': reason},
+        )
+        return False
+
+    body = render_review_request_body(appointment)
+    sid = send_sms(tenant=tenant, to=appointment.customer.phone, body=body)
+
+    appointment.review_request_sms_sent_at = djtz.now()
+    appointment.review_request_sms_provider_id = sid
+    appointment.save(update_fields=[
+        'review_request_sms_sent_at', 'review_request_sms_provider_id',
+    ])
+
+    _mirror_automated_to_inbox(
+        appointment=appointment, kind='review_request', body=body, sid=sid,
+    )
+
+    record(
+        action=AuditLog.Action.UPDATE,
+        resource_type='appointment_sms',
+        resource_id=appointment.id,
+        metadata={
+            'kind': 'review_request',
             'outcome': 'sent' if sid else 'stub_no_provider',
             'recipient_last4': _phone_redact(appointment.customer.phone)[-4:],
             'provider_message_id': sid,

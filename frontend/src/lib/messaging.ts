@@ -34,6 +34,12 @@ export type MessageStatus =
   | 'failed'
   | 'received';
 
+export type MessageKind =
+  | 'manual'
+  | 'confirmation'
+  | 'reminder'
+  | 'review_request';
+
 export interface ThreadSummary {
   customer_id: number;
   customer_first_name: string;
@@ -49,6 +55,7 @@ export interface ThreadSummary {
 export interface Message {
   id: number;
   direction: MessageDirection;
+  kind: MessageKind;
   body: string;
   status: MessageStatus;
   provider_message_id: string;
@@ -154,6 +161,112 @@ export function useMarkThreadRead(customerId: number) {
       ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: THREADS_KEY });
+    },
+  });
+}
+
+// ── Saved replies (canned templates) ───────────────────────────────
+
+
+export interface SavedReply {
+  id: number;
+  name: string;
+  body: string;
+  created_by_email: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface SavedReplyInput {
+  name: string;
+  body: string;
+}
+
+const SAVED_REPLIES_KEY = ['messaging', 'saved-replies'] as const;
+
+/** All saved replies for the active tenant, alphabetised. Used by
+ *  the composer's quick-reply popover + the manage-replies dialog. */
+export function useSavedReplies() {
+  return useQuery<SavedReply[]>({
+    queryKey: SAVED_REPLIES_KEY,
+    queryFn: () => api.get<SavedReply[]>('/api/messaging/saved-replies/'),
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useCreateSavedReply() {
+  const qc = useQueryClient();
+  return useMutation<SavedReply, Error, SavedReplyInput>({
+    mutationFn: (input) =>
+      api.post<SavedReply>('/api/messaging/saved-replies/', input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: SAVED_REPLIES_KEY });
+    },
+  });
+}
+
+export function useUpdateSavedReply(id: number) {
+  const qc = useQueryClient();
+  return useMutation<SavedReply, Error, Partial<SavedReplyInput>>({
+    mutationFn: (input) =>
+      api.patch<SavedReply>(`/api/messaging/saved-replies/${id}/`, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: SAVED_REPLIES_KEY });
+    },
+  });
+}
+
+export function useDeleteSavedReply() {
+  const qc = useQueryClient();
+  return useMutation<void, Error, number>({
+    mutationFn: (id) =>
+      api.delete<void>(`/api/messaging/saved-replies/${id}/`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: SAVED_REPLIES_KEY });
+    },
+  });
+}
+
+// ── Automated SMS templates ─────────────────────────────────────────
+
+
+export interface AutomatedTemplates {
+  confirmation_sms_template: string;
+  reminder_sms_template: string;
+  review_request_sms_template: string;
+  review_request_enabled: boolean;
+  review_request_hours_after: number;
+  google_review_url: string;
+  default_confirmation_body: string;
+  default_reminder_body: string;
+  default_review_request_body: string;
+}
+
+export type AutomatedTemplatesInput = Partial<
+  Omit<
+    AutomatedTemplates,
+    'default_confirmation_body' | 'default_reminder_body' | 'default_review_request_body'
+  >
+>;
+
+const AUTOMATED_TEMPLATES_KEY = ['messaging', 'automated-templates'] as const;
+
+export function useAutomatedTemplates() {
+  return useQuery<AutomatedTemplates>({
+    queryKey: AUTOMATED_TEMPLATES_KEY,
+    queryFn: () =>
+      api.get<AutomatedTemplates>('/api/messaging/automated-templates/'),
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useUpdateAutomatedTemplates() {
+  const qc = useQueryClient();
+  return useMutation<AutomatedTemplates, Error, AutomatedTemplatesInput>({
+    mutationFn: (input) =>
+      api.patch<AutomatedTemplates>('/api/messaging/automated-templates/', input),
+    onSuccess: (fresh) => {
+      qc.setQueryData(AUTOMATED_TEMPLATES_KEY, fresh);
     },
   });
 }

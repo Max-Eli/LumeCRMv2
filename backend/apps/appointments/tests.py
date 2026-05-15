@@ -833,3 +833,260 @@ class AppointmentReminderSMSTests(TestCase):
         ), patch('twilio.rest.Client', return_value=fake_client):
             call_command('send_appointment_reminders', '--dry-run')
         fake_client.messages.create.assert_not_called()
+
+
+# ── Editable templates + review-request automation ──────────────────
+
+
+class EditableTemplateRenderTests(TestCase):
+    """Verifies that tenant-customized templates override the platform
+    defaults and that token substitution covers all three surfaces."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('tpl')
+        cls.provider = _make_provider(cls.tenant)
+        cls.service = _make_service(cls.tenant)
+        cls.customer = Customer.objects.create(
+            tenant=cls.tenant, first_name='Alex', last_name='Test',
+            email='alex@test.local', phone='+15559990000', sms_opt_in=True,
+        )
+
+    def _make_appt(self):
+        start = djtz.now() + dt.timedelta(days=2)
+        return _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, service=self.service,
+            start_utc=start,
+        )
+
+    def test_default_confirmation_used_when_template_blank(self):
+        from apps.appointments.sms import render_confirmation_body
+
+        appt = self._make_appt()
+        body = render_confirmation_body(appt)
+        self.assertIn('Alex', body)
+        self.assertIn(self.tenant.name, body)
+        self.assertIn('Reply STOP', body)
+
+    def test_tenant_confirmation_template_overrides_default(self):
+        from apps.appointments.sms import render_confirmation_body
+
+        self.tenant.confirmation_sms_template = (
+            'Hey {{first_name}}! You\'re booked at {{spa_name}} for {{appointment_time}}.'
+        )
+        self.tenant.save(update_fields=['confirmation_sms_template'])
+
+        appt = self._make_appt()
+        body = render_confirmation_body(appt)
+        self.assertTrue(body.startswith('Hey Alex!'))
+        self.assertIn(self.tenant.name, body)
+        # The default's "Reply STOP" tail is gone — tenant owns the body now.
+        self.assertNotIn('Reply STOP', body)
+
+    def test_review_request_template_substitutes_review_url(self):
+        from apps.appointments.sms import render_review_request_body
+
+        self.tenant.review_request_sms_template = (
+            'Hi {{first_name}}, leave us a review: {{review_url}}'
+        )
+        self.tenant.google_review_url = 'https://g.page/r/CXXXXX/review'
+        self.tenant.save(update_fields=[
+            'review_request_sms_template', 'google_review_url',
+        ])
+
+        appt = self._make_appt()
+        body = render_review_request_body(appt)
+        self.assertIn('Alex', body)
+        self.assertIn('https://g.page/r/CXXXXX/review', body)
+
+    def test_unknown_token_left_as_is(self):
+        from apps.appointments.sms import render_template
+
+        appt = self._make_appt()
+        body = render_template(
+            'Hi {{first_name}}, your code is {{my_typo}}.', appointment=appt,
+        )
+        # Recognised token substituted, unknown token preserved literally.
+        self.assertIn('Hi Alex', body)
+        self.assertIn('{{my_typo}}', body)
+
+
+class ReviewRequestSendTests(TestCase):
+    """Covers the consent + opt-in gating on the review-request
+    automation. Twilio is patched out."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('rev-spa')
+        cls.tenant.twilio_from_number = '+18445550000'
+        cls.tenant.save(update_fields=['twilio_from_number'])
+        cls.provider = _make_provider(cls.tenant)
+        cls.service = _make_service(cls.tenant)
+        cls.customer = Customer.objects.create(
+            tenant=cls.tenant, first_name='Riley', last_name='Test',
+            email='riley@test.local', phone='+15558887777', sms_opt_in=True,
+        )
+
+    def _make_completed_appointment(self):
+        start = djtz.now() - dt.timedelta(hours=26)
+        appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, service=self.service,
+            start_utc=start,
+        )
+        # Force completed status + completed_at outside the post_save
+        # signal (which already ran for confirmation).
+        appt.status = Appointment.Status.COMPLETED
+        appt.completed_at = djtz.now() - dt.timedelta(hours=24)
+        appt.save(update_fields=['status', 'completed_at'])
+        return appt
+
+    @override_settings(
+        TWILIO_ACCOUNT_SID='ACtest',
+        TWILIO_AUTH_TOKEN='test-token',
+    )
+    def test_send_review_request_fires_when_enabled(self):
+        from apps.appointments.sms import send_review_request_sms
+        from apps.messaging.models import Direction, Message, MessageKind
+
+        self.tenant.review_request_enabled = True
+        self.tenant.google_review_url = 'https://g.page/r/Cabc/review'
+        self.tenant.save(update_fields=[
+            'review_request_enabled', 'google_review_url',
+        ])
+        appt = self._make_completed_appointment()
+
+        fake_message = MagicMock(sid='SMrev1')
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = fake_message
+
+        with patch('twilio.rest.Client', return_value=fake_client):
+            fired = send_review_request_sms(appt)
+
+        self.assertTrue(fired)
+        fake_client.messages.create.assert_called_once()
+        kwargs = fake_client.messages.create.call_args.kwargs
+        self.assertIn('Riley', kwargs['body'])
+        self.assertIn('https://g.page/r/Cabc/review', kwargs['body'])
+
+        appt.refresh_from_db()
+        self.assertIsNotNone(appt.review_request_sms_sent_at)
+        self.assertEqual(appt.review_request_sms_provider_id, 'SMrev1')
+
+        # Mirror into the inbox: a Message row tagged as review_request
+        # should exist for this customer.
+        mirrored = Message.objects.get(
+            tenant=self.tenant, customer=self.customer,
+            kind=MessageKind.REVIEW_REQUEST,
+        )
+        self.assertEqual(mirrored.direction, Direction.OUTBOUND)
+        self.assertEqual(mirrored.provider_message_id, 'SMrev1')
+        self.assertIn('https://g.page/r/Cabc/review', mirrored.body)
+
+    def test_send_skipped_when_tenant_not_enabled(self):
+        from apps.appointments.sms import send_review_request_sms
+
+        # tenant.review_request_enabled defaults False.
+        appt = self._make_completed_appointment()
+        fake_client = MagicMock()
+        with patch('twilio.rest.Client', return_value=fake_client):
+            fired = send_review_request_sms(appt)
+        self.assertFalse(fired)
+        fake_client.messages.create.assert_not_called()
+
+    def test_send_skipped_when_no_review_url(self):
+        from apps.appointments.sms import send_review_request_sms
+
+        self.tenant.review_request_enabled = True
+        self.tenant.save(update_fields=['review_request_enabled'])
+        appt = self._make_completed_appointment()
+        fake_client = MagicMock()
+        with patch('twilio.rest.Client', return_value=fake_client):
+            fired = send_review_request_sms(appt)
+        self.assertFalse(fired)
+        fake_client.messages.create.assert_not_called()
+
+    def test_send_skipped_when_appointment_not_completed(self):
+        from apps.appointments.sms import send_review_request_sms
+
+        self.tenant.review_request_enabled = True
+        self.tenant.google_review_url = 'https://g.page/r/C/review'
+        self.tenant.save(update_fields=[
+            'review_request_enabled', 'google_review_url',
+        ])
+        appt = self._make_completed_appointment()
+        appt.status = Appointment.Status.CHECKED_IN
+        appt.save(update_fields=['status'])
+
+        fake_client = MagicMock()
+        with patch('twilio.rest.Client', return_value=fake_client):
+            fired = send_review_request_sms(appt)
+        self.assertFalse(fired)
+
+
+class AutomatedTemplatesEndpointTests(TestCase):
+    """The `/api/messaging/automated-templates/` settings API.
+
+    Covers GET shape, PATCH, the enabled-requires-URL validation, and
+    tenant scoping (one tenant can't read or write another's row)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('tpl-api')
+        cls.other_tenant, _ = _make_tenant('tpl-api-other')
+
+    def setUp(self):
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def test_get_returns_defaults_when_blank(self):
+        response = self.client.get(
+            '/api/messaging/automated-templates/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['confirmation_sms_template'], '')
+        self.assertIn('{{first_name}}', response.data['default_confirmation_body'])
+        self.assertFalse(response.data['review_request_enabled'])
+
+    def test_patch_persists_custom_template(self):
+        response = self.client.patch(
+            '/api/messaging/automated-templates/',
+            data={'confirmation_sms_template': 'Custom {{first_name}}'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.confirmation_sms_template, 'Custom {{first_name}}')
+
+    def test_enabling_review_without_url_rejected(self):
+        response = self.client.patch(
+            '/api/messaging/automated-templates/',
+            data={'review_request_enabled': True},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('google_review_url', response.data)
+
+    def test_enabling_review_with_url_accepted(self):
+        response = self.client.patch(
+            '/api/messaging/automated-templates/',
+            data={
+                'review_request_enabled': True,
+                'google_review_url': 'https://g.page/r/C/review',
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.tenant.refresh_from_db()
+        self.assertTrue(self.tenant.review_request_enabled)
+        self.assertEqual(self.tenant.google_review_url, 'https://g.page/r/C/review')
+
+    def test_requires_auth(self):
+        from rest_framework.test import APIClient
+        response = APIClient().get(
+            '/api/messaging/automated-templates/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertIn(response.status_code, (401, 403))

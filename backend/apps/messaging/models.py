@@ -54,6 +54,23 @@ class MessageStatus(models.TextChoices):
     RECEIVED = 'received', 'Received (inbound)'
 
 
+class MessageKind(models.TextChoices):
+    """What triggered this message. Lets the inbox UI badge automated
+    sends ("Confirmation", "Reminder", "Review request") so the
+    operator can read a thread top-to-bottom and see what the
+    customer experienced — manual replies AND auto-sent appointment
+    SMS interleaved in the same chronological flow, since they
+    all came from the same TFN to the same phone.
+
+    Existing rows default to `MANUAL` via the migration — the
+    automated kinds are populated forward from when this lands.
+    """
+    MANUAL = 'manual', 'Manual (operator-typed)'
+    CONFIRMATION = 'confirmation', 'Appointment confirmation (automated)'
+    REMINDER = 'reminder', 'Appointment reminder (automated)'
+    REVIEW_REQUEST = 'review_request', 'Review request (automated)'
+
+
 class Message(TenantedModel):
     """A single SMS / MMS exchanged with a customer.
 
@@ -77,6 +94,17 @@ class Message(TenantedModel):
     direction = models.CharField(
         max_length=10, choices=Direction.choices,
         db_index=True,
+    )
+    kind = models.CharField(
+        max_length=20, choices=MessageKind.choices,
+        default=MessageKind.MANUAL,
+        db_index=True,
+        help_text=(
+            'What triggered the send. Manual = staff typed it in the '
+            'inbox; the other three are automated transactional SMS '
+            'mirrored into the thread so the operator can see what '
+            'the customer saw.'
+        ),
     )
     body = models.TextField(
         help_text='The SMS body. PHI — every read is audit-logged.',
@@ -146,3 +174,64 @@ class Message(TenantedModel):
     def __str__(self) -> str:
         preview = (self.body or '')[:40]
         return f'{self.direction}: {self.customer_id} → {preview}'
+
+
+class SavedReply(TenantedModel):
+    """Tenant-shared canned reply for the operator's inbox composer.
+
+    Same idea as Slack's quick replies / Front's templates: staff type
+    out an answer once ("our address is …", "we open at 9am, want me
+    to book you for then?"), save it, then insert into the composer
+    with one click instead of retyping. Cuts response time and
+    enforces brand-voice consistency.
+
+    Visibility is tenant-wide for v1 — anyone on the staff can use
+    anyone else's. We don't carry "private to me" replies because the
+    spa-CRM context is collaborative (front desk hands off threads;
+    the canonical answer to "where are you located?" shouldn't depend
+    on which receptionist is on shift). If individual-private
+    templates become a real ask we'll add an `owner` FK + a
+    `visibility` choice.
+
+    No PHI substitution in the body — operators paste it as-is. The
+    composer textarea is where personalisation happens. (For tokenised
+    automated SMS like appointment-reminder bodies, see the separate
+    `AutomatedSMSTemplate` model.)
+    """
+
+    name = models.CharField(
+        max_length=80,
+        help_text=(
+            'Short label shown in the picker (e.g. "Address" or '
+            '"Running late?"). Operators identify replies by name, '
+            'not by reading the body each time.'
+        ),
+    )
+    body = models.TextField(
+        max_length=1600,  # ~10 SMS segments, same cap as the send endpoint.
+        help_text='The text inserted into the composer.',
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='+',
+        help_text='Author. Null when the user is removed later.',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ('name',)
+        constraints = [
+            # Name uniqueness per-tenant prevents two "Address" entries
+            # cluttering the picker. Different tenants can both have an
+            # "Address" reply (the model is tenant-scoped).
+            models.UniqueConstraint(
+                fields=['tenant', 'name'],
+                name='savedreply_tenant_name_unique',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'{self.name} ({self.tenant.slug})'

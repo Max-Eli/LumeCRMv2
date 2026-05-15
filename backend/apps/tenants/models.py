@@ -160,6 +160,78 @@ class Tenant(models.Model):
         ),
     )
 
+    # ── Automated SMS templates ──────────────────────────────────────
+    #
+    # Operator-editable bodies for the three automated transactional
+    # SMS surfaces. Empty = use the shipped default (see
+    # `apps.appointments.sms.DEFAULT_*_BODY`). Tokens recognised at
+    # render time:
+    #
+    #   {{first_name}}        — customer first name
+    #   {{spa_name}}          — this tenant's name
+    #   {{appointment_time}}  — formatted local time of the appointment
+    #   {{review_url}}        — review-request template only
+    #
+    # Operator-typed text is validated for length (1600-char cap, same
+    # as the manual send endpoint) but otherwise stored verbatim. The
+    # render path's token substitution is a literal `str.replace`, NOT
+    # a templating engine — never call any Python expression from
+    # user text.
+    confirmation_sms_template = models.TextField(
+        blank=True, default='',
+        help_text=(
+            'Custom SMS body sent when an appointment is booked. Empty '
+            'falls back to the platform default. Tokens: {{first_name}}, '
+            '{{spa_name}}, {{appointment_time}}.'
+        ),
+    )
+    reminder_sms_template = models.TextField(
+        blank=True, default='',
+        help_text=(
+            'Custom SMS body sent 24 hours before the appointment. Empty '
+            'falls back to the platform default. Tokens: {{first_name}}, '
+            '{{spa_name}}, {{appointment_time}}.'
+        ),
+    )
+    review_request_sms_template = models.TextField(
+        blank=True, default='',
+        help_text=(
+            'Custom SMS body sent after an appointment is marked '
+            'completed (waits `review_request_hours_after` hours). Empty '
+            'falls back to the platform default. Tokens: {{first_name}}, '
+            '{{spa_name}}, {{review_url}}.'
+        ),
+    )
+    review_request_enabled = models.BooleanField(
+        default=False,
+        help_text=(
+            'Explicit opt-in for the post-appointment review-request '
+            'SMS. Defaults False so tenants don\'t accidentally send '
+            'reviews requests before they\'ve set their Google Review '
+            'URL. The cron worker skips this tenant when False.'
+        ),
+    )
+    review_request_hours_after = models.PositiveSmallIntegerField(
+        default=24,
+        help_text=(
+            'How many hours after appointment completion the review '
+            'request should go out. 24 (next day) is the industry '
+            'default — gives the customer time to enjoy the result + '
+            'still keeps the experience fresh in their mind.'
+        ),
+    )
+    google_review_url = models.URLField(
+        blank=True, default='',
+        max_length=500,
+        help_text=(
+            "The tenant's Google Place review URL (e.g. "
+            'https://g.page/r/CXXXXX/review). Substituted into the '
+            '{{review_url}} token. When blank + the template references '
+            'the token, the worker skips the send rather than text a '
+            'broken link.'
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

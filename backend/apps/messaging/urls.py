@@ -11,9 +11,24 @@ See [ADR 0022 — Customer messaging inbox].
 
 from __future__ import annotations
 
+from rest_framework.routers import DefaultRouter
+
 from django.urls import path
 
-from .views import MessagingViewSet, TwilioInboundView
+from .views import (
+    AutomatedTemplatesView,
+    MessagingViewSet,
+    SavedReplyViewSet,
+    TwilioInboundView,
+)
+
+# Saved replies use the standard CRUD verb mapping, so DRF's
+# DefaultRouter is the right fit — keeps the URL surface in sync with
+# the serializer's read-only fields automatically.
+_router = DefaultRouter()
+_router.register(
+    r'messaging/saved-replies', SavedReplyViewSet, basename='messaging-saved-reply',
+)
 
 urlpatterns = [
     # Inbox — one row per customer with whom we've messaged.
@@ -46,4 +61,12 @@ urlpatterns = [
         TwilioInboundView.as_view(),
         name='messaging-twilio-incoming',
     ),
+    # Tenant-singleton automated-SMS templates (confirmation + 24h
+    # reminder + review-request) — GET + PATCH only.
+    path(
+        'messaging/automated-templates/',
+        AutomatedTemplatesView.as_view(),
+        name='messaging-automated-templates',
+    ),
+    *_router.urls,
 ]

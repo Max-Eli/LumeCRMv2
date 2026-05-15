@@ -23,7 +23,7 @@ from __future__ import annotations
 
 from rest_framework import serializers
 
-from .models import Message
+from .models import Message, SavedReply
 
 
 class SendMessageInputSerializer(serializers.Serializer):
@@ -52,6 +52,7 @@ class MessageSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'direction',
+            'kind',
             'body',
             'status',
             'provider_message_id',
@@ -96,3 +97,131 @@ class ThreadSummarySerializer(serializers.Serializer):
     last_message_at = serializers.DateTimeField()
 
     unread_inbound_count = serializers.IntegerField()
+
+
+class SavedReplySerializer(serializers.ModelSerializer):
+    """Read/write shape for canned inbox replies.
+
+    `tenant` is set by the view from request context; `created_by` is
+    set to `request.user` on create. Neither is writable from the
+    client — both would let a caller forge cross-tenant or
+    cross-user rows.
+    """
+
+    created_by_email = serializers.CharField(
+        source='created_by.email', read_only=True, allow_null=True,
+    )
+
+    class Meta:
+        model = SavedReply
+        fields = [
+            'id', 'name', 'body',
+            'created_by_email',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = ['id', 'created_by_email', 'created_at', 'updated_at']
+
+    def validate_name(self, value: str) -> str:
+        v = (value or '').strip()
+        if not v:
+            raise serializers.ValidationError('Name is required.')
+        return v
+
+    def validate_body(self, value: str) -> str:
+        v = (value or '').strip()
+        if not v:
+            raise serializers.ValidationError('Body is required.')
+        return v
+
+    def validate(self, attrs):
+        # Surface tenant-scoped name uniqueness as a 400 with a clean
+        # error rather than letting the DB unique constraint raise an
+        # IntegrityError (which DRF turns into a 500). We can't use
+        # `UniqueTogetherValidator` here because `tenant` is set by the
+        # view, not the serializer, so DRF doesn't see it.
+        from apps.tenants.context import get_current_tenant
+
+        tenant = get_current_tenant()
+        name = attrs.get('name')
+        if tenant is not None and name is not None:
+            qs = SavedReply.objects.filter(tenant=tenant, name=name)
+            if self.instance is not None:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError({
+                    'name': f'A saved reply named "{name}" already exists.',
+                })
+        return attrs
+
+
+class AutomatedTemplatesSerializer(serializers.Serializer):
+    """Read/write shape for the tenant's three automated SMS templates
+    + the review-request automation settings.
+
+    Reads + writes the live `Tenant` row directly — there's no
+    intermediate model because these are tenant-singleton settings
+    (one of each per tenant). The view loads/saves the Tenant.
+
+    Default bodies are surfaced read-only on GET so the operator can
+    see what the platform would send if they leave the template
+    blank, and copy-paste-edit if they want to customise.
+    """
+
+    confirmation_sms_template = serializers.CharField(
+        max_length=1600, allow_blank=True, required=False,
+        help_text='Custom confirmation SMS body. Blank = use default.',
+    )
+    reminder_sms_template = serializers.CharField(
+        max_length=1600, allow_blank=True, required=False,
+    )
+    review_request_sms_template = serializers.CharField(
+        max_length=1600, allow_blank=True, required=False,
+    )
+    review_request_enabled = serializers.BooleanField(required=False)
+    review_request_hours_after = serializers.IntegerField(
+        min_value=1, max_value=168, required=False,  # cap at one week
+    )
+    google_review_url = serializers.URLField(
+        max_length=500, allow_blank=True, required=False,
+    )
+
+    # Read-only mirrors of the platform defaults so the UI can show
+    # "what will be sent if I leave this blank" + provide a "reset to
+    # default" affordance.
+    default_confirmation_body = serializers.SerializerMethodField()
+    default_reminder_body = serializers.SerializerMethodField()
+    default_review_request_body = serializers.SerializerMethodField()
+
+    def get_default_confirmation_body(self, _obj) -> str:
+        from apps.appointments.sms import DEFAULT_CONFIRMATION_BODY
+        return DEFAULT_CONFIRMATION_BODY
+
+    def get_default_reminder_body(self, _obj) -> str:
+        from apps.appointments.sms import DEFAULT_REMINDER_BODY
+        return DEFAULT_REMINDER_BODY
+
+    def get_default_review_request_body(self, _obj) -> str:
+        from apps.appointments.sms import DEFAULT_REVIEW_REQUEST_BODY
+        return DEFAULT_REVIEW_REQUEST_BODY
+
+    def validate(self, attrs):
+        # If the review request is enabled, require a Google review URL.
+        # We check both the incoming attrs and the instance to handle
+        # PATCH semantics (you can enable it in a separate request from
+        # setting the URL).
+        enabled = attrs.get('review_request_enabled')
+        if enabled is None and self.instance is not None:
+            enabled = getattr(self.instance, 'review_request_enabled', False)
+
+        url = attrs.get('google_review_url')
+        if url is None and self.instance is not None:
+            url = getattr(self.instance, 'google_review_url', '')
+
+        if enabled and not (url or '').strip():
+            raise serializers.ValidationError({
+                'google_review_url': (
+                    'A Google Review URL is required when review-request '
+                    'SMS is enabled.'
+                ),
+            })
+        return attrs

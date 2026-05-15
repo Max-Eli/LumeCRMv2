@@ -44,9 +44,11 @@ from apps.customers.models import Customer
 from apps.tenants.context import get_current_tenant
 from apps.tenants.models import Tenant
 
-from .models import Direction, Message, MessageStatus
+from .models import Direction, Message, MessageStatus, SavedReply
 from .serializers import (
+    AutomatedTemplatesSerializer,
     MessageSerializer,
+    SavedReplySerializer,
     SendMessageInputSerializer,
     ThreadSummarySerializer,
 )
@@ -485,3 +487,130 @@ def _verify_twilio_signature(request) -> bool:
     url = request.build_absolute_uri()
     validator = RequestValidator(token)
     return validator.validate(url, dict(request.data.items()), signature)
+
+
+# ── Saved replies (canned templates) ─────────────────────────────────
+
+
+class SavedReplyViewSet(viewsets.ModelViewSet):
+    """`/api/messaging/saved-replies/` — full CRUD for the operator's
+    canned inbox templates.
+
+    Tenant-shared by design: anyone on staff can read, create, edit,
+    or delete any reply. This mirrors how Front / Boulevard / Slack
+    quick-replies work — they're a shared brand-voice resource, not a
+    per-user notebook. If individual-scoped templates ever become a
+    real ask, we add an `owner` FK + a `visibility` choice.
+
+    Body content is **not** PHI in v1: operators paste canned answers
+    to common questions ("our address is …"); the PHI substitution
+    only happens at send-time when the operator types the customer-
+    specific personalisation into the composer. So we skip the per-
+    read audit log (which would just clutter the trail with template
+    reads). Mutations are audit-logged so the trail can answer "who
+    changed the address reply?"
+    """
+
+    permission_classes = [IsAuthenticated]
+    serializer_class = SavedReplySerializer
+    http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
+
+    def get_queryset(self):
+        tenant = get_current_tenant()
+        if tenant is None:
+            return SavedReply.objects.none()
+        return SavedReply.objects.filter(tenant=tenant).select_related('created_by')
+
+    def perform_create(self, serializer):
+        tenant = get_current_tenant()
+        if tenant is None:
+            raise PermissionDenied('No tenant context.')
+        instance = serializer.save(
+            tenant=tenant,
+            created_by=self.request.user if self.request.user.is_authenticated else None,
+        )
+        record(
+            action=AuditLog.Action.CREATE,
+            resource_type='messaging_saved_reply',
+            resource_id=instance.id,
+            request=self.request,
+            metadata={'name': instance.name},
+        )
+
+    def perform_update(self, serializer):
+        instance = serializer.save()
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='messaging_saved_reply',
+            resource_id=instance.id,
+            request=self.request,
+            metadata={'name': instance.name},
+        )
+
+    def perform_destroy(self, instance):
+        record(
+            action=AuditLog.Action.DELETE,
+            resource_type='messaging_saved_reply',
+            resource_id=instance.id,
+            request=self.request,
+            metadata={'name': instance.name},
+        )
+        instance.delete()
+
+
+# ── Automated SMS templates (tenant settings) ────────────────────────
+
+
+class AutomatedTemplatesView(APIView):
+    """`/api/messaging/automated-templates/` — GET + PATCH the
+    tenant's three automated-SMS bodies + review-request settings.
+
+    Singleton resource per tenant (the rows live as fields on Tenant
+    itself, not in a separate table). PATCH semantics: omit a field
+    to leave it untouched. GET always returns the full shape +
+    platform default bodies so the UI can render the "reset to
+    default" affordance.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        tenant = get_current_tenant()
+        if tenant is None:
+            raise PermissionDenied('No tenant context.')
+        ser = AutomatedTemplatesSerializer(instance=tenant)
+        return Response(ser.data)
+
+    def patch(self, request):
+        tenant = get_current_tenant()
+        if tenant is None:
+            raise PermissionDenied('No tenant context.')
+
+        ser = AutomatedTemplatesSerializer(instance=tenant, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+
+        update_fields: list[str] = []
+        for field in (
+            'confirmation_sms_template',
+            'reminder_sms_template',
+            'review_request_sms_template',
+            'review_request_enabled',
+            'review_request_hours_after',
+            'google_review_url',
+        ):
+            if field in ser.validated_data:
+                setattr(tenant, field, ser.validated_data[field])
+                update_fields.append(field)
+        if update_fields:
+            tenant.save(update_fields=[*update_fields, 'updated_at'])
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='tenant_automated_templates',
+            resource_id=tenant.id,
+            request=request,
+            metadata={'fields': update_fields},
+        )
+
+        # Return the fresh resource so the frontend reconciles state.
+        return Response(AutomatedTemplatesSerializer(instance=tenant).data)

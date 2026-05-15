@@ -140,6 +140,12 @@ class Appointment(TenantedModel):
     confirmation_sms_provider_id = models.CharField(max_length=64, blank=True, default='')
     reminder_sms_sent_at = models.DateTimeField(null=True, blank=True)
     reminder_sms_provider_id = models.CharField(max_length=64, blank=True, default='')
+    # Post-appointment review-request SMS. Sent N hours after
+    # completion (`Tenant.review_request_hours_after`) when the tenant
+    # has explicitly enabled the automation and set a Google review
+    # URL. Idempotency posture identical to confirmation + reminder.
+    review_request_sms_sent_at = models.DateTimeField(null=True, blank=True)
+    review_request_sms_provider_id = models.CharField(max_length=64, blank=True, default='')
 
     # Snapshot of price at booking time so subsequent service price changes
     # don't retroactively alter quoted appointments. Cents.

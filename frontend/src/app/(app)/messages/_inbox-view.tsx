@@ -13,12 +13,14 @@
 
 import {
   AlertCircle,
+  ArrowUpRight,
   Loader2,
   MessageSquare,
   Phone,
   Plus,
   Search,
   Send,
+  Settings2,
 } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
@@ -45,7 +47,14 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog';
+import { InitialsAvatar } from '@/components/initials-avatar';
 import { Input } from '@/components/ui/input';
+
+import { AutomatedTemplatesDialog } from './_automated-templates';
+import {
+  ManageSavedRepliesDialog,
+  SavedRepliesPopover,
+} from './_saved-replies';
 
 export interface InboxViewProps {
   /** Where thread links + the picker navigate to. Lets the same
@@ -63,6 +72,8 @@ export function InboxView({ basePath }: InboxViewProps) {
   const { data: threads, isLoading: threadsLoading, error: threadsError } = useThreads();
   const [search, setSearch] = useState('');
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [manageRepliesOpen, setManageRepliesOpen] = useState(false);
+  const [templatesOpen, setTemplatesOpen] = useState(false);
 
   const filteredThreads = useMemo(() => {
     if (!threads) return [];
@@ -89,7 +100,7 @@ export function InboxView({ basePath }: InboxViewProps) {
 
   return (
     <>
-      <div className="flex-1 min-h-0 grid grid-cols-[300px_1fr] gap-0 rounded-lg border bg-card overflow-hidden">
+      <div className="flex-1 min-h-0 grid grid-cols-[320px_1fr] gap-0 rounded-xl border bg-card overflow-hidden shadow-sm">
         <ThreadList
           basePath={basePath}
           threads={filteredThreads}
@@ -99,9 +110,15 @@ export function InboxView({ basePath }: InboxViewProps) {
           onSearchChange={setSearch}
           selectedCustomerId={selectedCustomerId}
           onNewConversation={() => setPickerOpen(true)}
+          onManageReplies={() => setManageRepliesOpen(true)}
+          onOpenTemplates={() => setTemplatesOpen(true)}
         />
         {selectedCustomerId ? (
-          <ConversationPane key={selectedCustomerId} customerId={selectedCustomerId} />
+          <ConversationPane
+            key={selectedCustomerId}
+            customerId={selectedCustomerId}
+            onManageReplies={() => setManageRepliesOpen(true)}
+          />
         ) : (
           <EmptyState
             empty={(threads?.length ?? 0) === 0 && !threadsLoading}
@@ -116,6 +133,14 @@ export function InboxView({ basePath }: InboxViewProps) {
           setPickerOpen(false);
           router.push(`${basePath}?c=${c.id}`);
         }}
+      />
+      <ManageSavedRepliesDialog
+        open={manageRepliesOpen}
+        onOpenChange={setManageRepliesOpen}
+      />
+      <AutomatedTemplatesDialog
+        open={templatesOpen}
+        onOpenChange={setTemplatesOpen}
       />
     </>
   );
@@ -133,6 +158,8 @@ function ThreadList({
   onSearchChange,
   selectedCustomerId,
   onNewConversation,
+  onManageReplies,
+  onOpenTemplates,
 }: {
   basePath: string;
   threads: ThreadSummary[];
@@ -142,27 +169,32 @@ function ThreadList({
   onSearchChange: (v: string) => void;
   selectedCustomerId: number | undefined;
   onNewConversation: () => void;
+  onManageReplies: () => void;
+  onOpenTemplates: () => void;
 }) {
   return (
-    <div className="border-r flex flex-col min-h-0">
-      <div className="p-3 border-b flex items-center gap-2">
-        <Input
-          placeholder="Search threads…"
-          value={search}
-          onChange={(e) => onSearchChange(e.target.value)}
-          className="flex-1"
-        />
+    <div className="border-r flex flex-col min-h-0 bg-card">
+      <div className="px-3 pt-3 pb-2 flex items-center gap-2">
+        <div className="relative flex-1">
+          <Search className="size-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <Input
+            placeholder="Search threads…"
+            value={search}
+            onChange={(e) => onSearchChange(e.target.value)}
+            className="h-9 pl-8 text-sm"
+          />
+        </div>
         <Button
           size="icon"
-          variant="outline"
           onClick={onNewConversation}
           aria-label="New conversation"
           title="New conversation"
+          className="h-9 w-9 shrink-0"
         >
           <Plus className="size-4" />
         </Button>
       </div>
-      <div className="flex-1 min-h-0 overflow-y-auto">
+      <div className="flex-1 min-h-0 overflow-y-auto px-1.5 pb-2">
         {loading ? (
           <p className="px-4 py-6 text-sm text-muted-foreground">Loading…</p>
         ) : error ? (
@@ -172,42 +204,105 @@ function ThreadList({
             No conversations yet. Inbound texts to your toll-free number show up here.
           </p>
         ) : (
-          <ul className="divide-y">
-            {threads.map((t) => (
-              <li key={t.customer_id}>
-                <Link
-                  href={`${basePath}?c=${t.customer_id}`}
-                  className={cn(
-                    'block px-4 py-3 transition-colors',
-                    selectedCustomerId === t.customer_id
-                      ? 'bg-accent text-accent-foreground'
-                      : 'hover:bg-muted',
-                  )}
-                >
-                  <div className="flex items-baseline justify-between gap-2">
-                    <span className="text-sm font-medium truncate">
-                      {t.customer_first_name} {t.customer_last_name}
-                    </span>
-                    <time className="text-[10px] text-muted-foreground shrink-0">
-                      {formatRelative(t.last_message_at)}
-                    </time>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-2 mt-0.5">
-                    <p className="text-xs text-muted-foreground truncate">
-                      {t.last_message_direction === 'outbound' ? 'You: ' : ''}
-                      {t.last_message_body || '—'}
-                    </p>
-                    {t.unread_inbound_count > 0 ? (
-                      <span className="text-[10px] uppercase tracking-wide px-1.5 py-px rounded bg-foreground text-background shrink-0">
-                        {t.unread_inbound_count}
-                      </span>
-                    ) : null}
-                  </div>
-                </Link>
-              </li>
-            ))}
+          <ul className="space-y-px">
+            {threads.map((t) => {
+              const name = `${t.customer_first_name} ${t.customer_last_name}`.trim();
+              const isSelected = selectedCustomerId === t.customer_id;
+              const isUnread = t.unread_inbound_count > 0;
+              return (
+                <li key={t.customer_id}>
+                  <Link
+                    href={`${basePath}?c=${t.customer_id}`}
+                    className={cn(
+                      'block px-2.5 py-2.5 rounded-lg transition-colors',
+                      isSelected
+                        ? 'bg-accent text-accent-foreground'
+                        : 'hover:bg-muted',
+                    )}
+                  >
+                    <div className="flex items-start gap-2.5">
+                      <InitialsAvatar name={name} size="sm" />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span
+                            className={cn(
+                              'text-sm truncate',
+                              isUnread ? 'font-semibold' : 'font-medium',
+                            )}
+                          >
+                            {name}
+                          </span>
+                          <time
+                            className={cn(
+                              'text-[10px] shrink-0',
+                              isSelected
+                                ? 'text-accent-foreground/70'
+                                : isUnread
+                                  ? 'text-foreground font-medium'
+                                  : 'text-muted-foreground',
+                            )}
+                          >
+                            {formatRelative(t.last_message_at)}
+                          </time>
+                        </div>
+                        <div className="flex items-baseline justify-between gap-2 mt-0.5">
+                          <p
+                            className={cn(
+                              'text-xs truncate',
+                              isSelected
+                                ? 'text-accent-foreground/80'
+                                : isUnread
+                                  ? 'text-foreground'
+                                  : 'text-muted-foreground',
+                            )}
+                          >
+                            {t.last_message_direction === 'outbound' ? (
+                              <span className={cn(isSelected ? 'opacity-70' : 'text-muted-foreground/70')}>
+                                You:{' '}
+                              </span>
+                            ) : null}
+                            {t.last_message_body || '—'}
+                          </p>
+                          {isUnread ? (
+                            <span
+                              className={cn(
+                                'text-[10px] font-semibold leading-none px-1.5 py-1 rounded-full shrink-0 min-w-5 text-center',
+                                isSelected
+                                  ? 'bg-accent-foreground/20 text-accent-foreground'
+                                  : 'bg-foreground text-background',
+                              )}
+                            >
+                              {t.unread_inbound_count}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    </div>
+                  </Link>
+                </li>
+              );
+            })}
           </ul>
         )}
+      </div>
+      {/* Foot rail — quick access to settings shared across threads. */}
+      <div className="border-t px-2 py-1.5 space-y-px">
+        <button
+          type="button"
+          onClick={onManageReplies}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        >
+          <Settings2 className="size-3.5" />
+          Saved replies
+        </button>
+        <button
+          type="button"
+          onClick={onOpenTemplates}
+          className="w-full flex items-center gap-2 px-2 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+        >
+          <Settings2 className="size-3.5" />
+          Automated messages
+        </button>
       </div>
     </div>
   );
@@ -216,7 +311,13 @@ function ThreadList({
 // ── Conversation pane (header + scrollback + compose) ───────────────
 
 
-function ConversationPane({ customerId }: { customerId: number }) {
+function ConversationPane({
+  customerId,
+  onManageReplies,
+}: {
+  customerId: number;
+  onManageReplies: () => void;
+}) {
   const { data, isLoading, error } = useConversation(customerId);
   const markRead = useMarkThreadRead(customerId);
   const scrollRef = useRef<HTMLDivElement | null>(null);
@@ -254,7 +355,7 @@ function ConversationPane({ customerId }: { customerId: number }) {
   return (
     <div className="flex flex-col min-h-0">
       <ConversationHeader conversation={data} />
-      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-3 bg-muted/30">
+      <div ref={scrollRef} className="flex-1 min-h-0 overflow-y-auto px-6 py-5 space-y-2.5 bg-muted/40">
         {data.messages.length === 0 ? (
           <p className="text-center text-sm text-muted-foreground py-10">
             No messages yet. Start the conversation below.
@@ -263,31 +364,41 @@ function ConversationPane({ customerId }: { customerId: number }) {
           data.messages.map((m) => <MessageBubble key={m.id} message={m} />)
         )}
       </div>
-      <Composer customerId={customerId} smsOptIn={data.customer.sms_opt_in} hasPhone={!!data.customer.phone} />
+      <Composer
+        customerId={customerId}
+        smsOptIn={data.customer.sms_opt_in}
+        hasPhone={!!data.customer.phone}
+        onManageReplies={onManageReplies}
+      />
     </div>
   );
 }
 
 function ConversationHeader({ conversation }: { conversation: ConversationResponse }) {
   const c = conversation.customer;
+  const name = `${c.first_name} ${c.last_name}`.trim();
   return (
-    <header className="border-b px-6 py-3 flex items-center justify-between">
-      <div className="min-w-0">
-        <Link
-          href={`/clients/${c.id}`}
-          target="_blank"
-          rel="noopener noreferrer"
-          className="text-sm font-semibold hover:underline truncate block"
-        >
-          {c.first_name} {c.last_name}
-        </Link>
-        {c.phone ? (
-          <p className="text-xs text-muted-foreground flex items-center gap-1.5">
-            <Phone className="size-3" /> {c.phone}
-          </p>
-        ) : (
-          <p className="text-xs text-muted-foreground">No phone on file</p>
-        )}
+    <header className="border-b px-5 py-3 flex items-center justify-between bg-card">
+      <div className="flex items-center gap-3 min-w-0">
+        <InitialsAvatar name={name} />
+        <div className="min-w-0">
+          <Link
+            href={`/clients/${c.id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-sm font-semibold tracking-tight hover:underline truncate flex items-center gap-1.5"
+          >
+            {name}
+            <ArrowUpRight className="size-3 text-muted-foreground/60" />
+          </Link>
+          {c.phone ? (
+            <p className="text-xs text-muted-foreground flex items-center gap-1.5 mt-0.5">
+              <Phone className="size-3" /> {c.phone}
+            </p>
+          ) : (
+            <p className="text-xs text-muted-foreground mt-0.5">No phone on file</p>
+          )}
+        </div>
       </div>
       {!c.sms_opt_in ? (
         <span className="inline-flex items-center gap-1.5 text-[11px] uppercase tracking-wide px-2 py-1 rounded bg-amber-100 text-amber-900 border border-amber-200">
@@ -301,18 +412,29 @@ function ConversationHeader({ conversation }: { conversation: ConversationRespon
 function MessageBubble({ message }: { message: Message }) {
   const isOutbound = message.direction === 'outbound';
   const failed = message.status === 'failed';
+  const isAutomated =
+    message.kind === 'confirmation' ||
+    message.kind === 'reminder' ||
+    message.kind === 'review_request';
 
   return (
     <div className={cn('flex', isOutbound ? 'justify-end' : 'justify-start')}>
       <div className="max-w-[70%]">
+        {isAutomated ? (
+          <div className={cn('mb-1 flex', isOutbound ? 'justify-end' : 'justify-start')}>
+            <KindBadge kind={message.kind} />
+          </div>
+        ) : null}
         <div
           className={cn(
-            'rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap break-words',
+            'rounded-2xl px-3.5 py-2 text-sm whitespace-pre-wrap break-words shadow-sm',
             isOutbound
               ? failed
                 ? 'bg-destructive/10 text-destructive border border-destructive/30'
-                : 'bg-accent text-accent-foreground'
-              : 'bg-card border',
+                : isAutomated
+                  ? 'bg-card border rounded-br-md'
+                  : 'bg-accent text-accent-foreground rounded-br-md'
+              : 'bg-card border rounded-bl-md',
           )}
         >
           {message.body}
@@ -329,7 +451,7 @@ function MessageBubble({ message }: { message: Message }) {
         </div>
         <p
           className={cn(
-            'mt-1 text-[10px] text-muted-foreground',
+            'mt-1 text-[10px] text-muted-foreground px-1',
             isOutbound ? 'text-right' : 'text-left',
           )}
         >
@@ -349,18 +471,47 @@ function MessageBubble({ message }: { message: Message }) {
   );
 }
 
+function KindBadge({ kind }: { kind: Message['kind'] }) {
+  // Visual hierarchy: automated messages get a subtle, system-toned
+  // chip so the operator instantly recognises them as platform-sent
+  // rather than typed by staff. Keep it small so it doesn't fight the
+  // bubble for attention.
+  const meta =
+    kind === 'confirmation'
+      ? { label: 'Confirmation', tone: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+      : kind === 'reminder'
+        ? { label: 'Reminder', tone: 'bg-sky-50 text-sky-700 border-sky-200' }
+        : kind === 'review_request'
+          ? { label: 'Review request', tone: 'bg-amber-50 text-amber-800 border-amber-200' }
+          : null;
+  if (!meta) return null;
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center gap-1 text-[10px] uppercase tracking-wide font-medium px-1.5 py-px rounded-full border',
+        meta.tone,
+      )}
+    >
+      Auto · {meta.label}
+    </span>
+  );
+}
+
 function Composer({
   customerId,
   smsOptIn,
   hasPhone,
+  onManageReplies,
 }: {
   customerId: number;
   smsOptIn: boolean;
   hasPhone: boolean;
+  onManageReplies: () => void;
 }) {
   const [body, setBody] = useState('');
   const [error, setError] = useState<string | null>(null);
   const send = useSendMessage(customerId);
+  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const disabled = !smsOptIn || !hasPhone;
 
   const onSubmit = async (e: React.FormEvent) => {
@@ -381,6 +532,33 @@ function Composer({
     }
   };
 
+  // Inserts a saved reply at the cursor position. If there's a
+  // selection, the reply replaces it; otherwise it's inserted inline
+  // with a leading space when adjacent to existing text. Mirrors the
+  // expected behaviour of an "insert" affordance — never destructive.
+  const insertSavedReply = (replyBody: string) => {
+    const ta = textareaRef.current;
+    if (!ta) {
+      setBody((prev) => (prev ? `${prev}\n${replyBody}` : replyBody));
+      return;
+    }
+    const start = ta.selectionStart ?? body.length;
+    const end = ta.selectionEnd ?? body.length;
+    const before = body.slice(0, start);
+    const after = body.slice(end);
+    const separatorBefore = before && !before.endsWith(' ') && !before.endsWith('\n') ? ' ' : '';
+    const separatorAfter = after && !after.startsWith(' ') && !after.startsWith('\n') ? ' ' : '';
+    const next = `${before}${separatorBefore}${replyBody}${separatorAfter}${after}`;
+    setBody(next);
+    // Restore caret to end of inserted text on the next tick.
+    requestAnimationFrame(() => {
+      if (!textareaRef.current) return;
+      const caret = before.length + separatorBefore.length + replyBody.length;
+      textareaRef.current.focus();
+      textareaRef.current.setSelectionRange(caret, caret);
+    });
+  };
+
   return (
     <form onSubmit={onSubmit} className="border-t bg-card px-4 py-3 space-y-2">
       {error ? (
@@ -393,8 +571,9 @@ function Composer({
             : 'This customer has not opted into SMS. Toggle their SMS opt-in to send messages.'}
         </p>
       ) : null}
-      <div className="flex items-end gap-2">
+      <div className="rounded-xl border bg-background focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/30 transition-colors">
         <textarea
+          ref={textareaRef}
           rows={2}
           value={body}
           onChange={(e) => setBody(e.target.value)}
@@ -407,16 +586,29 @@ function Composer({
               onSubmit(e as unknown as React.FormEvent);
             }
           }}
-          className="flex-1 rounded-md border bg-transparent px-3 py-2 text-sm shadow-xs outline-none resize-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50"
+          className="block w-full bg-transparent px-3.5 py-2.5 text-sm outline-none resize-none disabled:opacity-50 placeholder:text-muted-foreground/70"
         />
-        <Button type="submit" disabled={disabled || send.isPending || !body.trim()}>
-          {send.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
-          Send
-        </Button>
+        <div className="flex items-center justify-between gap-2 px-2 pb-1.5">
+          <SavedRepliesPopover
+            disabled={disabled || send.isPending}
+            onInsert={insertSavedReply}
+            onManage={onManageReplies}
+          />
+          <div className="flex items-center gap-3">
+            <p className="text-[10px] text-muted-foreground hidden sm:block">
+              {body.length}/1600 · ⌘ + Enter to send
+            </p>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={disabled || send.isPending || !body.trim()}
+            >
+              {send.isPending ? <Loader2 className="size-4 animate-spin" /> : <Send className="size-4" />}
+              Send
+            </Button>
+          </div>
+        </div>
       </div>
-      <p className="text-[10px] text-muted-foreground">
-        {body.length}/1600 chars · ⌘ + Enter to send
-      </p>
     </form>
   );
 }
@@ -429,8 +621,10 @@ function EmptyState({
   onNewConversation: () => void;
 }) {
   return (
-    <div className="flex flex-col items-center justify-center text-center px-10 py-16 gap-3">
-      <MessageSquare className="size-8 text-muted-foreground" />
+    <div className="flex flex-col items-center justify-center text-center px-10 py-16 gap-3 bg-muted/30">
+      <div className="inline-flex size-12 items-center justify-center rounded-full bg-card border shadow-sm">
+        <MessageSquare className="size-5 text-muted-foreground" />
+      </div>
       {empty ? (
         <>
           <p className="font-medium">No conversations yet</p>
