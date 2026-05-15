@@ -26,6 +26,7 @@
 'use client';
 
 import {
+  AtSign,
   BarChart3,
   ClipboardCheck,
   Clock,
@@ -43,6 +44,7 @@ import { cn } from '@/lib/utils';
 
 export type CalendarTool =
   | 'messages'
+  | 'social'
   | 'check-in'
   | 'price-check'
   | 'online-bookings'
@@ -61,6 +63,7 @@ export interface ToolDef {
 
 export const TOOLS: readonly ToolDef[] = [
   { id: 'messages', label: 'Messages', icon: MessageSquare },
+  { id: 'social', label: 'Social', icon: AtSign, comingPhase: 'Phase 3F · Instagram + Facebook + WhatsApp DMs' },
   { id: 'check-in', label: 'Employee check-in', icon: ClipboardCheck, comingPhase: 'Phase 2I · Time tracking' },
   { id: 'price-check', label: 'Price check', icon: Receipt },
   { id: 'online-bookings', label: 'Online bookings', icon: Globe },

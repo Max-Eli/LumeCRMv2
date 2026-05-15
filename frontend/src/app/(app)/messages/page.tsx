@@ -26,12 +26,13 @@
 
 'use client';
 
-import { AlertCircle, Loader2, MessageSquare, Phone, Send } from 'lucide-react';
+import { AlertCircle, Loader2, MessageSquare, Phone, Plus, Search, Send } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
 import { ApiError } from '@/lib/api';
+import { useCustomers, type CustomerListItem } from '@/lib/customers';
 import {
   type ConversationResponse,
   type Message,
@@ -44,6 +45,13 @@ import {
 import { cn } from '@/lib/utils';
 
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import { PageHeader } from '@/components/page-header';
 
@@ -55,6 +63,7 @@ export default function MessagesPage() {
 
   const { data: threads, isLoading: threadsLoading, error: threadsError } = useThreads();
   const [search, setSearch] = useState('');
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const filteredThreads = useMemo(() => {
     if (!threads) return [];
@@ -84,6 +93,12 @@ export default function MessagesPage() {
       <PageHeader
         title="Messages"
         description="Two-way SMS and MMS with your clients. Social DMs (Instagram, Facebook, WhatsApp) live under the Social tab when those integrations land."
+        actions={
+          <Button onClick={() => setPickerOpen(true)}>
+            <Plus className="size-4" />
+            New conversation
+          </Button>
+        }
       />
       <div className="flex-1 min-h-0 grid grid-cols-[320px_1fr] gap-4 rounded-lg border bg-card overflow-hidden">
         <ThreadList
@@ -93,13 +108,25 @@ export default function MessagesPage() {
           search={search}
           onSearchChange={setSearch}
           selectedCustomerId={selectedCustomerId}
+          onNewConversation={() => setPickerOpen(true)}
         />
         {selectedCustomerId ? (
           <ConversationPane key={selectedCustomerId} customerId={selectedCustomerId} />
         ) : (
-          <EmptyState empty={(threads?.length ?? 0) === 0 && !threadsLoading} />
+          <EmptyState
+            empty={(threads?.length ?? 0) === 0 && !threadsLoading}
+            onNewConversation={() => setPickerOpen(true)}
+          />
         )}
       </div>
+      <NewConversationDialog
+        open={pickerOpen}
+        onOpenChange={setPickerOpen}
+        onPick={(c) => {
+          setPickerOpen(false);
+          router.push(`/messages?c=${c.id}`);
+        }}
+      />
     </div>
   );
 }
@@ -114,6 +141,7 @@ function ThreadList({
   search,
   onSearchChange,
   selectedCustomerId,
+  onNewConversation,
 }: {
   threads: ThreadSummary[];
   loading: boolean;
@@ -121,15 +149,26 @@ function ThreadList({
   search: string;
   onSearchChange: (v: string) => void;
   selectedCustomerId: number | undefined;
+  onNewConversation: () => void;
 }) {
   return (
     <div className="border-r flex flex-col min-h-0">
-      <div className="p-3 border-b">
+      <div className="p-3 border-b flex items-center gap-2">
         <Input
           placeholder="Search threads…"
           value={search}
           onChange={(e) => onSearchChange(e.target.value)}
+          className="flex-1"
         />
+        <Button
+          size="icon"
+          variant="outline"
+          onClick={onNewConversation}
+          aria-label="New conversation"
+          title="New conversation"
+        >
+          <Plus className="size-4" />
+        </Button>
       </div>
       <div className="flex-1 min-h-0 overflow-y-auto">
         {loading ? (
@@ -388,7 +427,13 @@ function Composer({
   );
 }
 
-function EmptyState({ empty }: { empty: boolean }) {
+function EmptyState({
+  empty,
+  onNewConversation,
+}: {
+  empty: boolean;
+  onNewConversation: () => void;
+}) {
   return (
     <div className="flex flex-col items-center justify-center text-center px-10 py-16 gap-3">
       <MessageSquare className="size-8 text-muted-foreground" />
@@ -396,13 +441,114 @@ function EmptyState({ empty }: { empty: boolean }) {
         <>
           <p className="font-medium">No conversations yet</p>
           <p className="text-sm text-muted-foreground max-w-md">
-            When a customer texts your toll-free number, the thread will land here. To start a thread, open a client&apos;s profile and use the message action.
+            Start a new SMS thread with a client, or wait for them to text your toll-free number.
           </p>
+          <Button onClick={onNewConversation} className="mt-2">
+            <Plus className="size-4" />
+            New conversation
+          </Button>
         </>
       ) : (
         <p className="text-sm text-muted-foreground">Pick a thread from the list to view the conversation.</p>
       )}
     </div>
+  );
+}
+
+// ── New-conversation picker ─────────────────────────────────────────
+
+
+function NewConversationDialog({
+  open,
+  onOpenChange,
+  onPick,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  onPick: (customer: CustomerListItem) => void;
+}) {
+  const [q, setQ] = useState('');
+  // Empty-string search returns all customers; backend list is small
+  // enough for v1 that this is fine — we'll add server-side
+  // pagination/limit if a tenant ever crosses ~10k customers.
+  const { data: customers, isLoading } = useCustomers({ q });
+
+  // Reset the query when the dialog closes so reopening starts clean.
+  useEffect(() => {
+    if (!open) setQ('');
+  }, [open]);
+
+  // Only customers with a phone number can receive SMS. Soft-filter
+  // visually rather than hard-hiding so the operator can see why a
+  // client they expect isn't pickable.
+  const eligible = customers ?? [];
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-lg">
+        <DialogHeader>
+          <DialogTitle>New conversation</DialogTitle>
+        </DialogHeader>
+        <DialogBody className="space-y-3">
+          <div className="relative">
+            <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+            <Input
+              autoFocus
+              placeholder="Search by name, email, or phone…"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              className="pl-9"
+            />
+          </div>
+          <div className="max-h-80 overflow-y-auto -mx-2">
+            {isLoading ? (
+              <p className="px-2 py-6 text-sm text-muted-foreground text-center">Loading…</p>
+            ) : eligible.length === 0 ? (
+              <p className="px-2 py-6 text-sm text-muted-foreground text-center">
+                {q.trim()
+                  ? `No clients matching “${q}”.`
+                  : 'Start typing to search clients.'}
+              </p>
+            ) : (
+              <ul className="divide-y">
+                {eligible.map((c) => {
+                  const hasPhone = !!(c.phone || '').trim();
+                  return (
+                    <li key={c.id}>
+                      <button
+                        type="button"
+                        onClick={() => hasPhone && onPick(c)}
+                        disabled={!hasPhone}
+                        className={cn(
+                          'w-full text-left px-3 py-2.5 rounded-md transition-colors',
+                          hasPhone
+                            ? 'hover:bg-muted cursor-pointer'
+                            : 'opacity-50 cursor-not-allowed',
+                        )}
+                      >
+                        <div className="flex items-baseline justify-between gap-2">
+                          <span className="text-sm font-medium truncate">
+                            {c.first_name} {c.last_name}
+                          </span>
+                          <span className="text-xs text-muted-foreground shrink-0">
+                            {c.phone || 'no phone'}
+                          </span>
+                        </div>
+                        {!hasPhone ? (
+                          <p className="text-[11px] text-muted-foreground mt-0.5">
+                            Add a phone number on this client&apos;s profile to send SMS.
+                          </p>
+                        ) : null}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </DialogBody>
+      </DialogContent>
+    </Dialog>
   );
 }
 

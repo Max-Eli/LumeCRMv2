@@ -20,6 +20,7 @@ import { OnlineBookingsPanel } from './tool-panels/online-bookings';
 import { PackagesPanel } from './tool-panels/packages';
 import { PriceCheckPanel } from './tool-panels/price-check';
 import { ReportsPanel } from './tool-panels/reports';
+import { SocialPanel } from './tool-panels/social';
 import { ViewSettingsPanel, type ViewSettingsPanelProps } from './tool-panels/view-settings';
 import { WaitlistPanel } from './tool-panels/waitlist';
 
@@ -78,6 +79,8 @@ export function ToolPanel({
           <PriceCheckPanel />
         ) : active === 'messages' ? (
           <MessagesPanel />
+        ) : active === 'social' ? (
+          <SocialPanel phase={tool.comingPhase} />
         ) : active === 'check-in' ? (
           <CheckInPanel phase={tool.comingPhase} />
         ) : active === 'online-bookings' ? (

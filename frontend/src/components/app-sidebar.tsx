@@ -16,7 +16,6 @@
 'use client';
 
 import {
-  AtSign,
   BarChart3,
   Building2,
   Calendar,
@@ -86,13 +85,9 @@ const NAV_LINKS: NavLink[] = [
   { href: '/clients', label: 'Clients', icon: Users, group: 'location' },
   // SMS / MMS inbox — two-way messaging with customers via the
   // tenant's toll-free Twilio number. Social DM threads (IG/FB/WA)
-  // live under the separate "Social" surface below.
+  // live under the separate "Social" tile in the calendar tool rail
+  // until Phase 3F lands.
   { href: '/messages', label: 'Messages', icon: MessageSquare, group: 'location' },
-  // Social DMs — Instagram / Facebook / WhatsApp inboxes. Placeholder
-  // until the Meta Graph integrations land (Phase 3F). Kept separate
-  // from /messages so SMS workflows stay clean — different channels
-  // have different consent + delivery semantics.
-  { href: '/social', label: 'Social', icon: AtSign, group: 'location', comingSoon: true },
   // Mobile-first clock-in/out for any staff member. Sits at top
   // level (rather than under /staff) because every role uses it,
   // not just managers.
