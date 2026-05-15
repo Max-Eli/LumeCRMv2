@@ -16,7 +16,6 @@ import type { Appointment } from '@/lib/appointments';
 import { TOOLS, type CalendarTool } from './right-tool-rail';
 import { CheckInPanel } from './tool-panels/check-in';
 import { OnlineBookingsPanel } from './tool-panels/online-bookings';
-import { PackagesPanel } from './tool-panels/packages';
 import { PriceCheckPanel } from './tool-panels/price-check';
 import { ReportsPanel } from './tool-panels/reports';
 import { SocialPanel } from './tool-panels/social';
@@ -86,8 +85,6 @@ export function ToolPanel({
           <OnlineBookingsPanel />
         ) : active === 'waitlist' ? (
           <WaitlistPanel />
-        ) : active === 'packages' ? (
-          <PackagesPanel />
         ) : active === 'reports' ? (
           <ReportsPanel
             focusDate={focusDate}

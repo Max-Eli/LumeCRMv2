@@ -88,7 +88,14 @@ export const TOOLS: readonly ToolDef[] = [
   { id: 'price-check', label: 'Price check', icon: Receipt },
   { id: 'online-bookings', label: 'Online bookings', icon: Globe },
   { id: 'waitlist', label: 'Waitlist', icon: Clock },
-  { id: 'packages', label: 'Custom packages', icon: Package },
+  {
+    id: 'packages',
+    label: 'Custom packages',
+    icon: Package,
+    popoutUrl: '/build-package',
+    popoutTarget: 'lume-build-package',
+    popoutFeatures: 'popup,width=1180,height=900,noopener=no,noreferrer=no',
+  },
   { id: 'reports', label: 'Reports (today)', icon: BarChart3 },
   { id: 'view-settings', label: 'View settings', icon: Settings2 },
 ];
