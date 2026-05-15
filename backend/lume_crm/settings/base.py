@@ -229,6 +229,30 @@ DEFAULT_FROM_EMAIL = env(
     default='Lumè CRM <noreply@dev.lumecrm.local>',
 )
 
+# ── Twilio (SMS) ────────────────────────────────────────────────────
+#
+# Set via env in prod. When TWILIO_ACCOUNT_SID + TWILIO_AUTH_TOKEN
+# are both present, the marketing sender (apps.marketing.sender) hits
+# the real Twilio API. Otherwise SMS routes to stub mode — SendLog
+# rows still written but no API call.
+#
+# TWILIO_FROM_NUMBER is the originating phone (E.164 format, e.g.
+# +18885551234 for a toll-free). Required when sending — Twilio
+# rejects with 21603 if it's missing on a Messages.create call.
+#
+# TWILIO_STATUS_CALLBACK_URL is the absolute URL Twilio POSTs
+# delivery / failure updates to. Lives under /api/marketing/twilio/
+# status-callback/. Empty in dev to skip status callbacks.
+#
+# TWILIO_TEST_MODE flips to True for unit tests; the SDK uses the
+# documented test SID/token pair that accepts requests but does NOT
+# actually send (Twilio docs).
+TWILIO_ACCOUNT_SID = env('TWILIO_ACCOUNT_SID', default='')
+TWILIO_AUTH_TOKEN = env('TWILIO_AUTH_TOKEN', default='')
+TWILIO_FROM_NUMBER = env('TWILIO_FROM_NUMBER', default='')
+TWILIO_STATUS_CALLBACK_URL = env('TWILIO_STATUS_CALLBACK_URL', default='')
+TWILIO_TEST_MODE = env.bool('TWILIO_TEST_MODE', default=False)
+
 # Public host the tokenized fill URLs resolve under. Used to build
 # the absolute /sign/<token> link in emails. Dev: localhost:3000;
 # prod: per-tenant subdomain (set via env).

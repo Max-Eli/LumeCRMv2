@@ -70,13 +70,26 @@ def _email_provider_ready() -> bool:
 
 
 def _sms_provider_ready() -> bool:
-    """Twilio is wired when TWILIO_* env vars are set. Until then
-    SMS sends land in stub mode — SendLog row written, no Twilio
-    API call. Same flip-on-via-env semantic as email."""
+    """Twilio is wired when all required env vars are present:
+    account SID, auth token, and a from-number. Until all three
+    land in env, SMS sends route to stub mode — SendLog row written
+    with a synthetic provider id, no Twilio API call. Same flip-
+    on-via-env semantic as email."""
     return all([
         getattr(settings, 'TWILIO_ACCOUNT_SID', None),
         getattr(settings, 'TWILIO_AUTH_TOKEN', None),
+        getattr(settings, 'TWILIO_FROM_NUMBER', None),
     ])
+
+
+def _twilio_client():
+    """Lazy-construct the Twilio REST client. Cached at module level
+    isn't necessary — the client is cheap to instantiate and
+    holds no significant state between calls. Keeping the import
+    inside the function means an environment without TWILIO_* set
+    never imports the SDK at all."""
+    from twilio.rest import Client
+    return Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
 
 
 # ── Unsubscribe token helpers ───────────────────────────────────────
@@ -291,11 +304,60 @@ def _dispatch_one(
 
     elif channel == Channel.SMS:
         if _sms_provider_ready():
-            # Real Twilio path — Phase 1L session 3 polish wires
-            # `twilio.Client.messages.create()` here. v1 leaves the
-            # stub branch as the only path.
-            provider_message_id = f'stub-sms-{secrets.token_hex(8)}'
+            # Real Twilio path. We use one shared toll-free number for
+            # all tenants (TWILIO_FROM_NUMBER); the message body
+            # itself identifies the spa so the recipient knows who
+            # it's from. Carrier-side reputation lives on the shared
+            # number — a future polish is per-tenant TFN or 10DLC
+            # for spas that want a local-area-code identity (Phase
+            # 4F-ish work).
+            #
+            # Body is rendered up-top with {{unsubscribe_url}} +
+            # tenant-name substitution. We DON'T add a separate
+            # branded prefix here — the operator's template already
+            # owns the "From Acme Spa: ..." prefix if they want one.
+            try:
+                from twilio.base.exceptions import TwilioRestException
+
+                client = _twilio_client()
+                kwargs = {
+                    'from_': settings.TWILIO_FROM_NUMBER,
+                    'to': customer.phone,
+                    'body': rendered_body,
+                }
+                # Status callback URL is the public webhook that
+                # Twilio POSTs delivery / failure updates to. Empty
+                # in dev (and the test mode) skips callbacks; in
+                # prod set TWILIO_STATUS_CALLBACK_URL to an absolute
+                # URL pointing at our /api/marketing/twilio/status-
+                # callback/ endpoint.
+                if settings.TWILIO_STATUS_CALLBACK_URL:
+                    kwargs['status_callback'] = settings.TWILIO_STATUS_CALLBACK_URL
+
+                tw_msg = client.messages.create(**kwargs)
+                # Twilio assigns a SID like "SM..." that we record so
+                # the status callback can correlate updates back to
+                # this row.
+                provider_message_id = tw_msg.sid
+            except TwilioRestException as e:
+                status = MarketingSendLog.Status.FAILED
+                failure_reason = f'twilio:{e.code} {str(e)[:400]}'
+                logger.exception(
+                    'marketing.send.sms failed',
+                    extra={'campaign_id': campaign.pk, 'customer_id': customer.pk},
+                )
+            except Exception as e:
+                status = MarketingSendLog.Status.FAILED
+                failure_reason = str(e)[:500]
+                logger.exception(
+                    'marketing.send.sms failed (non-Twilio exception)',
+                    extra={'campaign_id': campaign.pk, 'customer_id': customer.pk},
+                )
         else:
+            # Twilio creds not set in env — sender runs in stub mode.
+            # SendLog row still written so the operator's audit trail
+            # shows the intent; the synthetic provider id is the
+            # signal that no real send happened.
             provider_message_id = f'stub-noprov-sms-{secrets.token_hex(8)}'
 
     return MarketingSendLog.objects.create(

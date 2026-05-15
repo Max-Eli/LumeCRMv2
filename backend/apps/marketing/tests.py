@@ -20,7 +20,7 @@ from __future__ import annotations
 import datetime as dt
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.test import TestCase, override_settings
 from django.urls import reverse
 from django.utils import timezone as djtz
 from rest_framework import status
@@ -1544,3 +1544,229 @@ class CampaignPreviewAndTestSendTests(TestCase):
         ).first()
         self.assertIsNotNone(log)
         self.assertEqual(log.metadata.get('recipient_domain'), 'spa.test')
+
+
+# ── Twilio SMS dispatch + status callback ────────────────────────────
+
+
+class TwilioSMSDispatchTests(TestCase):
+    """Covers the SMS branch of `_dispatch_one` + the public Twilio
+    status-callback webhook. Uses TWILIO_TEST_MODE=True (which skips
+    real API calls in production via the env gate, and skips
+    signature verification on the callback so tests can POST without
+    HMAC-signing every request).
+
+    The actual Twilio API call is patched out — we verify our code
+    invokes the SDK with the right arguments + handles success +
+    failure cases. We don't (and shouldn't) test Twilio itself."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('twilio-sms')
+        cls.audience = Audience.objects.create(
+            tenant=cls.tenant, name='All', filter_spec={},
+        )
+        cls.template = MarketingTemplate.objects.create(
+            tenant=cls.tenant, name='Reminder',
+            channel=Channel.SMS, subject='',
+            body='Hi {{first_name}}. Reply STOP to opt out.',
+        )
+
+    def setUp(self):
+        self.client = _client_for(self.owner)
+
+    def _make_sms_customer(self):
+        return _make_customer(
+            self.tenant, phone='+15551234567',
+            sms_marketing_opt_in=True,
+        )
+
+    def _create_and_schedule_campaign(self):
+        response = self.client.post(
+            reverse('marketing-campaign-list'),
+            data={
+                'name': 'SMS dispatch test',
+                'audience': self.audience.pk,
+                'template': self.template.pk,
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        cid = response.data['id']
+        self.client.post(
+            reverse('marketing-campaign-schedule', kwargs={'pk': cid}),
+            data={'send_now': True}, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        return cid
+
+    # ── Dispatch ────────────────────────────────────────────────
+
+    @override_settings(
+        TWILIO_ACCOUNT_SID='ACtest',
+        TWILIO_AUTH_TOKEN='test-token',
+        TWILIO_FROM_NUMBER='+18885550000',
+    )
+    def test_sms_dispatch_calls_twilio_with_rendered_body(self):
+        from unittest.mock import MagicMock, patch
+        self._make_sms_customer()
+        cid = self._create_and_schedule_campaign()
+
+        fake_message = MagicMock(sid='SMfakeSID12345')
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = fake_message
+
+        with patch('apps.marketing.sender._twilio_client', return_value=fake_client):
+            response = self.client.post(
+                reverse('marketing-campaign-dispatch-now', kwargs={'pk': cid}),
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+        # Verify Twilio was called with the right kwargs.
+        fake_client.messages.create.assert_called_once()
+        kwargs = fake_client.messages.create.call_args.kwargs
+        self.assertEqual(kwargs['from_'], '+18885550000')
+        self.assertEqual(kwargs['to'], '+15551234567')
+        self.assertIn('Pat', kwargs['body'])  # First name substituted
+
+        # The SendLog row stores Twilio's SID so the status callback
+        # can correlate the eventual delivery update.
+        log = MarketingSendLog.objects.filter(
+            campaign_id=cid, channel=Channel.SMS,
+        ).first()
+        self.assertEqual(log.provider_message_id, 'SMfakeSID12345')
+        self.assertEqual(log.status, MarketingSendLog.Status.SENT)
+
+    @override_settings(
+        TWILIO_ACCOUNT_SID='ACtest',
+        TWILIO_AUTH_TOKEN='test-token',
+        TWILIO_FROM_NUMBER='+18885550000',
+    )
+    def test_sms_dispatch_handles_twilio_rest_exception(self):
+        from unittest.mock import MagicMock, patch
+        from twilio.base.exceptions import TwilioRestException
+
+        self._make_sms_customer()
+        cid = self._create_and_schedule_campaign()
+
+        fake_client = MagicMock()
+        fake_client.messages.create.side_effect = TwilioRestException(
+            uri='/test', msg='Phone number not subscribed', code=21610, status=400,
+        )
+
+        with patch('apps.marketing.sender._twilio_client', return_value=fake_client):
+            response = self.client.post(
+                reverse('marketing-campaign-dispatch-now', kwargs={'pk': cid}),
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+        log = MarketingSendLog.objects.filter(
+            campaign_id=cid, channel=Channel.SMS,
+        ).first()
+        self.assertEqual(log.status, MarketingSendLog.Status.FAILED)
+        self.assertIn('twilio:21610', log.failure_reason)
+
+    def test_sms_dispatch_stub_when_twilio_not_configured(self):
+        # Default settings — TWILIO_* not set. Sender falls into stub
+        # branch, writes a SendLog row with the stub-noprov prefix,
+        # never imports the SDK.
+        self._make_sms_customer()
+        cid = self._create_and_schedule_campaign()
+
+        response = self.client.post(
+            reverse('marketing-campaign-dispatch-now', kwargs={'pk': cid}),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+
+        log = MarketingSendLog.objects.filter(
+            campaign_id=cid, channel=Channel.SMS,
+        ).first()
+        self.assertTrue(log.provider_message_id.startswith('stub-noprov-sms-'))
+        self.assertEqual(log.status, MarketingSendLog.Status.SENT)
+
+    # ── Status callback ─────────────────────────────────────────
+
+    @override_settings(TWILIO_TEST_MODE=True)
+    def test_status_callback_updates_to_delivered(self):
+        customer = self._make_sms_customer()
+        send_log = MarketingSendLog.objects.create(
+            tenant=self.tenant,
+            campaign=Campaign.objects.create(
+                tenant=self.tenant, name='cb', audience=self.audience,
+                template=self.template, channel=Channel.SMS,
+            ),
+            customer=customer, channel=Channel.SMS,
+            recipient_phone_last4='4567',
+            status=MarketingSendLog.Status.SENT,
+            provider_message_id='SMrealsid',
+        )
+        anon = APIClient()
+        response = anon.post(
+            reverse('marketing-twilio-status-callback'),
+            data={
+                'MessageSid': 'SMrealsid',
+                'MessageStatus': 'delivered',
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        send_log.refresh_from_db()
+        self.assertEqual(send_log.status, MarketingSendLog.Status.DELIVERED)
+        self.assertIsNotNone(send_log.delivered_at)
+
+    @override_settings(TWILIO_TEST_MODE=True)
+    def test_status_callback_updates_to_failed_with_error(self):
+        customer = self._make_sms_customer()
+        send_log = MarketingSendLog.objects.create(
+            tenant=self.tenant,
+            campaign=Campaign.objects.create(
+                tenant=self.tenant, name='cb2', audience=self.audience,
+                template=self.template, channel=Channel.SMS,
+            ),
+            customer=customer, channel=Channel.SMS,
+            recipient_phone_last4='4567',
+            status=MarketingSendLog.Status.SENT,
+            provider_message_id='SMfailsid',
+        )
+        anon = APIClient()
+        response = anon.post(
+            reverse('marketing-twilio-status-callback'),
+            data={
+                'MessageSid': 'SMfailsid',
+                'MessageStatus': 'undelivered',
+                'ErrorCode': '30005',
+                'ErrorMessage': 'Unknown destination handset',
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        send_log.refresh_from_db()
+        self.assertEqual(send_log.status, MarketingSendLog.Status.FAILED)
+        self.assertIn('30005', send_log.failure_reason)
+
+    @override_settings(TWILIO_TEST_MODE=True)
+    def test_status_callback_unknown_sid_returns_200_unmatched(self):
+        # Callback for an SID we don't have — return 200 (don't retry)
+        # but flag as unmatched. Real-world reason: replay, Twilio
+        # console test, or a row-insert race.
+        anon = APIClient()
+        response = anon.post(
+            reverse('marketing-twilio-status-callback'),
+            data={
+                'MessageSid': 'SMnotreal',
+                'MessageStatus': 'delivered',
+            },
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertTrue(response.data.get('unmatched'))
+
+    def test_status_callback_without_test_mode_rejects_unsigned(self):
+        # In production-like mode (test mode off + auth token set),
+        # an unsigned request gets 403.
+        with override_settings(TWILIO_TEST_MODE=False, TWILIO_AUTH_TOKEN='real-token'):
+            anon = APIClient()
+            response = anon.post(
+                reverse('marketing-twilio-status-callback'),
+                data={'MessageSid': 'SM1', 'MessageStatus': 'delivered'},
+            )
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)

@@ -16,7 +16,7 @@ from .views import (
     CustomerMarketingHistoryView,
     MarketingTemplateViewSet,
 )
-from .views_public import PublicUnsubscribeView
+from .views_public import PublicUnsubscribeView, TwilioStatusCallbackView
 
 router = DefaultRouter()
 router.register(r'marketing/audiences', AudienceViewSet, basename='marketing-audience')
@@ -36,5 +36,12 @@ urlpatterns = [
         'marketing/unsubscribe/<str:token>/',
         PublicUnsubscribeView.as_view(),
         name='marketing-unsubscribe',
+    ),
+    # Twilio delivery webhook — auth via X-Twilio-Signature
+    # (HMAC over the URL + body params using our auth token).
+    path(
+        'marketing/twilio/status-callback/',
+        TwilioStatusCallbackView.as_view(),
+        name='marketing-twilio-status-callback',
     ),
 ]
