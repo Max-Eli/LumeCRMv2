@@ -547,11 +547,13 @@ permission, full audit trail).*
 - [ ] Refund workflow (manual, ledger-tracked) — partially covered by reopen+void; explicit refund flow with negative amounts is Phase 2A territory.
 
 #### 1F. SMS appointment reminders
-- [ ] Twilio integration with BAA
-- [ ] Reminder schedule: 48h before, 2h before (configurable per tenant)
-- [ ] Confirm/cancel via SMS reply (basic)
-- [ ] Opt-in/opt-out compliance (TCPA)
-- [ ] Per-tenant phone number provisioning
+- [x] **Twilio integration with BAA** — shipped earlier (c156847 + 7e9521c). SDK wired, Secrets Manager stores Account SID + Auth Token, ECS task picks them up at boot. Status-callback webhook auths via X-Twilio-Signature (HMAC). Shared toll-free number for v1 — per-tenant TFN/10DLC deferred to platform-admin phase.
+- [x] **Confirmation SMS on appointment-create** — shipped 2026-05-15. `post_save` signal calls `apps.appointments.sms.send_confirmation_sms` synchronously. Consent-gated (`Customer.sms_opt_in` + phone on file). Idempotent on `Appointment.confirmation_sms_sent_at`. Twilio errors are swallowed + logged so a Twilio outage can't fail an appointment booking. Audit log on every send + every skip. ADR 0021.
+- [x] **24h-out reminder SMS** — shipped 2026-05-15. `python manage.py send_appointment_reminders` finds appointments 23-25h out (±1h slop) with no reminder sent yet + status still sendable (BOOKED / CONFIRMED / CHECKED_IN), calls Twilio per row. Idempotent on `Appointment.reminder_sms_sent_at`. Designed for invocation by an external scheduler (EventBridge → ECS RunTask every 30 min — Terraform follow-up).
+- [ ] **Reminder schedule configurable per tenant** — v1 hardcodes 24h. Future: per-tenant `appointment_reminder_hours` field with multi-value support (e.g., 48h + 2h).
+- [ ] **Confirm/cancel via SMS reply (basic)** — inbound webhook + STOP/CANCEL/CONFIRM parsing. Phase 3A territory (two-way SMS inbox), not v1.
+- [x] **Opt-in/opt-out compliance (TCPA)** — `Customer.sms_opt_in` is the transactional consent flag (collected at booking). Outbound messages carry "Reply STOP to opt out." STOP-handling is a Twilio platform feature out of the box. Documented in ADR 0021.
+- [ ] **Per-tenant phone number provisioning** — deferred to Platform Admin Phase (the P1. Twilio per-tenant subaccount + 10DLC brand/campaign work). v1 ships with one shared toll-free number for all tenants.
 
 #### 1G. Reporting
 *User bar set explicitly: "we are not shipping until we can have all reports on
