@@ -14,14 +14,18 @@ hours, which routinely shifts which appointments belong to "today".
 from __future__ import annotations
 
 import datetime as dt
+from unittest.mock import MagicMock, patch
 
 from django.contrib.auth import get_user_model
-from django.test import TestCase
+from django.core.management import call_command
+from django.test import TestCase, override_settings
 from django.urls import reverse
+from django.utils import timezone as djtz
 from rest_framework import status
 from rest_framework.test import APIClient
 
 from apps.appointments.models import Appointment
+from apps.audit.models import AuditLog
 from apps.customers.models import Customer
 from apps.services.models import Service, ServiceCategory
 from apps.tenants.middleware import ACTIVE_LOCATION_COOKIE
@@ -575,3 +579,257 @@ class ScheduleFitValidationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         appt.refresh_from_db()
         self.assertEqual(appt.status, Appointment.Status.CANCELLED)
+
+
+# ── Appointment SMS (confirmation + reminder) ────────────────────────
+
+
+class AppointmentConfirmationSMSTests(TestCase):
+    """Covers the post_save signal that fires the SMS confirmation.
+
+    The Twilio API call is patched out — we verify our code does the
+    right thing (consent gate, idempotency, audit log, row stamping)
+    without actually hitting the network. Real Twilio behavior is
+    out of our test scope."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('sms-conf')
+        cls.provider = _make_provider(cls.tenant)
+        cls.service = _make_service(cls.tenant)
+
+    def _make_consenting_customer(self):
+        return Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Pat', last_name='Patient',
+            email='pat-consent@test.local',
+            phone='+15551234567',
+            sms_opt_in=True,
+        )
+
+    def _make_no_consent_customer(self):
+        return Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Pat', last_name='NoConsent',
+            email='pat-noconsent@test.local',
+            phone='+15551234567',
+            sms_opt_in=False,
+        )
+
+    def _create_appointment(self, customer):
+        start = djtz.now() + dt.timedelta(days=2)
+        return _make_appointment(
+            tenant=self.tenant, customer=customer,
+            provider=self.provider, service=self.service,
+            start_utc=start,
+        )
+
+    @override_settings(
+        TWILIO_ACCOUNT_SID='ACtest',
+        TWILIO_AUTH_TOKEN='test-token',
+        TWILIO_FROM_NUMBER='+18885550000',
+    )
+    def test_confirmation_fires_on_create_with_consenting_customer(self):
+        customer = self._make_consenting_customer()
+        fake_message = MagicMock(sid='SMconf123')
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = fake_message
+
+        with patch('twilio.rest.Client', return_value=fake_client):
+            appt = self._create_appointment(customer)
+
+        fake_client.messages.create.assert_called_once()
+        kwargs = fake_client.messages.create.call_args.kwargs
+        self.assertEqual(kwargs['to'], '+15551234567')
+        self.assertIn('Pat', kwargs['body'])
+        self.assertIn(self.tenant.name, kwargs['body'])
+
+        appt.refresh_from_db()
+        self.assertIsNotNone(appt.confirmation_sms_sent_at)
+        self.assertEqual(appt.confirmation_sms_provider_id, 'SMconf123')
+
+    def test_confirmation_skipped_when_customer_has_no_sms_consent(self):
+        customer = self._make_no_consent_customer()
+        with patch('twilio.rest.Client') as fake_client_cls:
+            appt = self._create_appointment(customer)
+        fake_client_cls.assert_not_called()
+        appt.refresh_from_db()
+        self.assertIsNone(appt.confirmation_sms_sent_at)
+        # Audit log entry recorded the skip reason.
+        log = AuditLog.objects.filter(
+            resource_type='appointment_sms',
+            resource_id=str(appt.pk),
+            metadata__kind='confirmation',
+        ).first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('outcome'), 'skipped')
+        self.assertEqual(log.metadata.get('reason'), 'no_consent_transactional')
+
+    def test_confirmation_skipped_when_customer_has_no_phone(self):
+        customer = Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Pat', last_name='NoPhone',
+            email='pat-nophone@test.local',
+            phone='',
+            sms_opt_in=True,
+        )
+        with patch('twilio.rest.Client') as fake_client_cls:
+            appt = self._create_appointment(customer)
+        fake_client_cls.assert_not_called()
+        appt.refresh_from_db()
+        self.assertIsNone(appt.confirmation_sms_sent_at)
+
+    @override_settings(
+        TWILIO_ACCOUNT_SID='ACtest',
+        TWILIO_AUTH_TOKEN='test-token',
+        TWILIO_FROM_NUMBER='+18885550000',
+    )
+    def test_confirmation_swallows_twilio_error_so_appointment_save_succeeds(self):
+        from twilio.base.exceptions import TwilioRestException
+        customer = self._make_consenting_customer()
+        fake_client = MagicMock()
+        fake_client.messages.create.side_effect = TwilioRestException(
+            uri='/test', msg='Number temporarily unreachable', code=30003, status=400,
+        )
+        # The signal handler catches the SMSDispatchError; the
+        # appointment commit should succeed regardless. This is
+        # critical — a Twilio outage shouldn't fail a booking.
+        with patch('twilio.rest.Client', return_value=fake_client):
+            appt = self._create_appointment(customer)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, Appointment.Status.BOOKED)
+        # confirmation_sms_sent_at stays None because send_sms raised
+        # before the row update happened.
+        self.assertIsNone(appt.confirmation_sms_sent_at)
+
+    def test_confirmation_not_sent_when_appointment_created_cancelled(self):
+        # Historical/seed import path: someone creating an appointment
+        # already-cancelled shouldn't trigger a confirmation.
+        customer = self._make_consenting_customer()
+        with patch('twilio.rest.Client') as fake_client_cls:
+            appt = Appointment.objects.create(
+                tenant=self.tenant, customer=customer,
+                provider=self.provider, service=self.service,
+                location=self.tenant.locations.get(is_default=True),
+                start_time=djtz.now() + dt.timedelta(days=2),
+                end_time=djtz.now() + dt.timedelta(days=2, hours=1),
+                status=Appointment.Status.CANCELLED,
+                quoted_price_cents=self.service.price_cents,
+            )
+        fake_client_cls.assert_not_called()
+        self.assertIsNone(appt.confirmation_sms_sent_at)
+
+
+class AppointmentReminderSMSTests(TestCase):
+    """`send_appointment_reminders` management command — finds
+    appointments 24h out, sends reminder, stamps the row."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('sms-rem')
+        cls.provider = _make_provider(cls.tenant)
+        cls.service = _make_service(cls.tenant)
+
+    def _make_appt_at(self, hours_from_now: int, *, sms_opt_in=True, phone='+15551234567'):
+        customer = Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Pat', last_name='Patient',
+            email=f'pat-{hours_from_now}h@test.local',
+            phone=phone,
+            sms_opt_in=sms_opt_in,
+        )
+        start = djtz.now() + dt.timedelta(hours=hours_from_now)
+        # Avoid firing the create-signal's Twilio call during setup —
+        # the test asserts on the reminder path. Patch the Client
+        # with a fake whose `messages.create` returns a fake_message
+        # carrying a real string `sid` so the row update doesn't
+        # blow up trying to store a MagicMock in a CharField.
+        fake_setup_client = MagicMock()
+        fake_setup_client.messages.create.return_value = MagicMock(sid='setup-noop-sid')
+        with patch('twilio.rest.Client', return_value=fake_setup_client):
+            return _make_appointment(
+                tenant=self.tenant, customer=customer,
+                provider=self.provider, service=self.service,
+                start_utc=start,
+            )
+
+    @override_settings(
+        TWILIO_ACCOUNT_SID='ACtest',
+        TWILIO_AUTH_TOKEN='test-token',
+        TWILIO_FROM_NUMBER='+18885550000',
+    )
+    def test_reminder_fires_for_appointment_in_24h_window(self):
+        appt = self._make_appt_at(24)
+        fake_message = MagicMock(sid='SMrem456')
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = fake_message
+
+        with patch('twilio.rest.Client', return_value=fake_client):
+            call_command('send_appointment_reminders')
+
+        fake_client.messages.create.assert_called_once()
+        body = fake_client.messages.create.call_args.kwargs['body']
+        self.assertIn('reminder', body.lower())
+        appt.refresh_from_db()
+        self.assertIsNotNone(appt.reminder_sms_sent_at)
+        self.assertEqual(appt.reminder_sms_provider_id, 'SMrem456')
+
+    @override_settings(
+        TWILIO_ACCOUNT_SID='ACtest',
+        TWILIO_AUTH_TOKEN='test-token',
+        TWILIO_FROM_NUMBER='+18885550000',
+    )
+    def test_reminder_idempotent_across_runs(self):
+        appt = self._make_appt_at(24)
+        fake_client = MagicMock()
+        fake_client.messages.create.return_value = MagicMock(sid='SMidem1')
+
+        with patch('twilio.rest.Client', return_value=fake_client):
+            call_command('send_appointment_reminders')
+        self.assertEqual(fake_client.messages.create.call_count, 1)
+
+        # Re-run — should be a no-op because reminder_sms_sent_at is now set.
+        with patch('twilio.rest.Client', return_value=fake_client):
+            call_command('send_appointment_reminders')
+        self.assertEqual(fake_client.messages.create.call_count, 1)
+
+        appt.refresh_from_db()
+        self.assertEqual(appt.reminder_sms_provider_id, 'SMidem1')
+
+    @override_settings(
+        TWILIO_ACCOUNT_SID='ACtest',
+        TWILIO_AUTH_TOKEN='test-token',
+        TWILIO_FROM_NUMBER='+18885550000',
+    )
+    def test_reminder_skips_outside_window(self):
+        # Appointment 5 days out — well outside the 23-25h window.
+        self._make_appt_at(120)
+        fake_client = MagicMock()
+        with patch('twilio.rest.Client', return_value=fake_client):
+            call_command('send_appointment_reminders')
+        fake_client.messages.create.assert_not_called()
+
+    @override_settings(
+        TWILIO_ACCOUNT_SID='ACtest',
+        TWILIO_AUTH_TOKEN='test-token',
+        TWILIO_FROM_NUMBER='+18885550000',
+    )
+    def test_reminder_skips_cancelled_appointments(self):
+        appt = self._make_appt_at(24)
+        appt.status = Appointment.Status.CANCELLED
+        appt.save()
+        fake_client = MagicMock()
+        with patch('twilio.rest.Client', return_value=fake_client):
+            call_command('send_appointment_reminders')
+        fake_client.messages.create.assert_not_called()
+
+    def test_reminder_dry_run_makes_no_twilio_call(self):
+        self._make_appt_at(24)
+        fake_client = MagicMock()
+        with override_settings(
+            TWILIO_ACCOUNT_SID='ACtest',
+            TWILIO_AUTH_TOKEN='test-token',
+            TWILIO_FROM_NUMBER='+18885550000',
+        ), patch('twilio.rest.Client', return_value=fake_client):
+            call_command('send_appointment_reminders', '--dry-run')
+        fake_client.messages.create.assert_not_called()
