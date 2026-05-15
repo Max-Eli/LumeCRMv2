@@ -97,6 +97,12 @@ locals {
         { name = "DB_PORT", value = tostring(aws_db_instance.main.port) },
         { name = "DB_NAME", value = aws_db_instance.main.db_name },
         { name = "DB_USER", value = var.rds_master_username },
+        # Twilio SMS — shared toll-free number visible to recipients,
+        # not a secret. SID + auth-token below are pulled from
+        # Secrets Manager. Status callback URL points at our public
+        # webhook (mounted under /api/marketing/twilio/...).
+        { name = "TWILIO_FROM_NUMBER", value = var.twilio_from_number },
+        { name = "TWILIO_STATUS_CALLBACK_URL", value = "https://api.${var.domain_name}/api/marketing/twilio/status-callback/" },
       ]
 
       secrets = [
@@ -107,6 +113,14 @@ locals {
         {
           name      = "DB_PASSWORD"
           valueFrom = "${local.rds_secret_arn}:password::"
+        },
+        {
+          name      = "TWILIO_ACCOUNT_SID"
+          valueFrom = aws_secretsmanager_secret.twilio_account_sid.arn
+        },
+        {
+          name      = "TWILIO_AUTH_TOKEN"
+          valueFrom = aws_secretsmanager_secret.twilio_auth_token.arn
         },
       ]
 

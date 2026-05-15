@@ -44,3 +44,35 @@ resource "aws_secretsmanager_secret_version" "django_secret_key" {
     ignore_changes = [secret_string]
   }
 }
+
+
+# ── Twilio credentials ──────────────────────────────────────────────
+#
+# Two Secrets Manager entries the backend task role can read:
+#   - twilio-account-sid (ACxxxx..., not super sensitive but secret
+#     by convention)
+#   - twilio-auth-token (the API root credential; treat as sensitive)
+#
+# We declare the secret resource but DO NOT populate it via Terraform
+# state. The first `aws secretsmanager put-secret-value` happens
+# manually with the actual Twilio creds — same way operators would
+# rotate credentials. `lifecycle.ignore_changes` keeps Terraform
+# from churning the value on subsequent runs.
+
+resource "aws_secretsmanager_secret" "twilio_account_sid" {
+  name                    = "${local.name_prefix}/twilio-account-sid"
+  description             = "Twilio Account SID for ${var.environment}. Populated via AWS console / CLI; not in Terraform state."
+  kms_key_id              = aws_kms_key.secrets.arn
+  recovery_window_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-twilio-account-sid" }
+}
+
+resource "aws_secretsmanager_secret" "twilio_auth_token" {
+  name                    = "${local.name_prefix}/twilio-auth-token"
+  description             = "Twilio Auth Token for ${var.environment}. Sensitive — full Twilio API access. Populated via AWS console / CLI."
+  kms_key_id              = aws_kms_key.secrets.arn
+  recovery_window_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-twilio-auth-token" }
+}

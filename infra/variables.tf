@@ -129,3 +129,9 @@ variable "alarm_email" {
   description = "Email that gets paged on critical CloudWatch alarms."
   type        = string
 }
+
+variable "twilio_from_number" {
+  description = "Shared toll-free number (E.164, e.g. '+18885551234') the marketing sender uses for SMS. Public (visible to recipients), not a secret — kept as a plain TF var rather than a Secrets Manager entry. Empty string disables real SMS sending (sender falls into stub mode)."
+  type        = string
+  default     = ""
+}

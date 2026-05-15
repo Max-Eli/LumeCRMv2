@@ -56,6 +56,13 @@ data "aws_iam_policy_document" "ecs_execution_secrets" {
       # The RDS-managed master user secret. Wildcard the suffix —
       # AWS appends a random one when the secret is created.
       "${aws_db_instance.main.master_user_secret[0].secret_arn}*",
+      # Twilio credentials. Both follow the same Secrets Manager
+      # → ECS task secrets pattern as SECRET_KEY: the value is
+      # written manually post-`terraform apply` (the resource
+      # exists in TF state but the secret_string lives only in
+      # Secrets Manager, never in TF state).
+      aws_secretsmanager_secret.twilio_account_sid.arn,
+      aws_secretsmanager_secret.twilio_auth_token.arn,
     ]
   }
 
