@@ -119,22 +119,37 @@ def send_magic_link_email(*, customer: Customer, token: CustomerPortalToken, req
 def _build_portal_url(*, tenant: Tenant, request) -> str:
     """Pick the right public origin for the magic link.
 
-    Production: the request arrives via the tenant subdomain
-    (e.g. `acmespa.xn--lumcrm-5ua.com`). Use the request's host
-    verbatim so the email link returns the customer to the same
-    spa-branded surface they came from.
+    The browser POSTs to `api.<domain>` to request the magic link,
+    so `request.get_host()` resolves to the API subdomain — which
+    does NOT serve the portal frontend. The customer's link has to
+    land on the tenant's PORTAL frontend host (e.g.
+    `acmespa.<domain>`), so:
 
-    Dev / fallback: `PUBLIC_BASE_URL` from settings (typically
-    localhost:3000). We don't have subdomain routing locally; the
-    portal page handles tenant resolution via a separate signal.
+    1. **`Origin` request header** (production). The browser's
+       `fetch` sets `Origin` to the page that issued the call —
+       the tenant's portal subdomain. This is the right host.
+    2. **`Referer` header** fallback if Origin is missing.
+    3. **`PUBLIC_BASE_URL`** dev/CLI fallback.
+
+    Never use `request.get_host()` directly here — that gives the
+    API host, which serves /api/* and not the React route at
+    /portal/magic/<token>.
     """
     if request is not None:
-        host = request.get_host()
-        scheme = 'https' if request.is_secure() else 'http'
-        # Skip localhost so the link doesn't break when a developer
-        # tests email-send in a non-browser context.
-        if 'localhost' not in host and '127.0.0.1' not in host:
-            return f'{scheme}://{host}'
+        # `Origin` is `scheme://host[:port]` — exactly what we want.
+        origin = request.META.get('HTTP_ORIGIN', '').strip()
+        if origin and 'localhost' not in origin and '127.0.0.1' not in origin:
+            return origin
+        # `Referer` is `scheme://host/path...` — strip the path.
+        referer = request.META.get('HTTP_REFERER', '').strip()
+        if referer and 'localhost' not in referer and '127.0.0.1' not in referer:
+            try:
+                from urllib.parse import urlparse
+                p = urlparse(referer)
+                if p.scheme and p.netloc:
+                    return f'{p.scheme}://{p.netloc}'
+            except Exception:
+                pass
     return getattr(settings, 'PUBLIC_BASE_URL', 'http://localhost:3000')
 
 
