@@ -192,3 +192,24 @@ class PortalFormSubmissionSerializer(serializers.Serializer):
         if obj.status != obj.Status.PENDING:
             return None
         return f'/sign/{obj.token}'
+
+
+# ── Book appointment (portal-authed) ───────────────────────────────
+
+
+class PortalBookingInputSerializer(serializers.Serializer):
+    """Payload for the portal-authed booking submit endpoint.
+
+    Distinct from the public booking submit:
+      - No customer name/email/phone/marketing consent — the
+        customer is already authenticated via portal session, so
+        we use `request.customer` instead.
+      - No CAPTCHA / rate-limit-extras — session cookie is the
+        identity gate; we still rely on view-level rate limiting.
+    """
+
+    service_id = serializers.IntegerField()
+    provider_id = serializers.IntegerField()
+    location_id = serializers.IntegerField(required=False)
+    start_time = serializers.DateTimeField()
+    notes = serializers.CharField(required=False, allow_blank=True, default='')

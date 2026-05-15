@@ -20,6 +20,7 @@ from django.urls import path
 
 from .views import (
     AppointmentsView,
+    BookAppointmentView,
     CancelAppointmentView,
     ConsumeMagicLinkView,
     FormsView,
@@ -40,4 +41,5 @@ urlpatterns = [
     path('portal/memberships/', MembershipsView.as_view(), name='portal-memberships'),
     path('portal/packages/', PackagesView.as_view(), name='portal-packages'),
     path('portal/forms/', FormsView.as_view(), name='portal-forms'),
+    path('portal/booking/submit/', BookAppointmentView.as_view(), name='portal-booking-submit'),
 ]

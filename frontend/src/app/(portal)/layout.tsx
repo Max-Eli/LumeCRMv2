@@ -97,6 +97,7 @@ function PortalTopBar({
 
   const links = [
     { href: '/portal', label: 'Home' },
+    { href: '/portal/book', label: 'Book' },
     { href: '/portal/appointments', label: 'Appointments' },
     { href: '/portal/memberships', label: 'Memberships' },
     { href: '/portal/packages', label: 'Packages' },

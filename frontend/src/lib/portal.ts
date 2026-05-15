@@ -251,3 +251,101 @@ export function usePortalForms() {
     refetchOnWindowFocus: true,
   });
 }
+
+// ── Booking (public read endpoints + portal-authed submit) ────────
+
+
+export interface BookableService {
+  id: number;
+  name: string;
+  description: string;
+  duration_minutes: number;
+  price_cents: number;
+  category_name: string;
+  category_color: string;
+}
+
+export interface BookableProvider {
+  id: number;
+  display_name: string;
+  job_title: string;
+}
+
+export interface BookableSlot {
+  start: string;
+  end: string;
+  available: boolean;
+  provider_id: number | null;
+}
+
+/** Services available for online booking on a given tenant. Public
+ *  endpoint — no portal auth required since the same data also drives
+ *  the unauthenticated booking page. */
+export function useBookableServices(tenantSlug: string | undefined) {
+  return useQuery<BookableService[]>({
+    queryKey: ['portal', 'booking', 'services', tenantSlug ?? ''],
+    queryFn: () =>
+      api.get<BookableService[]>(`/api/booking/${tenantSlug}/services/`),
+    enabled: !!tenantSlug,
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+export function useBookableProviders(
+  tenantSlug: string | undefined,
+  serviceId: number | undefined,
+) {
+  return useQuery<BookableProvider[]>({
+    queryKey: ['portal', 'booking', 'providers', tenantSlug ?? '', serviceId ?? 0],
+    queryFn: () =>
+      api.get<BookableProvider[]>(
+        `/api/booking/${tenantSlug}/providers/?service=${serviceId}`,
+      ),
+    enabled: !!tenantSlug && !!serviceId,
+    staleTime: 60 * 1000,
+  });
+}
+
+export function useBookableSlots(
+  tenantSlug: string | undefined,
+  opts: { serviceId?: number; providerId?: number; date?: string },
+) {
+  const params = new URLSearchParams();
+  if (opts.serviceId) params.set('service', String(opts.serviceId));
+  if (opts.providerId) params.set('provider', String(opts.providerId));
+  if (opts.date) params.set('date', opts.date);
+
+  return useQuery<BookableSlot[]>({
+    queryKey: [
+      'portal', 'booking', 'slots',
+      tenantSlug ?? '', opts.serviceId ?? 0, opts.providerId ?? 0, opts.date ?? '',
+    ],
+    queryFn: () =>
+      api.get<BookableSlot[]>(
+        `/api/booking/${tenantSlug}/slots/?${params.toString()}`,
+      ),
+    enabled:
+      !!tenantSlug && !!opts.serviceId && !!opts.providerId && !!opts.date,
+    // Don't cache aggressively — slot availability changes the moment
+    // someone else books a slot. 30s feels OK without being chatty.
+    staleTime: 30 * 1000,
+  });
+}
+
+export interface BookAppointmentInput {
+  service_id: number;
+  provider_id: number;
+  start_time: string;
+  notes?: string;
+}
+
+export function useBookAppointment() {
+  const qc = useQueryClient();
+  return useMutation<PortalAppointment, Error, BookAppointmentInput>({
+    mutationFn: (input) =>
+      api.post<PortalAppointment>('/api/portal/booking/submit/', input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: APPOINTMENTS_KEY });
+    },
+  });
+}

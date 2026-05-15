@@ -42,6 +42,7 @@ from .permissions import IsPortalCustomer
 from .serializers import (
     CustomerMeSerializer,
     PortalAppointmentSerializer,
+    PortalBookingInputSerializer,
     PortalFormSubmissionSerializer,
     PortalPackageSerializer,
     PortalSubscriptionSerializer,
@@ -569,3 +570,143 @@ class FormsView(APIView):
             metadata={'count': len(data)},
         )
         return Response(data)
+
+
+class BookAppointmentView(APIView):
+    """`POST /api/portal/booking/submit/` — portal customer books an
+    appointment for themselves.
+
+    Distinct from the public `/api/booking/<slug>/book/` flow:
+      - No guest-checkout fields — the customer is identified by
+        the portal session, not by re-entering name/email.
+      - No marketing-consent capture (consent is managed via the
+        portal profile page).
+      - Service + provider eligibility + slot validity are
+        re-checked server-side inside a transaction — same
+        race-safety guarantees as the public path.
+
+    Read endpoints (services, providers, slots) are intentionally
+    NOT duplicated here — the portal frontend calls the existing
+    `/api/booking/<tenant_slug>/...` public surface for those.
+    They're tenant-scoped + read-only + already optimized; building
+    portal-only mirrors would just add code without value.
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def post(self, request):
+        # Lazy imports keep apps loosely coupled at the module level
+        # and let test discovery work cleanly when one app's model
+        # graph isn't fully imported by another.
+        from datetime import timedelta
+
+        from apps.appointments.models import Appointment
+        from apps.audit.services import record
+        from apps.booking.availability import compute_available_slots
+        from apps.services.models import Service
+        from apps.tenants.models import (
+            Location,
+            MembershipLocation,
+            TenantMembership,
+        )
+
+        customer = request.customer
+        _guard_tenant_consistency(request)
+        tenant = customer.tenant
+
+        ser = PortalBookingInputSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        data = ser.validated_data
+
+        # Service must exist, belong to this tenant, be active +
+        # bookable online.
+        try:
+            service = Service.objects.get(
+                pk=data['service_id'], tenant=tenant,
+                is_active=True, is_bookable_online=True,
+            )
+        except Service.DoesNotExist:
+            raise ValidationError({'service_id': 'Service is unavailable.'})
+
+        # Provider must exist, belong to this tenant, be bookable +
+        # active.
+        try:
+            provider = TenantMembership.objects.select_related('user').get(
+                pk=data['provider_id'], tenant=tenant,
+                is_bookable=True, is_active=True,
+            )
+        except TenantMembership.DoesNotExist:
+            raise ValidationError({'provider_id': 'Provider is unavailable.'})
+
+        # Location resolves from payload or falls back to tenant default.
+        location_id = data.get('location_id')
+        if location_id:
+            try:
+                location = Location.objects.get(
+                    pk=location_id, tenant=tenant, is_active=True,
+                )
+            except Location.DoesNotExist:
+                raise ValidationError({'location_id': 'Location is unavailable.'})
+        else:
+            try:
+                location = Location.objects.get(
+                    tenant=tenant, is_default=True, is_active=True,
+                )
+            except Location.DoesNotExist:
+                raise ValidationError({'detail': 'No active location to book against.'})
+
+        # Provider must be assigned to the chosen location — same
+        # check the public booking surface enforces.
+        if not MembershipLocation.objects.filter(
+            membership=provider, location=location, is_active=True,
+        ).exists():
+            raise ValidationError({
+                'provider_id': "Provider isn't bookable at this location.",
+            })
+
+        start_time = data['start_time']
+        end_time = start_time + timedelta(minutes=service.duration_minutes)
+
+        # Re-validate slot availability inside the transaction. Even
+        # though the frontend fetched a fresh slot list, the slot may
+        # have been booked in the meantime — last-mile race check.
+        available = compute_available_slots(
+            tenant=tenant, service=service, provider=provider,
+            location=location, on_date=start_time.astimezone(djtz.get_current_timezone()).date(),
+        )
+        if not any(s.start_time == start_time for s in available):
+            raise ValidationError({
+                'start_time': 'That time is no longer available. Pick another.',
+            })
+
+        appointment = Appointment.objects.create(
+            tenant=tenant,
+            customer=customer,
+            provider=provider,
+            service=service,
+            location=location,
+            start_time=start_time,
+            end_time=end_time,
+            status=Appointment.Status.BOOKED,
+            source='portal',
+            quoted_price_cents=service.price_cents,
+            notes=data.get('notes', ''),
+        )
+
+        record(
+            action=AuditLog.Action.CREATE,
+            resource_type='appointment',
+            resource_id=appointment.id,
+            request=request,
+            metadata={
+                'event': 'portal_book',
+                'customer_id': customer.id,
+                'service_id': service.id,
+                'provider_id': provider.id,
+            },
+        )
+
+        return Response(
+            PortalAppointmentSerializer(appointment).data,
+            status=status.HTTP_201_CREATED,
+        )

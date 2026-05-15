@@ -132,9 +132,16 @@ function NextAppointmentCard({ appointment }: { appointment: PortalAppointment |
             <p className="text-sm text-muted-foreground">
               You don&apos;t have any appointments scheduled.
             </p>
-            <p className="text-xs text-muted-foreground mt-2">
-              Reach out to the front desk to book your next visit.
-            </p>
+            <Button
+              render={<Link href="/portal/book" />}
+              nativeButton={false}
+              size="sm"
+              className="mt-3 w-full"
+              style={{ background: 'var(--portal-brand, #1f2937)', color: '#fff' }}
+            >
+              Book an appointment
+              <ArrowRight className="size-3.5" />
+            </Button>
           </>
         )}
       </div>
@@ -180,6 +187,18 @@ function QuickActionsCard() {
         Quick actions
       </h2>
       <ul className="space-y-1">
+        <li>
+          <Link
+            href="/portal/book"
+            className="flex items-center justify-between gap-2 px-3 py-2 -mx-3 rounded-md text-sm hover:bg-muted transition-colors group"
+          >
+            <span className="font-medium">Book an appointment</span>
+            <ArrowRight
+              className="size-3.5 text-muted-foreground group-hover:translate-x-0.5 transition-transform"
+              style={{ color: 'var(--portal-brand, currentColor)' }}
+            />
+          </Link>
+        </li>
         <li>
           <Link
             href="/portal/appointments"
