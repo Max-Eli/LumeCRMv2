@@ -24,9 +24,18 @@ MUTATING_ACTIONS = frozenset({
     'destroy',
 })
 
+# Mutations that are POS-style — front-desk should perform them, not
+# just catalog managers. Gated to PROCESS_PAYMENT so the rule matches
+# the rest of the POS surface (invoice line additions, redemptions).
+POS_ACTIONS = frozenset({
+    'build_custom',
+})
+
 
 class PackagePermission(BasePermission):
-    """Read for any member; write requires MANAGE_PACKAGES_MEMBERSHIPS."""
+    """Read for any member; catalog mutations require
+    MANAGE_PACKAGES_MEMBERSHIPS; POS actions (build a one-off custom
+    package for a customer) require PROCESS_PAYMENT."""
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
@@ -38,6 +47,8 @@ class PackagePermission(BasePermission):
         if not membership:
             return False
 
+        if view.action in POS_ACTIONS:
+            return membership.has(P.PROCESS_PAYMENT)
         if view.action in MUTATING_ACTIONS:
             return membership.has(P.MANAGE_PACKAGES_MEMBERSHIPS)
         return True

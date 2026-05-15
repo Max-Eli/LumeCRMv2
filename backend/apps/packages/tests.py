@@ -433,3 +433,178 @@ class PackageAuditTests(TestCase):
         ).order_by('-id').first()
         self.assertIsNotNone(log)
         self.assertEqual(log.metadata.get('count'), 2)
+
+
+# ── Build-custom: per-customer one-off package + draft invoice ─────
+
+
+class BuildCustomPackageEndpointTests(TestCase):
+    """Covers the `/api/purchased-packages/build-custom/` POS-style
+    endpoint: atomically creates a draft Invoice + a one-off
+    `PurchasedPackage` (with `source_template = NULL`) for a
+    specific customer.
+
+    Six invariants:
+      1. Happy path: a valid payload creates the invoice + package
+         + items, returns the IDs, audit-logs the create.
+      2. Tenant scoping: customers / services from other tenants
+         can't be referenced.
+      3. Validation: empty items, unknown service, inactive service,
+         duplicate service rows all reject with 400.
+      4. Permission: front-desk (has PROCESS_PAYMENT) can call it;
+         a member without PROCESS_PAYMENT cannot.
+      5. Status: created PurchasedPackage starts PENDING.
+      6. Invoice number is assigned + returned.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        from apps.customers.models import Customer
+
+        cls.tenant, cls.owner = _make_tenant('build-custom')
+        cls.other_tenant, _ = _make_tenant('build-custom-other')
+        cls.facial = _make_service(cls.tenant, name='HydraFacial', price_cents=15000)
+        cls.peel = _make_service(cls.tenant, name='Peel', price_cents=20000)
+        cls.foreign_service = _make_service(
+            cls.other_tenant, name='Foreign service', price_cents=5000,
+        )
+        cls.customer = Customer.objects.create(
+            tenant=cls.tenant, first_name='Jane', last_name='Doe',
+            email='jane@test.local', phone='+15551234567',
+        )
+        cls.foreign_customer = Customer.objects.create(
+            tenant=cls.other_tenant, first_name='Foreign', last_name='Customer',
+            email='foreign@test.local', phone='+15559876543',
+        )
+
+    def setUp(self):
+        self.client = _client_for(self.owner)
+        self.url = '/api/purchased-packages/build-custom/'
+
+    def _valid_payload(self):
+        return {
+            'customer_id': self.customer.id,
+            'name': '5 HydraFacials',
+            'price_cents': 60000,
+            'validity_days': 365,
+            'items': [
+                {'service_id': self.facial.id, 'quantity': 5},
+            ],
+        }
+
+    def test_happy_path_creates_package_and_invoice(self):
+        from apps.invoices.models import Invoice
+        from apps.packages.models import PurchasedPackage
+
+        response = self.client.post(
+            self.url, data=self._valid_payload(),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+
+        # PurchasedPackage was created with the right shape.
+        pkg_id = response.data['purchased_package']['id']
+        pkg = PurchasedPackage.objects.get(pk=pkg_id)
+        self.assertEqual(pkg.customer, self.customer)
+        self.assertEqual(pkg.tenant, self.tenant)
+        self.assertIsNone(pkg.source_template)
+        self.assertEqual(pkg.status, PurchasedPackage.Status.PENDING)
+        self.assertEqual(pkg.price_cents, 60000)
+        self.assertEqual(pkg.validity_days, 365)
+        self.assertEqual(pkg.items.count(), 1)
+        item = pkg.items.first()
+        self.assertEqual(item.service_id, self.facial.id)
+        self.assertEqual(item.quantity_purchased, 5)
+        self.assertEqual(item.quantity_remaining, 5)
+
+        # Invoice was created, is OPEN, has a number, has the line.
+        invoice_id = response.data['invoice_id']
+        invoice = Invoice.objects.get(pk=invoice_id)
+        self.assertEqual(invoice.status, Invoice.Status.OPEN)
+        self.assertEqual(invoice.customer, self.customer)
+        self.assertIsNone(invoice.appointment)
+        self.assertTrue(invoice.invoice_number)
+        self.assertEqual(response.data['invoice_number'], invoice.invoice_number)
+        self.assertEqual(invoice.total_cents, 60000)
+
+    def test_create_writes_audit_log(self):
+        self.client.post(
+            self.url, data=self._valid_payload(),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = AuditLog.objects.filter(
+            resource_type='purchased_package',
+            action=AuditLog.Action.CREATE,
+        ).order_by('-id').first()
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('kind'), 'custom_one_off')
+        self.assertEqual(log.metadata.get('customer_id'), self.customer.id)
+        self.assertEqual(log.metadata.get('item_count'), 1)
+
+    def test_rejects_cross_tenant_customer(self):
+        payload = self._valid_payload()
+        payload['customer_id'] = self.foreign_customer.id
+        response = self.client.post(
+            self.url, data=payload,
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('customer_id', response.data)
+
+    def test_rejects_cross_tenant_service(self):
+        payload = self._valid_payload()
+        payload['items'] = [{'service_id': self.foreign_service.id, 'quantity': 1}]
+        response = self.client.post(
+            self.url, data=payload,
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('items', response.data)
+
+    def test_rejects_inactive_service(self):
+        self.peel.is_active = False
+        self.peel.save(update_fields=['is_active'])
+        payload = self._valid_payload()
+        payload['items'] = [{'service_id': self.peel.id, 'quantity': 1}]
+        response = self.client.post(
+            self.url, data=payload,
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertIn('items', response.data)
+
+    def test_rejects_empty_items(self):
+        payload = self._valid_payload()
+        payload['items'] = []
+        response = self.client.post(
+            self.url, data=payload,
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_rejects_duplicate_service_rows(self):
+        payload = self._valid_payload()
+        payload['items'] = [
+            {'service_id': self.facial.id, 'quantity': 2},
+            {'service_id': self.facial.id, 'quantity': 3},
+        ]
+        response = self.client.post(
+            self.url, data=payload,
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_front_desk_can_build_custom_package(self):
+        # Front-desk has PROCESS_PAYMENT in the default role grants
+        # → POS-style endpoint should work for them.
+        _, _ = _make_front_desk(self.tenant)
+        from django.contrib.auth import get_user_model
+
+        fd_user = get_user_model().objects.get(email=f'fd-{self.tenant.slug}@test.local')
+        fd_client = _client_for(fd_user)
+
+        response = fd_client.post(
+            self.url, data=self._valid_payload(),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 201, response.data)

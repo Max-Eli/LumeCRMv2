@@ -198,6 +198,55 @@ export function useCustomerPurchasedPackages(
   });
 }
 
+// ── Build custom package (calendar tile workflow) ──────────────────
+
+
+export interface BuildCustomPackageItemInput {
+  service_id: number;
+  quantity: number;
+}
+
+export interface BuildCustomPackageInput {
+  customer_id: number;
+  name: string;
+  description?: string;
+  price_cents: number;
+  tax_rate_percent?: number;
+  validity_days?: number | null;
+  items: BuildCustomPackageItemInput[];
+}
+
+export interface BuildCustomPackageResult {
+  purchased_package: PurchasedPackage;
+  invoice_id: number;
+  invoice_number: string;
+  customer_id: number;
+}
+
+/** Build a one-off `PurchasedPackage` for a specific customer +
+ *  an accompanying draft invoice in one atomic call. The returned
+ *  `invoice_id` is the POS-handoff target — the UI links the
+ *  operator to `/appointments/.../invoice/` or the
+ *  `/invoices/<id>` page (whichever exists) so they can take
+ *  payment on the spot. */
+export function useBuildCustomPackage() {
+  const qc = useQueryClient();
+  return useMutation<BuildCustomPackageResult, Error, BuildCustomPackageInput>({
+    mutationFn: (input) =>
+      api.post<BuildCustomPackageResult>(
+        '/api/purchased-packages/build-custom/',
+        input,
+      ),
+    onSuccess: (_data, variables) => {
+      // Refresh this customer's packages list so the new package
+      // appears immediately in the calendar panel.
+      qc.invalidateQueries({
+        queryKey: [...PURCHASED_PACKAGES_KEY, variables.customer_id],
+      });
+    },
+  });
+}
+
 // ── Money formatters ────────────────────────────────────────────────
 
 export function centsFromDollars(input: string | number): number {

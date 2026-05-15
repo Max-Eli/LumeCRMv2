@@ -237,6 +237,54 @@ class PackageRedemptionSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class BuildCustomPackageItemInputSerializer(serializers.Serializer):
+    """One service line in a customer-built one-off package."""
+
+    service_id = serializers.IntegerField()
+    quantity = serializers.IntegerField(min_value=1)
+
+
+class BuildCustomPackageInputSerializer(serializers.Serializer):
+    """Body for `POST /api/purchased-packages/build-custom/`.
+
+    Builds a one-off `PurchasedPackage` for a single customer + the
+    backing draft Invoice in one atomic call. Distinct from
+    `add_custom_package` (which appends to an *existing* invoice) —
+    this is the standalone calendar-tile workflow where the operator
+    doesn't have an invoice context yet, just a customer.
+
+    Returns the created `PurchasedPackage` plus the invoice ID so
+    the frontend can deep-link to the POS-handoff page when the
+    operator chooses to take payment now.
+    """
+
+    customer_id = serializers.IntegerField()
+    name = serializers.CharField(max_length=200)
+    description = serializers.CharField(
+        required=False, allow_blank=True, default='',
+    )
+    price_cents = serializers.IntegerField(min_value=0)
+    tax_rate_percent = serializers.DecimalField(
+        max_digits=6, decimal_places=3, required=False, default=0,
+    )
+    validity_days = serializers.IntegerField(
+        required=False, allow_null=True, min_value=0,
+    )
+    items = BuildCustomPackageItemInputSerializer(many=True)
+
+    def validate_items(self, value: list[dict]) -> list[dict]:
+        if not value:
+            raise serializers.ValidationError(
+                'A custom package needs at least one service item.'
+            )
+        ids = [row['service_id'] for row in value]
+        if len(set(ids)) != len(ids):
+            raise serializers.ValidationError(
+                'Each service may only appear once per package.'
+            )
+        return value
+
+
 class PurchasedPackageSerializer(serializers.ModelSerializer):
     """Per-customer instance + per-service balance + recent
     redemption ledger. Drives the customer profile Packages tab."""
