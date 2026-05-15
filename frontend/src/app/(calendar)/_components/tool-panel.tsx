@@ -15,13 +15,14 @@ import type { Appointment } from '@/lib/appointments';
 
 import { TOOLS, type CalendarTool } from './right-tool-rail';
 import { CheckInPanel } from './tool-panels/check-in';
-import { MessagesPanel } from './tool-panels/messages';
 import { OnlineBookingsPanel } from './tool-panels/online-bookings';
 import { PackagesPanel } from './tool-panels/packages';
 import { PriceCheckPanel } from './tool-panels/price-check';
 import { ReportsPanel } from './tool-panels/reports';
 import { SocialPanel } from './tool-panels/social';
 import { ViewSettingsPanel, type ViewSettingsPanelProps } from './tool-panels/view-settings';
+// Note: there is no in-rail panel for `'messages'` — that tile opens
+// the standalone /inbox popout window (see `right-tool-rail.tsx`).
 import { WaitlistPanel } from './tool-panels/waitlist';
 
 export interface ToolPanelProps {
@@ -77,8 +78,6 @@ export function ToolPanel({
           <ViewSettingsPanel {...viewSettings} />
         ) : active === 'price-check' ? (
           <PriceCheckPanel />
-        ) : active === 'messages' ? (
-          <MessagesPanel />
         ) : active === 'social' ? (
           <SocialPanel phase={tool.comingPhase} />
         ) : active === 'check-in' ? (

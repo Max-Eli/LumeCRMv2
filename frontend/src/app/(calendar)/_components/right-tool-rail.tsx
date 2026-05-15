@@ -30,6 +30,7 @@ import {
   BarChart3,
   ClipboardCheck,
   Clock,
+  ExternalLink,
   Globe,
   MessageSquare,
   Package,
@@ -59,10 +60,29 @@ export interface ToolDef {
   icon: React.ComponentType<{ className?: string }>;
   /** When set, the tool is a placeholder and shows a "coming with Phase X" panel. */
   comingPhase?: string;
+  /** When set, clicking the tile opens a separate browser window at
+   *  this URL instead of toggling the in-rail panel. Used for the
+   *  Messages inbox so operators can keep texts open beside the
+   *  calendar without consuming the right-rail panel slot. */
+  popoutUrl?: string;
+  /** Window features passed to `window.open` when `popoutUrl` is set.
+   *  Browsers treat a feature string containing `popup` + dimensions
+   *  as a window, not a tab. */
+  popoutFeatures?: string;
+  /** Stable target name so repeat clicks focus the existing window
+   *  rather than spawning a new one. */
+  popoutTarget?: string;
 }
 
 export const TOOLS: readonly ToolDef[] = [
-  { id: 'messages', label: 'Messages', icon: MessageSquare },
+  {
+    id: 'messages',
+    label: 'Messages',
+    icon: MessageSquare,
+    popoutUrl: '/inbox',
+    popoutTarget: 'lume-inbox',
+    popoutFeatures: 'popup,width=1100,height=820,noopener=no,noreferrer=no',
+  },
   { id: 'social', label: 'Social', icon: AtSign, comingPhase: 'Phase 3F · Instagram + Facebook + WhatsApp DMs' },
   { id: 'check-in', label: 'Employee check-in', icon: ClipboardCheck, comingPhase: 'Phase 2I · Time tracking' },
   { id: 'price-check', label: 'Price check', icon: Receipt },
@@ -126,7 +146,21 @@ export function RightToolRail({ active, onToggle }: RightToolRailProps) {
             tool={tool}
             collapsed={collapsed}
             active={active === tool.id}
-            onClick={() => onToggle(tool.id)}
+            onClick={() => {
+              // Popout tools (Messages → /inbox) open a separate
+              // browser window and do NOT toggle the in-rail panel.
+              if (tool.popoutUrl) {
+                if (typeof window !== 'undefined') {
+                  window.open(
+                    tool.popoutUrl,
+                    tool.popoutTarget ?? '_blank',
+                    tool.popoutFeatures,
+                  );
+                }
+                return;
+              }
+              onToggle(tool.id);
+            }}
           />
         ))}
       </nav>
@@ -189,6 +223,11 @@ function ToolButton({
   onClick: () => void;
 }) {
   const Icon = tool.icon;
+  const titleSuffix = tool.comingPhase
+    ? ' · coming soon'
+    : tool.popoutUrl
+      ? ' · opens in a new window'
+      : '';
 
   if (collapsed) {
     return (
@@ -197,7 +236,7 @@ function ToolButton({
         onClick={onClick}
         aria-pressed={active}
         aria-label={tool.label}
-        title={tool.label + (tool.comingPhase ? ' · coming soon' : '')}
+        title={tool.label + titleSuffix}
         className={cn(
           'relative inline-flex size-9 items-center justify-center rounded-md transition-colors',
           active
@@ -221,7 +260,7 @@ function ToolButton({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      title={tool.comingPhase ? `${tool.label} · coming soon` : tool.label}
+      title={`${tool.label}${titleSuffix}`}
       className={cn(
         'flex items-center gap-2.5 h-9 rounded-md px-2.5 text-sm transition-colors text-left',
         active
@@ -242,6 +281,8 @@ function ToolButton({
         >
           Soon
         </span>
+      ) : tool.popoutUrl ? (
+        <ExternalLink className="size-3 shrink-0 text-muted-foreground/70" aria-hidden />
       ) : null}
     </button>
   );
