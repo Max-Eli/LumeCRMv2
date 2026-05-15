@@ -63,19 +63,14 @@ class TenantMiddleware:
     def _resolve_tenant(self, request):
         # 1. Try the request subdomain (production canonical path).
         host = request.get_host().split(':', 1)[0]
-        parts = host.split('.')
-
-        if len(parts) >= 2:
-            subdomain = parts[0].lower()
-            if subdomain not in RESERVED_SUBDOMAINS:
-                try:
-                    return Tenant.objects.get(slug=subdomain, status=Tenant.Status.ACTIVE)
-                except Tenant.DoesNotExist:
-                    pass
+        tenant = self._tenant_from_subdomain(host)
+        if tenant is not None:
+            return tenant
 
         # 2. Fallback: X-Tenant-Slug header. Used in dev where the frontend at
         #    localhost:3000 calls the backend at localhost:8000 and there's no
-        #    real tenant subdomain in play. Production typically uses subdomains.
+        #    real tenant subdomain in play. Also set by the staff app cookie
+        #    forwarding when the user has logged in.
         header_slug = request.META.get('HTTP_X_TENANT_SLUG', '').strip().lower()
         if header_slug:
             try:
@@ -83,7 +78,55 @@ class TenantMiddleware:
             except Tenant.DoesNotExist:
                 return None
 
+        # 3. Fallback: parse the originating page's host from `Origin` (or
+        #    `Referer`) and look the subdomain up against the tenants table.
+        #    Why: the customer portal frontend lives at `<tenant>.<domain>`
+        #    but its API calls hit `api.<domain>`, where neither
+        #    `request.get_host()` (the API subdomain) nor `X-Tenant-Slug`
+        #    (no staff cookie for anonymous portal users) resolves a tenant.
+        #    The browser sets `Origin` automatically on `fetch`; using it here
+        #    is routing only — actual authorization for the portal session
+        #    still requires a valid magic-link token / session cookie that's
+        #    bound to a specific tenant in the database.
+        origin = request.META.get('HTTP_ORIGIN', '').strip()
+        if origin:
+            tenant = self._tenant_from_url(origin)
+            if tenant is not None:
+                return tenant
+        referer = request.META.get('HTTP_REFERER', '').strip()
+        if referer:
+            tenant = self._tenant_from_url(referer)
+            if tenant is not None:
+                return tenant
+
         return None
+
+    def _tenant_from_subdomain(self, host: str):
+        """Look up a tenant by the first label of `host`. Returns None
+        when the label is reserved, when there are fewer than two labels
+        (bare hostname), or when no active tenant matches."""
+        parts = host.split('.')
+        if len(parts) < 2:
+            return None
+        subdomain = parts[0].lower()
+        if subdomain in RESERVED_SUBDOMAINS:
+            return None
+        try:
+            return Tenant.objects.get(slug=subdomain, status=Tenant.Status.ACTIVE)
+        except Tenant.DoesNotExist:
+            return None
+
+    def _tenant_from_url(self, url: str):
+        """Parse a full URL and return the tenant matching its subdomain."""
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(url)
+            host = (parsed.hostname or '').strip()
+            if not host:
+                return None
+            return self._tenant_from_subdomain(host)
+        except Exception:  # pragma: no cover - defensive
+            return None
 
     def _resolve_membership(self, request):
         if not request.tenant:

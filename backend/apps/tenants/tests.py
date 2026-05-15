@@ -1905,3 +1905,126 @@ class StaffInvitationTests(TestCase):
         )
         self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
         self.assertIn('expired', response.data['detail'].lower())
+
+
+# ── TenantMiddleware Origin/Referer fallback ────────────────────────
+
+
+from django.test import override_settings as _override_settings
+
+
+@_override_settings(ALLOWED_HOSTS=['*'])
+class TenantMiddlewareOriginFallbackTests(TestCase):
+    """The middleware resolves tenant from `request.get_host()` first,
+    then `X-Tenant-Slug` header, then `Origin` / `Referer` headers.
+
+    The Origin/Referer paths exist because the customer-portal
+    frontend lives at `<tenant>.<domain>` but its API calls hit
+    `api.<domain>` where neither the subdomain (it's `api`) nor a
+    cookie-driven `X-Tenant-Slug` is available for anonymous users.
+    The browser always sets `Origin` on a cross-origin fetch, so we
+    use it as a routing signal — authorization is enforced elsewhere
+    (magic-link token / session cookie binds to a specific tenant).
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        owner = get_user_model().objects.create_user(
+            email='origin-owner@test.local', password='pw',
+        )
+        cls.tenant = create_tenant_with_defaults(
+            name='Origin Spa', slug='origin-spa',
+            owner_user=owner, status=Tenant.Status.ACTIVE,
+        )
+
+    def _drive_middleware(self, **request_kwargs):
+        from django.test import RequestFactory
+        from apps.tenants.middleware import TenantMiddleware
+
+        rf = RequestFactory()
+        request = rf.get('/api/portal/me/', **request_kwargs)
+        # Anonymous user — portal request before login.
+        from django.contrib.auth.models import AnonymousUser
+        request.user = AnonymousUser()
+
+        captured: dict = {}
+
+        def fake_view(req):
+            captured['tenant'] = req.tenant
+            from django.http import HttpResponse
+            return HttpResponse('ok')
+
+        TenantMiddleware(fake_view)(request)
+        return captured
+
+    def test_origin_header_resolves_to_tenant_from_subdomain(self):
+        # No tenant in the request host (it's `api.lume.test` in this
+        # call); Origin carries `https://origin-spa.lume.test`.
+        result = self._drive_middleware(
+            HTTP_HOST='api.lume.test',
+            HTTP_ORIGIN='https://origin-spa.lume.test',
+        )
+        self.assertEqual(result['tenant'], self.tenant)
+
+    def test_referer_falls_through_when_origin_missing(self):
+        result = self._drive_middleware(
+            HTTP_HOST='api.lume.test',
+            HTTP_REFERER='https://origin-spa.lume.test/portal/login',
+        )
+        self.assertEqual(result['tenant'], self.tenant)
+
+    def test_origin_with_unknown_subdomain_returns_none(self):
+        result = self._drive_middleware(
+            HTTP_HOST='api.lume.test',
+            HTTP_ORIGIN='https://no-such-spa.lume.test',
+        )
+        self.assertIsNone(result['tenant'])
+
+    def test_origin_with_reserved_subdomain_returns_none(self):
+        # `api.lume.test` as the Origin shouldn't resolve to a tenant.
+        result = self._drive_middleware(
+            HTTP_HOST='api.lume.test',
+            HTTP_ORIGIN='https://api.lume.test',
+        )
+        self.assertIsNone(result['tenant'])
+
+    def test_request_host_subdomain_still_wins_over_origin(self):
+        # When the request itself arrives on a tenant subdomain, that
+        # wins. Origin is only consulted as a fallback.
+        other_owner = get_user_model().objects.create_user(
+            email='origin-other-owner@test.local', password='pw',
+        )
+        other_tenant = create_tenant_with_defaults(
+            name='Other', slug='origin-other',
+            owner_user=other_owner, status=Tenant.Status.ACTIVE,
+        )
+        result = self._drive_middleware(
+            HTTP_HOST='origin-spa.lume.test',
+            HTTP_ORIGIN='https://origin-other.lume.test',
+        )
+        # Host subdomain (origin-spa) wins, not Origin (origin-other).
+        self.assertEqual(result['tenant'], self.tenant)
+        self.assertNotEqual(result['tenant'], other_tenant)
+
+    def test_x_tenant_slug_header_still_wins_over_origin(self):
+        # Header explicit-override takes precedence over Origin sniffing.
+        other_owner = get_user_model().objects.create_user(
+            email='origin-hdr-owner@test.local', password='pw',
+        )
+        other_tenant = create_tenant_with_defaults(
+            name='Header-Override', slug='origin-hdr',
+            owner_user=other_owner, status=Tenant.Status.ACTIVE,
+        )
+        result = self._drive_middleware(
+            HTTP_HOST='api.lume.test',
+            HTTP_X_TENANT_SLUG='origin-hdr',
+            HTTP_ORIGIN='https://origin-spa.lume.test',
+        )
+        self.assertEqual(result['tenant'], other_tenant)
+
+    def test_malformed_origin_falls_through_safely(self):
+        result = self._drive_middleware(
+            HTTP_HOST='api.lume.test',
+            HTTP_ORIGIN='not-a-real-url',
+        )
+        self.assertIsNone(result['tenant'])
