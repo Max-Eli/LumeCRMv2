@@ -6,15 +6,16 @@
  * window means clicking the tile again from another calendar view
  * focuses the existing window rather than opening a second copy.
  *
- * Reuses `<InboxView basePath="/inbox" />` so this surface stays in
- * lock-step with the dashboard `/messages` page.
+ * Only entry point for messaging in the app — the previous dashboard
+ * `/messages` sidebar route was removed since front-desk staff
+ * always work the inbox alongside the calendar.
  */
 
 'use client';
 
 import { MessageSquare } from 'lucide-react';
 
-import { InboxView } from '../../(app)/messages/_inbox-view';
+import { InboxView } from './_components/inbox-view';
 
 export default function InboxPopoutPage() {
   return (
@@ -31,7 +32,7 @@ export default function InboxPopoutPage() {
         </div>
       </header>
       <div className="flex-1 min-h-0 p-3 flex flex-col">
-        <InboxView basePath="/inbox" />
+        <InboxView />
       </div>
     </div>
   );

@@ -1,12 +1,14 @@
 /**
- * Shared inbox UI — used by both the in-dashboard `/messages` page
- * and the standalone popout window at `/inbox`.
+ * Inbox UI for the popout window at `/inbox`.
  *
- * The single difference between the two surfaces is the URL the
- * thread links + the new-conversation picker route to. `basePath`
- * lets the caller decide ('/messages' for the dashboard, '/inbox'
- * for the popout). Everything else — polling, mark-read, auto-scroll,
- * send-message error handling — is identical.
+ * The popout is the only entry point for messaging — it's spawned
+ * by the calendar right-rail Messages tile. The previous dashboard
+ * `/messages` route has been removed; front-desk staff always work
+ * the inbox alongside the calendar, not on a separate sidebar page.
+ *
+ * Internals: 15s polling on threads + open conversation, mark-read
+ * fires on thread switch, auto-scroll to the latest message,
+ * Cmd/Ctrl+Enter to send.
  */
 
 'use client';
@@ -50,20 +52,19 @@ import {
 import { InitialsAvatar } from '@/components/initials-avatar';
 import { Input } from '@/components/ui/input';
 
-import { AutomatedTemplatesDialog } from './_automated-templates';
+import { AutomatedTemplatesDialog } from './automated-templates';
 import {
   ManageSavedRepliesDialog,
   SavedRepliesPopover,
-} from './_saved-replies';
+} from './saved-replies';
 
-export interface InboxViewProps {
-  /** Where thread links + the picker navigate to. Lets the same
-   *  component back both `/messages` (in the dashboard) and `/inbox`
-   *  (in the popout window) without forking the UI. */
-  basePath: '/messages' | '/inbox';
-}
+/** Mounted at `/inbox` inside the popout window the calendar tile
+ *  spawns. The path is hard-coded into thread links + the new-
+ *  conversation picker target since the popout is the only place
+ *  this component is rendered. */
+const BASE_PATH = '/inbox';
 
-export function InboxView({ basePath }: InboxViewProps) {
+export function InboxView() {
   const router = useRouter();
   const params = useSearchParams();
   const selectedFromQs = params.get('c');
@@ -94,15 +95,14 @@ export function InboxView({ basePath }: InboxViewProps) {
   // bounce to the empty state.
   useEffect(() => {
     if (selectedCustomerId === undefined && (threads?.length ?? 0) > 0) {
-      router.replace(`${basePath}?c=${threads![0].customer_id}`);
+      router.replace(`${BASE_PATH}?c=${threads![0].customer_id}`);
     }
-  }, [selectedCustomerId, threads, router, basePath]);
+  }, [selectedCustomerId, threads, router]);
 
   return (
     <>
       <div className="flex-1 min-h-0 grid grid-cols-[320px_1fr] gap-0 rounded-xl border bg-card overflow-hidden shadow-sm">
         <ThreadList
-          basePath={basePath}
           threads={filteredThreads}
           loading={threadsLoading}
           error={threadsError as Error | null}
@@ -131,7 +131,7 @@ export function InboxView({ basePath }: InboxViewProps) {
         onOpenChange={setPickerOpen}
         onPick={(c) => {
           setPickerOpen(false);
-          router.push(`${basePath}?c=${c.id}`);
+          router.push(`${BASE_PATH}?c=${c.id}`);
         }}
       />
       <ManageSavedRepliesDialog
@@ -150,7 +150,6 @@ export function InboxView({ basePath }: InboxViewProps) {
 
 
 function ThreadList({
-  basePath,
   threads,
   loading,
   error,
@@ -161,7 +160,6 @@ function ThreadList({
   onManageReplies,
   onOpenTemplates,
 }: {
-  basePath: string;
   threads: ThreadSummary[];
   loading: boolean;
   error: Error | null;
@@ -212,7 +210,7 @@ function ThreadList({
               return (
                 <li key={t.customer_id}>
                   <Link
-                    href={`${basePath}?c=${t.customer_id}`}
+                    href={`${BASE_PATH}?c=${t.customer_id}`}
                     className={cn(
                       'block px-2.5 py-2.5 rounded-lg transition-colors',
                       isSelected

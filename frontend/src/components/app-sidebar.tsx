@@ -24,7 +24,6 @@ import {
   LayoutDashboard,
   LogOut,
   Megaphone,
-  MessageSquare,
   PanelLeftClose,
   PanelLeftOpen,
   Sparkles,
@@ -83,11 +82,10 @@ const NAV_LINKS: NavLink[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, group: 'location' },
   { href: '/calendar', label: 'Calendar', icon: Calendar, group: 'location' },
   { href: '/clients', label: 'Clients', icon: Users, group: 'location' },
-  // SMS / MMS inbox — two-way messaging with customers via the
-  // tenant's toll-free Twilio number. Social DM threads (IG/FB/WA)
-  // live under the separate "Social" tile in the calendar tool rail
-  // until Phase 3F lands.
-  { href: '/messages', label: 'Messages', icon: MessageSquare, group: 'location' },
+  // Messaging lives behind the calendar right-rail Messages tile,
+  // which opens a popout window at /inbox. Intentional: front-desk
+  // staff work the inbox alongside the calendar, not on a separate
+  // sidebar route.
   // Mobile-first clock-in/out for any staff member. Sits at top
   // level (rather than under /staff) because every role uses it,
   // not just managers.
