@@ -129,6 +129,18 @@ class Appointment(TenantedModel):
     cancelled_at = models.DateTimeField(null=True, blank=True)
     cancelled_reason = models.CharField(max_length=200, blank=True)
 
+    # Transactional SMS tracking. `*_sent_at` is the timestamp the send
+    # request was handed to Twilio; `*_provider_id` stores the Twilio
+    # Message SID so a future status-callback path can correlate
+    # delivery / failure updates back to this row. Idempotency: the
+    # signal handler + reminder command both check `*_sent_at IS NULL`
+    # before sending, so a redeploy + race + retry never double-sends
+    # the same notification. ADR 0021.
+    confirmation_sms_sent_at = models.DateTimeField(null=True, blank=True)
+    confirmation_sms_provider_id = models.CharField(max_length=64, blank=True, default='')
+    reminder_sms_sent_at = models.DateTimeField(null=True, blank=True)
+    reminder_sms_provider_id = models.CharField(max_length=64, blank=True, default='')
+
     # Snapshot of price at booking time so subsequent service price changes
     # don't retroactively alter quoted appointments. Cents.
     quoted_price_cents = models.PositiveIntegerField(default=0)
