@@ -79,15 +79,15 @@ export function ToolPanel({
         ) : active === 'price-check' ? (
           <PriceCheckPanel />
         ) : active === 'social' ? (
-          <SocialPanel phase={tool.comingPhase} />
+          <SocialPanel />
         ) : active === 'check-in' ? (
-          <CheckInPanel phase={tool.comingPhase} />
+          <CheckInPanel />
         ) : active === 'online-bookings' ? (
           <OnlineBookingsPanel />
         ) : active === 'waitlist' ? (
           <WaitlistPanel />
         ) : active === 'packages' ? (
-          <PackagesPanel phase={tool.comingPhase} />
+          <PackagesPanel />
         ) : active === 'reports' ? (
           <ReportsPanel
             focusDate={focusDate}
