@@ -60,7 +60,7 @@ export interface ToolDef {
 }
 
 export const TOOLS: readonly ToolDef[] = [
-  { id: 'messages', label: 'Messages', icon: MessageSquare, comingPhase: 'Phase 3A · Two-way SMS + 3B · Social DMs' },
+  { id: 'messages', label: 'Messages', icon: MessageSquare },
   { id: 'check-in', label: 'Employee check-in', icon: ClipboardCheck, comingPhase: 'Phase 2I · Time tracking' },
   { id: 'price-check', label: 'Price check', icon: Receipt },
   { id: 'online-bookings', label: 'Online bookings', icon: Globe },

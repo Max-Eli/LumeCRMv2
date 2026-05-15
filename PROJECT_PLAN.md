@@ -447,7 +447,7 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 - [x] **Right tool rail** — 8 tools, active tool persisted in `?tool=` URL state, slide-out panel pushes the calendar (completed 2026-04-30 session 1.5)
 - [x] **View Settings panel** (functional) — density (comfortable / compact) and list-view toggle (completed 2026-04-30 session 1.5)
 - [x] **Price Check panel** (functional) — quick service lookup with price + category + duration (completed 2026-04-30 session 1.5)
-- [ ] **Messages panel** — unified inbox of SMS, Instagram, Facebook, WhatsApp threads (placeholder; lights up with Phase 3A two-way SMS + 3B social DM integrations)
+- [x] **Messages panel** — calendar right-rail preview of the top-5 SMS threads with unread counts + "Open inbox" deep-link to `/messages`. Social DMs (IG/FB/WA) land later under the separate `/social` surface (Phase 3F)
 - [ ] **Employee check-in panel** — staff clock in / clock out + today's hours (placeholder; lights up with Phase 2I time tracking)
 - [ ] **Waitlist panel** — add a guest to the waitlist when their preferred slot is taken; auto-notify on cancellation (placeholder; lights up with Phase 4F)
 - [ ] **Daily reports panel** — for the focus date: summary, sales, collections, tips, prescription orders (placeholder; lights up with Phase 1G + Phase 4D + Phase 2A)
@@ -849,10 +849,14 @@ User started Meta App registration. Status as of pause:
 ### Phase 3 — Engagement & marketing (Months 5–6)
 
 #### 3A. Two-way SMS inbox
-- [ ] Conversation thread per client
+- [x] **Customer messaging v1 (SMS + MMS)** — `apps.messaging` Message model + Twilio inbound webhook + threads list / conversation detail / send / mark-read endpoints + `/messages` page (thread list left + conversation right + compose). Per-tenant TFN resolution, X-Twilio-Signature verification, audit-logged operator reads/writes with PHI-redacted metadata. ADR 0022.
+- [ ] Conversation thread per client *(shipped — `/messages?c=<id>`)*
 - [ ] Staff inbox (assigned, unassigned)
 - [ ] Templated quick replies
-- [ ] MMS (photos)
+- [ ] MMS (photos) — inbound shipped; future polish: copy bytes to S3 + signed URLs (Twilio retains ~24h)
+- [ ] Real-time updates via SSE / websockets — currently 15s polling
+- [ ] PHI-view role gate (`VIEW_CLIENT_PHI` parity with chart notes, ADR 0017)
+- [ ] "Message" button on `/clients/<id>` that deep-links to the thread
 
 #### 3B. Email marketing
 - [ ] Campaign builder

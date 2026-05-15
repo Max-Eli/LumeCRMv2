@@ -72,6 +72,7 @@ INSTALLED_APPS = [
     'apps.giftcards',
     'apps.timetracking',
     'apps.commissions',
+    'apps.messaging',
 ]
 
 AUTH_USER_MODEL = 'users.User'

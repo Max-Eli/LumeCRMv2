@@ -77,7 +77,7 @@ export function ToolPanel({
         ) : active === 'price-check' ? (
           <PriceCheckPanel />
         ) : active === 'messages' ? (
-          <MessagesPanel phase={tool.comingPhase} />
+          <MessagesPanel />
         ) : active === 'check-in' ? (
           <CheckInPanel phase={tool.comingPhase} />
         ) : active === 'online-bookings' ? (
