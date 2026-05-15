@@ -1,0 +1,9 @@
+Hi {{ customer_first_name }},
+
+Click the link below to sign in to your {{ spa_name }} account:
+
+{{ magic_url }}
+
+This link expires in {{ expiry_minutes }} minutes and can only be used once. If you didn't request it, you can ignore this email.
+
+— The team at {{ spa_name }}

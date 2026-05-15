@@ -48,6 +48,7 @@ urlpatterns = [
     path('api/', include('apps.timetracking.urls')),
     path('api/', include('apps.commissions.urls')),
     path('api/', include('apps.messaging.urls')),
+    path('api/', include('apps.portal.urls')),
 
     # OpenAPI schema + Swagger UI
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

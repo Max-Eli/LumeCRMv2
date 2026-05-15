@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Sign in to {{ spa_name }}</title>
+</head>
+<body style="margin:0;padding:0;background:#f7f7f5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:#1f2937;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f7f7f5;padding:32px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:520px;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e7e5e1;">
+          <tr>
+            <td style="padding:32px 32px 16px 32px;text-align:center;">
+              {% if spa_logo_url %}
+                <img src="{{ spa_logo_url }}" alt="{{ spa_name }}" style="max-height:48px;max-width:200px;width:auto;height:auto;">
+              {% else %}
+                <h1 style="margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em;color:{{ spa_primary_color }};">{{ spa_name }}</h1>
+              {% endif %}
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 32px 0 32px;">
+              <h2 style="margin:0 0 8px 0;font-size:18px;font-weight:600;color:#111827;">Sign in to your account</h2>
+              <p style="margin:0 0 20px 0;font-size:14px;line-height:1.6;color:#4b5563;">
+                Hi {{ customer_first_name }}, click the button below to securely sign in. This link expires in {{ expiry_minutes }} minutes and can only be used once.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:8px 32px 24px 32px;">
+              <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+                <tr>
+                  <td align="center">
+                    <a href="{{ magic_url }}"
+                       style="display:inline-block;padding:12px 28px;background:{{ spa_primary_color }};color:#ffffff;text-decoration:none;border-radius:8px;font-weight:600;font-size:14px;">
+                      Sign in to {{ spa_name }}
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 32px 24px 32px;">
+              <p style="margin:0;font-size:12px;line-height:1.6;color:#6b7280;text-align:center;">
+                Or copy this link into your browser:<br>
+                <a href="{{ magic_url }}" style="color:{{ spa_primary_color }};word-break:break-all;">{{ magic_url }}</a>
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:16px 32px;border-top:1px solid #e7e5e1;background:#fafaf9;">
+              <p style="margin:0;font-size:12px;line-height:1.6;color:#6b7280;text-align:center;">
+                Didn't request this email? You can safely ignore it.
+              </p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

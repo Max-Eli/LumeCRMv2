@@ -885,22 +885,31 @@ User started Meta App registration. Status as of pause:
 
 Every modern medspa CRM gives the spa's customers a self-service portal where they can see their relationship with the spa without having to call the front desk. Mindbody, Boulevard, Fresha, Vagaro, Booker — they all have this. Spa owners ask for it on first call. It's the difference between &ldquo;Lumè is a back-office tool&rdquo; and &ldquo;Lumè is the spa's customer-facing brand surface.&rdquo;
 
-**Provisioning + auth:**
-- [ ] **Auto-provision portal access** when the operator adds a client. No separate &ldquo;create portal account&rdquo; step — the moment a customer record exists with an email, the portal is reachable for them.
-- [ ] **Magic-link login** (SES-delivered) — no password to remember, no password to leak. One-time tokens with short expiry, single-use, replay-protected. Same pattern as the staff-invitation accept flow (ADR 0019) and the public form-fill tokens (ADR 0011).
-- [ ] **Optional password sign-in** for clients who prefer it — opt-in on first magic-link login.
-- [ ] **Tenant-branded URL** — `portal.{tenant_slug}.lumècrm.com` or `{tenant_slug}.lumècrm.com/portal`. Tenant logo + colors apply to the portal shell.
-- [ ] **HIPAA: portal session is the customer's PHI-bearing surface.** 15-minute idle timeout (matches staff session policy), `Content-Security-Policy` + `frame-ancestors 'none'`, full audit log on every read.
+**MVP v1 shipped (2026-05-15, ADR 0024):**
+- [x] **Magic-link login** — `apps.portal.CustomerPortalToken` (30-min expiry, single-use, 256-bit token via `secrets.token_urlsafe`), SES-delivered email with the tenant's branding, atomic consume via `select_for_update()`. Email-enumeration resistant (matched + unmatched emails return identical responses).
+- [x] **Customer portal session** — `CustomerPortalSession` with `httponly` + `samesite=Lax` + `secure=true` cookie, 14-day absolute expiry, 4-hour idle timeout, parallel to Django's User session (not a User overload).
+- [x] **`PortalSessionMiddleware`** + `IsPortalCustomer` DRF permission. Defense-in-depth tenant guard: a session attached to tenant A returns 403 on tenant B's host.
+- [x] **Tenant-branded shell** — `--portal-brand` CSS custom property set from `Tenant.primary_color`, `Tenant.logo_url` rendered in the top bar + magic-link email. Each spa looks distinctly theirs.
+- [x] **Dashboard (`/portal`)** — next appointment, last visit, quick actions, contact summary.
+- [x] **Appointments (`/portal/appointments`)** — upcoming + past with self-cancel for future booked/confirmed slots.
+- [x] **Profile (`/portal/profile`)** — read-only identity, editable phone + marketing consents, sign-out. Marketing toggle stamps `*_consent_at` + `*_consent_source='portal'`.
+- [x] **19 backend tests** covering email enumeration, token single-use, expiry, cross-tenant rejection, session lifecycle, appointment scoping + cancel rules.
+- [x] **HIPAA + SOC 2 posture** — full audit log on every portal read + write, redacted metadata, PHI-bearing endpoints constrained to `request.customer`'s rows only.
 
-**Self-service surfaces:**
-- [ ] **Account overview / dashboard** — next appointment, last visit, loyalty points / package balances at a glance.
-- [ ] **Appointment history** — upcoming + past, filterable by date range. Each row shows service, provider, location, status, and an inline action (reschedule / cancel within policy, view receipt, rebook).
-- [ ] **Self-reschedule + cancel** within tenant policy (cancellation window, fee rules). Surfaces the same `Tenant.online_booking_cancellation_policy` text the public booking page shows so the client sees the rule before they commit.
+**Provisioning + auth (deferred):**
+- [ ] **Auto-provision portal access** when the operator adds a client. v1 already works this way (customers exist → can request a magic link). Capture as &ldquo;documented&rdquo; rather than a build task.
+- [ ] **Optional password sign-in** for clients who prefer it — opt-in on first magic-link login. Magic-link-only for v1.
+- [ ] **Tenant-branded URL** — `portal.{tenant_slug}.lumècrm.com` or `{tenant_slug}.lumècrm.com/portal`. v1 uses the latter on the tenant's existing subdomain.
+
+**Self-service surfaces (deferred to Phase 3E v2):**
+- [x] **Account overview / dashboard** — next appointment + last visit. Loyalty points + package balances come with the packages/memberships portal surfaces below.
+- [x] **Appointment history** — upcoming + past, with cancel inline. Reschedule + receipt-view land with v2.
+- [ ] **Self-reschedule** within tenant policy. v1 cancel-only; reschedule needs availability picker + service/provider fit re-validation.
 - [ ] **Rebook last service** — one-tap reorder of the customer's most recent service with the same provider when available.
 - [ ] **Packages + memberships** — balances remaining (e.g., &ldquo;4 of 6 facials remaining, expires Aug 12&rdquo;), redemption history, upcoming renewal date. Customers ask the front desk this constantly; offloading it to the portal is real value.
 - [ ] **Forms** — completed intake/consent forms (read-only PDF download via ADR 0020), pending forms with a one-click sign link (same tokenized fill flow as the email invitations).
 - [ ] **Invoices + payment history** — itemized receipts (PDF via ADR 0018), payment method, tip amount. Filterable + searchable.
-- [ ] **Profile management** — name, contact info, marketing consent toggles (so the client can opt out of campaigns without contacting the spa), address, emergency contact. PHI updates go through the same audit-logged path staff use.
+- [x] **Profile management** — phone + marketing consents editable in v1 (`/portal/profile`). Name + email + address + emergency contact continue to flow through staff for identity-verification reasons.
 - [ ] **Gift card balance + redemption history** — &ldquo;You have $40 on a gift card; here's when you used it last.&rdquo;
 - [ ] **Document upload** (front-desk-requested items: insurance card, ID, before-photo) — needs S3 in prod, sized + virus-scanned.
 

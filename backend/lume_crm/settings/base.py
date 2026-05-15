@@ -73,6 +73,7 @@ INSTALLED_APPS = [
     'apps.timetracking',
     'apps.commissions',
     'apps.messaging',
+    'apps.portal',
 ]
 
 AUTH_USER_MODEL = 'users.User'
@@ -86,6 +87,7 @@ MIDDLEWARE = [
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'apps.tenants.middleware.TenantMiddleware',
     'apps.tenants.middleware.LocationMiddleware',
+    'apps.portal.middleware.PortalSessionMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]

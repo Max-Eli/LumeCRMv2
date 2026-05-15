@@ -1,0 +1,429 @@
+"""Customer-portal HTTP endpoints.
+
+Two surfaces:
+
+  - Public auth (`/api/portal/auth/...`): request + consume magic
+    links; ends sessions. `AllowAny` permission because the
+    customer is by definition not logged in yet.
+  - Authenticated data (`/api/portal/me/`, `/api/portal/appointments/`,
+    ...): gated by `IsPortalCustomer`. The `PortalSessionMiddleware`
+    sets `request.customer`; views read from it.
+
+Tenant scoping comes from two places working together:
+
+  - The standard `TenantMiddleware` resolves `request.tenant` from
+    the request host / `X-Tenant-Slug` header.
+  - The portal session is itself bound to one Customer → one Tenant.
+
+A request whose `request.tenant` doesn't match `request.customer.tenant`
+is rejected as 403 — defense in depth against a customer with one
+spa's session cookie hitting another spa's portal subdomain.
+"""
+
+from __future__ import annotations
+
+import logging
+
+from django.utils import timezone as djtz
+from rest_framework import status
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.permissions import AllowAny
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+from apps.appointments.models import Appointment
+from apps.audit.models import AuditLog
+from apps.audit.services import record
+from apps.tenants.context import get_current_tenant
+
+from .middleware import PORTAL_SESSION_COOKIE
+from .models import CustomerPortalSession
+from .permissions import IsPortalCustomer
+from .serializers import (
+    CustomerMeSerializer,
+    PortalAppointmentSerializer,
+    ProfileUpdateInputSerializer,
+    RequestMagicLinkInputSerializer,
+)
+from .services import (
+    consume_token,
+    find_customer_for_login,
+    send_magic_link_email,
+)
+from .models import CustomerPortalToken
+
+logger = logging.getLogger(__name__)
+
+
+# ── Public auth ──────────────────────────────────────────────────────
+
+
+class RequestMagicLinkView(APIView):
+    """`POST /api/portal/auth/request-magic-link/` — kicks off the
+    login flow. Returns the same 200 response regardless of whether
+    the email matched a customer (email-enumeration defense)."""
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def post(self, request):
+        tenant = get_current_tenant()
+        if tenant is None:
+            # No tenant context = no portal here. 404 keeps the
+            # response uninformative about whether portals exist on
+            # other hosts.
+            return Response(
+                {'detail': 'Portal not available on this host.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        ser = RequestMagicLinkInputSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        email = ser.validated_data['email']
+
+        customer = find_customer_for_login(tenant=tenant, email=email)
+        if customer is not None:
+            # Throttle is implicit — issuing a token + sending an
+            # email is bounded by SES quota; we could layer a per-
+            # email rate-limit if abuse appears.
+            token = CustomerPortalToken.issue(
+                customer=customer,
+                requested_ip=request.META.get('REMOTE_ADDR'),
+            )
+            try:
+                send_magic_link_email(customer=customer, token=token, request=request)
+            except Exception:
+                logger.exception(
+                    'portal.magic_link.email_send_failed',
+                    extra={'tenant_slug': tenant.slug, 'token_id': token.id},
+                )
+                # Treat as a 500 — the customer needs the email to
+                # log in, and silently 200'ing would leave them
+                # waiting indefinitely.
+                return Response(
+                    {'detail': 'Could not send the sign-in email. Try again in a moment.'},
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                )
+
+        # Same response for matched + unmatched email — defeats
+        # email-enumeration of which addresses are customers.
+        return Response(
+            {
+                'detail': (
+                    "If that email is on file, we just sent a sign-in "
+                    "link. It expires in 30 minutes."
+                ),
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class ConsumeMagicLinkView(APIView):
+    """`POST /api/portal/auth/consume/` body: `{ "token": "..." }`.
+
+    Validates the token, creates a portal session, sets the session
+    cookie on the response, and returns a slim customer + tenant
+    object so the frontend can render the portal home immediately
+    without a follow-up `/me/` round-trip.
+
+    Errors:
+      - 410 GONE: token used, expired, or wrong tenant.
+      - 400: missing token in body.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def post(self, request):
+        tenant = get_current_tenant()
+        if tenant is None:
+            return Response(
+                {'detail': 'Portal not available on this host.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        token_value = (request.data.get('token') or '').strip()
+        if not token_value:
+            raise ValidationError({'token': 'Token is required.'})
+
+        token = consume_token(token_value=token_value, tenant=tenant)
+        if token is None:
+            return Response(
+                {
+                    'detail': (
+                        "This sign-in link is no longer valid. Request a new "
+                        "one from the sign-in page."
+                    ),
+                },
+                status=status.HTTP_410_GONE,
+            )
+
+        # Mint the session + audit-log the login.
+        session = CustomerPortalSession.issue(
+            customer=token.customer,
+            issued_ip=request.META.get('REMOTE_ADDR'),
+            user_agent=request.META.get('HTTP_USER_AGENT', ''),
+        )
+
+        record(
+            action=AuditLog.Action.CREATE,
+            resource_type='portal_session',
+            resource_id=session.id,
+            request=request,
+            metadata={
+                'tenant_slug': tenant.slug,
+                'customer_id': token.customer_id,
+                'event': 'portal_login',
+            },
+        )
+
+        response = Response(
+            CustomerMeSerializer(_customer_me_payload(token.customer)).data,
+            status=status.HTTP_200_OK,
+        )
+        _set_session_cookie(response, session.token)
+        return response
+
+
+class LogoutView(APIView):
+    """`POST /api/portal/auth/logout/` — revokes the current session
+    + clears the cookie. Idempotent: callable without a session and
+    still returns 200 so the frontend's "log out everywhere" UX
+    isn't gated on session state."""
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def post(self, request):
+        session = getattr(request, 'portal_session', None)
+        if session is not None:
+            session.revoked_at = djtz.now()
+            session.save(update_fields=['revoked_at'])
+            record(
+                action=AuditLog.Action.UPDATE,
+                resource_type='portal_session',
+                resource_id=session.id,
+                request=request,
+                metadata={'event': 'portal_logout'},
+            )
+        response = Response({'detail': 'Signed out.'}, status=status.HTTP_200_OK)
+        _clear_session_cookie(response)
+        return response
+
+
+# ── Authenticated portal data ────────────────────────────────────────
+
+
+class MeView(APIView):
+    """`GET /api/portal/me/` — current customer + tenant branding.
+    Used by the portal layout to render the avatar/name + apply
+    primary_color + logo on every page.
+
+    `PATCH /api/portal/me/` — customer-editable profile fields
+    (phone + marketing consents). Non-PHI, non-identity fields only.
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def get(self, request):
+        customer = request.customer
+        _guard_tenant_consistency(request)
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='portal_me',
+            resource_id=customer.id,
+            request=request,
+            metadata={'event': 'view_profile'},
+        )
+        return Response(CustomerMeSerializer(_customer_me_payload(customer)).data)
+
+    def patch(self, request):
+        customer = request.customer
+        _guard_tenant_consistency(request)
+
+        ser = ProfileUpdateInputSerializer(data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+
+        update_fields: list[str] = []
+        changes: dict[str, object] = {}
+        if 'phone' in ser.validated_data:
+            new_phone = (ser.validated_data['phone'] or '').strip()
+            if new_phone != customer.phone:
+                customer.phone = new_phone
+                update_fields.append('phone')
+                changes['phone'] = 'changed'  # value redacted in audit log
+
+        for field in ('email_marketing_opt_in', 'sms_marketing_opt_in'):
+            if field in ser.validated_data:
+                new_value = bool(ser.validated_data[field])
+                if getattr(customer, field) != new_value:
+                    setattr(customer, field, new_value)
+                    update_fields.append(field)
+                    changes[field] = new_value
+                    # When opting in for the first time, also stamp the
+                    # consent timestamp so marketing-suppression logic
+                    # downstream can audit when consent was given.
+                    consent_at_field = field.replace('_opt_in', '_consent_at')
+                    consent_source_field = field.replace('_opt_in', '_consent_source')
+                    if hasattr(customer, consent_at_field) and new_value:
+                        setattr(customer, consent_at_field, djtz.now())
+                        update_fields.append(consent_at_field)
+                    if hasattr(customer, consent_source_field) and new_value:
+                        setattr(customer, consent_source_field, 'portal')
+                        update_fields.append(consent_source_field)
+
+        if update_fields:
+            customer.save(update_fields=[*update_fields, 'updated_at'])
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='portal_me',
+            resource_id=customer.id,
+            request=request,
+            metadata={'event': 'profile_update', 'changes': changes},
+        )
+
+        return Response(CustomerMeSerializer(_customer_me_payload(customer)).data)
+
+
+class AppointmentsView(APIView):
+    """`GET /api/portal/appointments/` — customer's appointments,
+    ordered with upcoming first then past. Returns a flat array;
+    the frontend partitions it.
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def get(self, request):
+        customer = request.customer
+        _guard_tenant_consistency(request)
+
+        qs = (
+            Appointment.objects
+            .filter(tenant=customer.tenant, customer=customer)
+            .select_related('service', 'location', 'provider', 'provider__user')
+            .order_by('-start_time')
+        )
+        data = PortalAppointmentSerializer(qs, many=True).data
+
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='portal_appointments',
+            resource_id=customer.id,
+            request=request,
+            metadata={'count': len(data)},
+        )
+
+        return Response(data)
+
+
+class CancelAppointmentView(APIView):
+    """`POST /api/portal/appointments/<id>/cancel/` — customer
+    cancellation. Validates the appointment belongs to the calling
+    customer, is in a cancellable status, and is in the future.
+
+    No tenant cancellation-policy enforcement yet (cancellation-
+    window fees etc.) — that's a follow-up that needs the tenant
+    config + a fee-charge flow. v1 just performs the status flip.
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def post(self, request, pk: int):
+        customer = request.customer
+        _guard_tenant_consistency(request)
+
+        try:
+            appt = Appointment.objects.select_for_update(of=('self',)).get(
+                pk=pk, tenant=customer.tenant, customer=customer,
+            )
+        except Appointment.DoesNotExist:
+            return Response(
+                {'detail': 'Appointment not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        # Re-check the cancellable rules server-side. The serializer's
+        # `cancellable` field is for UI display; this is the gate.
+        if appt.start_time <= djtz.now():
+            raise ValidationError({'detail': 'Past appointments cannot be cancelled.'})
+        if appt.status not in (Appointment.Status.BOOKED, Appointment.Status.CONFIRMED):
+            raise ValidationError({
+                'detail': f'This appointment cannot be cancelled (status: {appt.get_status_display()}).',
+            })
+
+        appt.status = Appointment.Status.CANCELLED
+        appt.cancelled_at = djtz.now()
+        appt.cancelled_reason = 'cancelled_by_customer'
+        appt.save(update_fields=['status', 'cancelled_at', 'cancelled_reason', 'updated_at'])
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment',
+            resource_id=appt.id,
+            request=request,
+            metadata={
+                'event': 'portal_cancel',
+                'customer_id': customer.id,
+                'previous_status': 'booked_or_confirmed',
+            },
+        )
+
+        return Response(PortalAppointmentSerializer(appt).data)
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _customer_me_payload(customer):
+    """Build the dict the `CustomerMeSerializer` expects. Keeps the
+    serializer dumb (it just transforms shapes) and the view focused
+    on flow control."""
+    tenant = customer.tenant
+    return {
+        'id': customer.id,
+        'first_name': customer.first_name,
+        'last_name': customer.last_name,
+        'email': customer.email,
+        'phone': customer.phone,
+        'email_marketing_opt_in': customer.email_marketing_opt_in,
+        'sms_marketing_opt_in': customer.sms_marketing_opt_in,
+        'sms_opt_in': customer.sms_opt_in,
+        'tenant': {
+            'name': tenant.name,
+            'slug': tenant.slug,
+            'primary_color': tenant.primary_color or '#1f2937',
+            'logo_url': tenant.logo_url or '',
+        },
+    }
+
+
+def _guard_tenant_consistency(request) -> None:
+    """403 if the request's tenant (from middleware) doesn't match
+    the session's customer's tenant. Defense in depth against a
+    customer carrying a stale cookie onto a different spa's host."""
+    request_tenant = get_current_tenant()
+    if request_tenant is None or request.customer.tenant_id != request_tenant.id:
+        raise PermissionDenied('Portal session does not match this host.')
+
+
+def _set_session_cookie(response, token: str) -> None:
+    """Set the portal session cookie with safe defaults.
+
+    `httponly` keeps JS from reading the token (XSS resistance);
+    `samesite=Lax` is the standard CSRF posture for first-party
+    flows; `secure=True` is required in production (TLS-only)
+    and harmless in dev where the browser ignores it on http://."""
+    response.set_cookie(
+        PORTAL_SESSION_COOKIE,
+        token,
+        max_age=14 * 24 * 60 * 60,  # match SESSION_EXPIRY
+        path='/',
+        httponly=True,
+        samesite='Lax',
+        secure=True,
+    )
+
+
+def _clear_session_cookie(response) -> None:
+    response.delete_cookie(PORTAL_SESSION_COOKIE, path='/')
