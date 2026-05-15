@@ -441,3 +441,218 @@ class SessionExpiryTests(_PortalAuthenticatedTestCase):
             HTTP_X_TENANT_SLUG=self.tenant.slug,
         )
         self.assertIn(response.status_code, (401, 403))
+
+
+# ── Memberships / Packages / Forms read views ──────────────────────
+
+
+class PortalMembershipsTests(_PortalAuthenticatedTestCase):
+    def test_list_returns_only_own_subscriptions(self):
+        from decimal import Decimal
+
+        from apps.invoices.models import Invoice, InvoiceLineItem
+        from apps.memberships.models import MembershipPlan, Subscription
+
+        plan = MembershipPlan.objects.create(
+            tenant=self.tenant, name='Gold', price_cents=10000,
+            billing_interval=MembershipPlan.BillingInterval.MONTHLY,
+        )
+        inv = Invoice.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            status=Invoice.Status.OPEN,
+        )
+        line = InvoiceLineItem.objects.create(
+            invoice=inv, description='Gold',
+            quantity=1, unit_price_cents=10000, tax_rate_percent=Decimal('0'),
+        )
+        Subscription.objects.create(
+            tenant=self.tenant, customer=self.customer, plan=plan,
+            source_invoice_line=line, name='Gold',
+            price_cents=10000,
+            status=Subscription.Status.ACTIVE,
+        )
+        # Cross-tenant — must not leak.
+        other_tenant, _ = _make_tenant('memb-other')
+        other_customer = _make_customer(other_tenant, email='other-memb@test.local')
+        other_plan = MembershipPlan.objects.create(
+            tenant=other_tenant, name='Other Gold', price_cents=5000,
+            billing_interval=MembershipPlan.BillingInterval.MONTHLY,
+        )
+        other_inv = Invoice.objects.create(
+            tenant=other_tenant, customer=other_customer,
+            status=Invoice.Status.OPEN,
+        )
+        other_line = InvoiceLineItem.objects.create(
+            invoice=other_inv, description='Other Gold',
+            quantity=1, unit_price_cents=5000, tax_rate_percent=Decimal('0'),
+        )
+        Subscription.objects.create(
+            tenant=other_tenant, customer=other_customer, plan=other_plan,
+            source_invoice_line=other_line, name='Other Gold',
+            price_cents=5000,
+            status=Subscription.Status.ACTIVE,
+        )
+
+        response = self.client_with_session.get(
+            reverse('portal-memberships'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        names = [row['name'] for row in response.data]
+        self.assertEqual(names, ['Gold'])
+
+    def test_requires_auth(self):
+        response = APIClient().get(
+            reverse('portal-memberships'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertIn(response.status_code, (401, 403))
+
+
+class PortalPackagesTests(_PortalAuthenticatedTestCase):
+    def test_list_returns_only_own_packages_active_first(self):
+        from decimal import Decimal
+
+        from apps.invoices.models import Invoice, InvoiceLineItem
+        from apps.packages.models import PurchasedPackage, PurchasedPackageItem
+        from apps.services.models import Service, ServiceCategory
+
+        cat = ServiceCategory.objects.create(tenant=self.tenant, name='Cat')
+        service = Service.objects.create(
+            tenant=self.tenant, category=cat, name='Facial',
+            duration_minutes=30, price_cents=10000,
+            service_type=Service.ServiceType.REGULAR,
+        )
+        inv = Invoice.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            status=Invoice.Status.OPEN,
+        )
+        line = InvoiceLineItem.objects.create(
+            invoice=inv, description='5x Facials',
+            quantity=1, unit_price_cents=40000, tax_rate_percent=Decimal('0'),
+        )
+        pp_active = PurchasedPackage.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            source_template=None, source_invoice_line=line,
+            name='5x Facials', price_cents=40000,
+            status=PurchasedPackage.Status.ACTIVE,
+        )
+        PurchasedPackageItem.objects.create(
+            purchased_package=pp_active, service=service,
+            service_name='Facial', quantity_purchased=5, quantity_remaining=3,
+            unit_value_cents=10000,
+        )
+
+        line2 = InvoiceLineItem.objects.create(
+            invoice=inv, description='3x Peels',
+            quantity=1, unit_price_cents=30000, tax_rate_percent=Decimal('0'),
+        )
+        PurchasedPackage.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            source_template=None, source_invoice_line=line2,
+            name='3x Peels', price_cents=30000,
+            status=PurchasedPackage.Status.PENDING,
+        )
+
+        other_tenant, _ = _make_tenant('pkg-other')
+        other_customer = _make_customer(other_tenant, email='pkg-other@test.local')
+        other_inv = Invoice.objects.create(
+            tenant=other_tenant, customer=other_customer,
+            status=Invoice.Status.OPEN,
+        )
+        other_line = InvoiceLineItem.objects.create(
+            invoice=other_inv, description='Foreign',
+            quantity=1, unit_price_cents=5000, tax_rate_percent=Decimal('0'),
+        )
+        PurchasedPackage.objects.create(
+            tenant=other_tenant, customer=other_customer,
+            source_template=None, source_invoice_line=other_line,
+            name='Foreign', price_cents=5000,
+            status=PurchasedPackage.Status.ACTIVE,
+        )
+
+        response = self.client_with_session.get(
+            reverse('portal-packages'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        names = [row['name'] for row in response.data]
+        self.assertEqual(names, ['5x Facials', '3x Peels'])
+        active_row = response.data[0]
+        self.assertEqual(active_row['items'][0]['quantity_remaining'], 3)
+        self.assertEqual(active_row['items'][0]['quantity_purchased'], 5)
+
+
+class PortalFormsTests(_PortalAuthenticatedTestCase):
+    def test_list_returns_only_own_forms_pending_first(self):
+        from apps.forms.models import FormSubmission, FormTemplate
+
+        template = FormTemplate.objects.create(
+            tenant=self.tenant, name='Intake',
+            form_type=FormTemplate.FormType.INTAKE,
+            schema={'fields': []},
+            recurrence='one_time',
+        )
+        pending = FormSubmission.objects.create(
+            tenant=self.tenant, form_template=template, customer=self.customer,
+            template_version_at_assignment=1, schema_snapshot={'fields': []},
+            status=FormSubmission.Status.PENDING,
+        )
+        completed = FormSubmission.objects.create(
+            tenant=self.tenant, form_template=template, customer=self.customer,
+            template_version_at_assignment=1, schema_snapshot={'fields': []},
+            status=FormSubmission.Status.COMPLETED,
+            signed_at=djtz.now(),
+            answers={}, signature_data='',
+        )
+
+        other_tenant, _ = _make_tenant('forms-other')
+        other_customer = _make_customer(other_tenant, email='forms-other@test.local')
+        other_template = FormTemplate.objects.create(
+            tenant=other_tenant, name='Foreign intake',
+            form_type=FormTemplate.FormType.INTAKE,
+            schema={'fields': []},
+            recurrence='one_time',
+        )
+        FormSubmission.objects.create(
+            tenant=other_tenant, form_template=other_template, customer=other_customer,
+            template_version_at_assignment=1, schema_snapshot={'fields': []},
+            status=FormSubmission.Status.PENDING,
+        )
+
+        response = self.client_with_session.get(
+            reverse('portal-forms'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        ids = [row['id'] for row in response.data]
+        self.assertEqual(ids, [pending.id, completed.id])
+        self.assertEqual(response.data[0]['sign_url'], f'/sign/{pending.token}')
+        self.assertIsNone(response.data[1]['sign_url'])
+
+    def test_list_does_not_leak_answers_or_signatures(self):
+        from apps.forms.models import FormSubmission, FormTemplate
+
+        template = FormTemplate.objects.create(
+            tenant=self.tenant, name='Intake',
+            form_type=FormTemplate.FormType.INTAKE,
+            schema={'fields': []},
+            recurrence='one_time',
+        )
+        FormSubmission.objects.create(
+            tenant=self.tenant, form_template=template, customer=self.customer,
+            template_version_at_assignment=1, schema_snapshot={'fields': []},
+            status=FormSubmission.Status.COMPLETED,
+            signed_at=djtz.now(),
+            answers={'phi_field': 'sensitive answer'},
+            signature_data='base64-signature-data',
+        )
+        response = self.client_with_session.get(
+            reverse('portal-forms'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        body = str(response.data)
+        self.assertNotIn('sensitive answer', body)
+        self.assertNotIn('base64-signature-data', body)
+        self.assertNotIn('answers', response.data[0])
+        self.assertNotIn('signature_data', response.data[0])

@@ -102,3 +102,93 @@ class RequestMagicLinkInputSerializer(serializers.Serializer):
     """Login form input. Email-only; we don't ask for a password."""
 
     email = serializers.EmailField(max_length=254)
+
+
+# ── Memberships ─────────────────────────────────────────────────────
+
+
+class PortalSubscriptionSerializer(serializers.Serializer):
+    """One row of the customer's membership history. Read-only — the
+    portal never lets a customer change subscription state."""
+
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    status = serializers.CharField()
+    status_display = serializers.SerializerMethodField()
+    price_cents = serializers.IntegerField()
+    billing_interval = serializers.CharField()
+    member_discount_percent = serializers.DecimalField(
+        max_digits=5, decimal_places=2,
+    )
+    started_at = serializers.DateTimeField(allow_null=True)
+    current_period_starts_at = serializers.DateTimeField(allow_null=True)
+    current_period_ends_at = serializers.DateTimeField(allow_null=True)
+    cancelled_at = serializers.DateTimeField(allow_null=True)
+    auto_renew = serializers.BooleanField()
+
+    def get_status_display(self, obj) -> str:
+        return obj.get_status_display()
+
+
+# ── Packages ────────────────────────────────────────────────────────
+
+
+class PortalPackageItemSerializer(serializers.Serializer):
+    """One service line of a purchased package + remaining sessions."""
+
+    service_name = serializers.CharField()
+    quantity_purchased = serializers.IntegerField()
+    quantity_remaining = serializers.IntegerField()
+
+
+class PortalPackageSerializer(serializers.Serializer):
+    """One row of the customer's packages. Strictly the customer-
+    facing slice — no internal pricing snapshots, no redemption
+    ledger, just what the client needs to know about their own
+    sessions."""
+
+    id = serializers.IntegerField()
+    name = serializers.CharField()
+    description = serializers.CharField(allow_blank=True)
+    status = serializers.CharField()
+    price_cents = serializers.IntegerField()
+    purchased_at = serializers.DateTimeField(allow_null=True)
+    expires_at = serializers.DateTimeField(allow_null=True)
+    is_expired = serializers.BooleanField()
+    total_credits_remaining = serializers.IntegerField()
+    items = PortalPackageItemSerializer(many=True)
+
+
+# ── Forms ───────────────────────────────────────────────────────────
+
+
+class PortalFormSubmissionSerializer(serializers.Serializer):
+    """One row of the customer's form history. Lists status +
+    template name + the tokenized sign URL for pending forms.
+
+    Answers and signature data are PHI — they are NOT included in
+    the list view, even though it's the customer's own data. A
+    future detail endpoint can return them with the same audit
+    posture as the staff path."""
+
+    id = serializers.IntegerField()
+    template_name = serializers.CharField()
+    template_form_type = serializers.CharField()
+    status = serializers.CharField()
+    status_display = serializers.SerializerMethodField()
+    sign_url = serializers.SerializerMethodField()
+    signed_at = serializers.DateTimeField(allow_null=True)
+    voided_at = serializers.DateTimeField(allow_null=True)
+    created_at = serializers.DateTimeField()
+
+    def get_status_display(self, obj) -> str:
+        return obj.get_status_display()
+
+    def get_sign_url(self, obj) -> str | None:
+        """Frontend route for the tokenized fill flow. Only emitted
+        for pending submissions — completed or voided forms don't
+        need a sign link."""
+        if obj.status != obj.Status.PENDING:
+            return None
+        return f'/sign/{obj.token}'

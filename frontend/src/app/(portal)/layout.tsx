@@ -98,12 +98,15 @@ function PortalTopBar({
   const links = [
     { href: '/portal', label: 'Home' },
     { href: '/portal/appointments', label: 'Appointments' },
+    { href: '/portal/memberships', label: 'Memberships' },
+    { href: '/portal/packages', label: 'Packages' },
+    { href: '/portal/forms', label: 'Forms' },
     { href: '/portal/profile', label: 'Profile' },
   ];
 
   return (
     <header className="border-b bg-card sticky top-0 z-30">
-      <div className="max-w-4xl mx-auto px-6 h-14 flex items-center justify-between gap-6">
+      <div className="max-w-5xl mx-auto px-6 h-14 flex items-center justify-between gap-6">
         <button
           type="button"
           onClick={() => router.push('/portal')}
@@ -129,7 +132,10 @@ function PortalTopBar({
             {spaName}
           </span>
         </button>
-        <nav className="flex items-center gap-1">
+        {/* Horizontal scroll on narrow viewports so the nav doesn't
+            wrap or get cut off — common pattern for portal/account
+            top-bars in apps like Stripe, Linear, etc. */}
+        <nav className="flex items-center gap-1 overflow-x-auto -mx-2 px-2 scrollbar-thin">
           {links.map((l) => {
             const isActive =
               pathname === l.href ||
@@ -139,7 +145,7 @@ function PortalTopBar({
                 key={l.href}
                 type="button"
                 onClick={() => router.push(l.href)}
-                className={`text-sm px-3 py-1.5 rounded-md transition-colors ${
+                className={`text-sm px-3 py-1.5 rounded-md transition-colors whitespace-nowrap shrink-0 ${
                   isActive
                     ? 'bg-muted text-foreground font-medium'
                     : 'text-muted-foreground hover:text-foreground hover:bg-muted/60'

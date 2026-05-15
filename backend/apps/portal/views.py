@@ -42,6 +42,9 @@ from .permissions import IsPortalCustomer
 from .serializers import (
     CustomerMeSerializer,
     PortalAppointmentSerializer,
+    PortalFormSubmissionSerializer,
+    PortalPackageSerializer,
+    PortalSubscriptionSerializer,
     ProfileUpdateInputSerializer,
     RequestMagicLinkInputSerializer,
 )
@@ -427,3 +430,142 @@ def _set_session_cookie(response, token: str) -> None:
 
 def _clear_session_cookie(response) -> None:
     response.delete_cookie(PORTAL_SESSION_COOKIE, path='/')
+
+
+# ── Memberships / Packages / Forms read views ───────────────────────
+
+
+class MembershipsView(APIView):
+    """`GET /api/portal/memberships/` — customer's subscription
+    history, active rows first.
+
+    Read-only; the portal never lets a customer modify subscription
+    state (start, cancel, renew) — those flow through staff so the
+    audit trail is consistent + so refunds / proration are handled
+    explicitly. Customers see their own subscriptions to answer
+    "what plan am I on?" without calling the spa.
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def get(self, request):
+        from apps.memberships.models import Subscription
+        customer = request.customer
+        _guard_tenant_consistency(request)
+
+        # Active first, then by most-recent. Cancelled / expired
+        # cycles are surfaced too — customers asked about historical
+        # plans during demos ("did I have the gold plan last year?").
+        qs = (
+            Subscription.objects
+            .filter(tenant=customer.tenant, customer=customer)
+            .order_by('status', '-started_at', '-created_at')
+        )
+        data = PortalSubscriptionSerializer(qs, many=True).data
+
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='portal_memberships',
+            resource_id=customer.id,
+            request=request,
+            metadata={'count': len(data)},
+        )
+        return Response(data)
+
+
+class PackagesView(APIView):
+    """`GET /api/portal/packages/` — customer's purchased packages
+    with sessions remaining per service line.
+
+    Active packages come first (customer's actionable inventory),
+    then pending, then voided/expired for history. The serializer
+    strips internal fields — no redemption ledger, no source
+    template, no who-voided-it metadata. Customers see what they
+    have left, that's it.
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def get(self, request):
+        from apps.packages.models import PurchasedPackage
+        customer = request.customer
+        _guard_tenant_consistency(request)
+
+        # Custom rank: active first, then pending, then voided. The
+        # serializer's `is_expired` is computed; we don't filter on
+        # it here so the customer sees expired packages too with the
+        # "expired" badge in the UI.
+        STATUS_ORDER = {
+            PurchasedPackage.Status.ACTIVE: 0,
+            PurchasedPackage.Status.PENDING: 1,
+            PurchasedPackage.Status.VOIDED: 2,
+        }
+        qs = (
+            PurchasedPackage.objects
+            .filter(tenant=customer.tenant, customer=customer)
+            .prefetch_related('items')
+            .order_by('-created_at')
+        )
+        rows = sorted(qs, key=lambda p: (STATUS_ORDER.get(p.status, 99), p.id * -1))
+        data = PortalPackageSerializer(rows, many=True).data
+
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='portal_packages',
+            resource_id=customer.id,
+            request=request,
+            metadata={'count': len(data)},
+        )
+        return Response(data)
+
+
+class FormsView(APIView):
+    """`GET /api/portal/forms/` — customer's form submissions.
+
+    Pending forms first (the customer's actionable list — these
+    have a `sign_url` to the tokenized fill flow), then completed
+    forms, then voided. Answers + signature data are PHI and are
+    NOT included in this list — the customer signs through the
+    existing tokenized `/sign/<token>` page where the answer
+    schema is rendered fresh.
+
+    A future detail endpoint could return completed answers under
+    the same minimum-necessary posture as the staff path, but
+    that's deferred until customers actually ask for "show me
+    what I signed."
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def get(self, request):
+        from apps.forms.models import FormSubmission
+        customer = request.customer
+        _guard_tenant_consistency(request)
+
+        STATUS_ORDER = {
+            FormSubmission.Status.PENDING: 0,
+            FormSubmission.Status.COMPLETED: 1,
+            FormSubmission.Status.VOIDED: 2,
+        }
+        qs = (
+            FormSubmission.objects
+            .filter(tenant=customer.tenant, customer=customer)
+            .select_related('form_template')
+            .order_by('-created_at')
+        )
+        rows = sorted(qs, key=lambda f: (STATUS_ORDER.get(f.status, 99), f.id * -1))
+        # The serializer reads `template_name` + `template_form_type`
+        # off the FK; populate them inline on each row.
+        for r in rows:
+            r.template_name = r.form_template.name
+            r.template_form_type = r.form_template.form_type
+        data = PortalFormSubmissionSerializer(rows, many=True).data
+
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='portal_forms',
+            resource_id=customer.id,
+            request=request,
+            metadata={'count': len(data)},
+        )
+        return Response(data)

@@ -155,3 +155,99 @@ export function useCancelAppointment() {
     },
   });
 }
+
+// ── Memberships ─────────────────────────────────────────────────────
+
+
+export type SubscriptionStatus =
+  | 'pending'
+  | 'active'
+  | 'expired'
+  | 'cancelled';
+
+export interface PortalSubscription {
+  id: number;
+  name: string;
+  description: string;
+  status: SubscriptionStatus;
+  status_display: string;
+  price_cents: number;
+  billing_interval: string;
+  member_discount_percent: string;
+  started_at: string | null;
+  current_period_starts_at: string | null;
+  current_period_ends_at: string | null;
+  cancelled_at: string | null;
+  auto_renew: boolean;
+}
+
+const MEMBERSHIPS_KEY = ['portal', 'memberships'] as const;
+
+export function usePortalMemberships() {
+  return useQuery<PortalSubscription[]>({
+    queryKey: MEMBERSHIPS_KEY,
+    queryFn: () => api.get<PortalSubscription[]>('/api/portal/memberships/'),
+    refetchOnWindowFocus: true,
+  });
+}
+
+// ── Packages ────────────────────────────────────────────────────────
+
+
+export type PortalPackageStatus = 'pending' | 'active' | 'voided';
+
+export interface PortalPackageItem {
+  service_name: string;
+  quantity_purchased: number;
+  quantity_remaining: number;
+}
+
+export interface PortalPackage {
+  id: number;
+  name: string;
+  description: string;
+  status: PortalPackageStatus;
+  price_cents: number;
+  purchased_at: string | null;
+  expires_at: string | null;
+  is_expired: boolean;
+  total_credits_remaining: number;
+  items: PortalPackageItem[];
+}
+
+const PACKAGES_KEY = ['portal', 'packages'] as const;
+
+export function usePortalPackages() {
+  return useQuery<PortalPackage[]>({
+    queryKey: PACKAGES_KEY,
+    queryFn: () => api.get<PortalPackage[]>('/api/portal/packages/'),
+    refetchOnWindowFocus: true,
+  });
+}
+
+// ── Forms ───────────────────────────────────────────────────────────
+
+
+export type PortalFormStatus = 'pending' | 'completed' | 'voided';
+
+export interface PortalFormSubmission {
+  id: number;
+  template_name: string;
+  template_form_type: 'intake' | 'consent';
+  status: PortalFormStatus;
+  status_display: string;
+  sign_url: string | null;
+  signed_at: string | null;
+  voided_at: string | null;
+  created_at: string;
+}
+
+const FORMS_KEY = ['portal', 'forms'] as const;
+
+export function usePortalForms() {
+  return useQuery<PortalFormSubmission[]>({
+    queryKey: FORMS_KEY,
+    queryFn: () => api.get<PortalFormSubmission[]>('/api/portal/forms/'),
+    refetchOnWindowFocus: true,
+  });
+}
