@@ -70,15 +70,14 @@ def _email_provider_ready() -> bool:
 
 
 def _sms_provider_ready() -> bool:
-    """Twilio is wired when all required env vars are present:
-    account SID, auth token, and a from-number. Until all three
-    land in env, SMS sends route to stub mode — SendLog row written
-    with a synthetic provider id, no Twilio API call. Same flip-
-    on-via-env semantic as email."""
+    """Twilio credentials are wired (SID + auth token). The from-
+    number is resolved per-tenant downstream — caller checks it
+    separately because a missing per-tenant TFN is a per-row skip,
+    not a global stub-mode signal. Same flip-on-via-env semantic
+    as email for the creds half."""
     return all([
         getattr(settings, 'TWILIO_ACCOUNT_SID', None),
         getattr(settings, 'TWILIO_AUTH_TOKEN', None),
-        getattr(settings, 'TWILIO_FROM_NUMBER', None),
     ])
 
 
@@ -303,15 +302,16 @@ def _dispatch_one(
             provider_message_id = f'stub-noprov-email-{secrets.token_hex(8)}'
 
     elif channel == Channel.SMS:
-        if _sms_provider_ready():
-            # Real Twilio path. We use one shared toll-free number for
-            # all tenants (TWILIO_FROM_NUMBER); the message body
-            # itself identifies the spa so the recipient knows who
-            # it's from. Carrier-side reputation lives on the shared
-            # number — a future polish is per-tenant TFN or 10DLC
-            # for spas that want a local-area-code identity (Phase
-            # 4F-ish work).
-            #
+        # Per-tenant TFN: each spa carries its own toll-free number
+        # (Tenant.twilio_from_number) for reputation isolation +
+        # branded identity. Falls back to settings.TWILIO_FROM_NUMBER
+        # (platform default) for tenants whose number hasn't been
+        # provisioned yet.
+        from_number = (
+            (tenant.twilio_from_number or '').strip()
+            or (getattr(settings, 'TWILIO_FROM_NUMBER', '') or '').strip()
+        )
+        if _sms_provider_ready() and from_number:
             # Body is rendered up-top with {{unsubscribe_url}} +
             # tenant-name substitution. We DON'T add a separate
             # branded prefix here — the operator's template already
@@ -321,7 +321,7 @@ def _dispatch_one(
 
                 client = _twilio_client()
                 kwargs = {
-                    'from_': settings.TWILIO_FROM_NUMBER,
+                    'from_': from_number,
                     'to': customer.phone,
                     'body': rendered_body,
                 }

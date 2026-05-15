@@ -53,31 +53,54 @@ class SMSDispatchError(Exception):
     caller-facing functions instead."""
 
 
-def _twilio_ready() -> bool:
-    """Mirror of `apps.marketing.sender._sms_provider_ready` — we
-    can't import directly because the marketing path's import graph
-    is heavier than we need here, and inlining a 3-line check is
-    cheaper than coupling the two modules."""
+def _twilio_creds_ready() -> bool:
+    """SID + auth token present in env. The from-number is resolved
+    per-tenant now (see `_resolve_from_number`), so it isn't part of
+    the global-readiness check anymore."""
     return all([
         getattr(settings, 'TWILIO_ACCOUNT_SID', None),
         getattr(settings, 'TWILIO_AUTH_TOKEN', None),
-        getattr(settings, 'TWILIO_FROM_NUMBER', None),
     ])
 
 
-def send_sms(*, to: str, body: str) -> str:
+def _resolve_from_number(tenant) -> str:
+    """Resolve the From: TFN for `tenant`. Per-tenant assignment first
+    (so each spa carries its own number for reputation isolation +
+    branded local-area identity), falling back to the platform-
+    default `settings.TWILIO_FROM_NUMBER` for tenants whose number
+    hasn't been provisioned yet. Empty string when neither is set —
+    caller treats that as a "skip, no sender available" state."""
+    per_tenant = (getattr(tenant, 'twilio_from_number', '') or '').strip()
+    if per_tenant:
+        return per_tenant
+    return (getattr(settings, 'TWILIO_FROM_NUMBER', '') or '').strip()
+
+
+def send_sms(*, tenant, to: str, body: str) -> str:
     """Send a single SMS via Twilio and return the provider Message
     SID. Raises `SMSDispatchError` if the Twilio call fails.
 
+    The From: number is resolved per-tenant via
+    `tenant.twilio_from_number` with fallback to
+    `settings.TWILIO_FROM_NUMBER`. When neither is set the call
+    is skipped (returns `''`) — same posture as missing SID/token.
+
     Returns `''` (empty SID) and logs a warning when Twilio isn't
-    configured — caller treats that as a "skipped, env not wired
-    yet" state. Lets the rest of the system run end-to-end in dev
+    configured. Lets the rest of the system run end-to-end in dev
     without TWILIO_* set.
     """
-    if not _twilio_ready():
+    if not _twilio_creds_ready():
         logger.warning(
-            'sms.send.skipped: TWILIO_* env not set; would have sent to %s',
+            'sms.send.skipped: TWILIO_ACCOUNT_SID/AUTH_TOKEN not set; would have sent to %s',
             _phone_redact(to),
+        )
+        return ''
+
+    from_number = _resolve_from_number(tenant)
+    if not from_number:
+        logger.warning(
+            'sms.send.skipped: tenant=%s has no twilio_from_number and no platform default; recipient %s',
+            tenant.slug, _phone_redact(to),
         )
         return ''
 
@@ -86,7 +109,7 @@ def send_sms(*, to: str, body: str) -> str:
 
     client = Client(settings.TWILIO_ACCOUNT_SID, settings.TWILIO_AUTH_TOKEN)
     kwargs = {
-        'from_': settings.TWILIO_FROM_NUMBER,
+        'from_': from_number,
         'to': to,
         'body': body,
     }
@@ -217,7 +240,7 @@ def send_confirmation_sms(appointment) -> bool:
         return False
 
     body = render_confirmation_body(appointment)
-    sid = send_sms(to=appointment.customer.phone, body=body)
+    sid = send_sms(tenant=appointment.tenant, to=appointment.customer.phone, body=body)
 
     # Stamp the audit row even when Twilio wasn't wired up (sid='') —
     # we want to know the SEND ATTEMPT happened so a redeploy with
@@ -265,7 +288,7 @@ def send_reminder_sms(appointment) -> bool:
         return False
 
     body = render_reminder_body(appointment)
-    sid = send_sms(to=appointment.customer.phone, body=body)
+    sid = send_sms(tenant=appointment.tenant, to=appointment.customer.phone, body=body)
 
     appointment.reminder_sms_sent_at = djtz.now()
     appointment.reminder_sms_provider_id = sid

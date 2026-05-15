@@ -141,6 +141,25 @@ class Tenant(models.Model):
         ),
     )
 
+    # Per-tenant SMS sender number. Set manually by the platform
+    # admin (Django admin for v1; Platform Admin UI later) after the
+    # spa's toll-free number is verified with Twilio. When blank,
+    # outbound SMS falls back to `settings.TWILIO_FROM_NUMBER` (the
+    # platform-shared default). E.164 format expected — e.g.
+    # `+18885551234`. Future polish: validation + a Platform Admin
+    # workflow to provision + verify per-tenant TFNs end-to-end.
+    twilio_from_number = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        help_text=(
+            'Per-tenant SMS sender (E.164, e.g. "+18885551234"). When '
+            'blank, falls back to the platform-default TWILIO_FROM_NUMBER. '
+            'Recipients see this number as the From; reputation lives '
+            'on this number per tenant.'
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
