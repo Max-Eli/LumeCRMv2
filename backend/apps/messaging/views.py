@@ -34,7 +34,9 @@ from django.utils import timezone as djtz
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
+
+from apps.tenants.api_permissions import IsTenantStaff
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -98,7 +100,7 @@ class MessagingViewSet(viewsets.ViewSet):
     consumer of an individual-message URL.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
     http_method_names = ['get', 'post', 'head', 'options']
 
     # `list` → /threads/ : inbox view, one row per customer.
@@ -511,7 +513,7 @@ class SavedReplyViewSet(viewsets.ModelViewSet):
     changed the address reply?"
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
     serializer_class = SavedReplySerializer
     http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
 
@@ -572,7 +574,7 @@ class AutomatedTemplatesView(APIView):
     default" affordance.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
 
     def get(self, request):
         tenant = get_current_tenant()

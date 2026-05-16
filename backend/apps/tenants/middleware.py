@@ -5,7 +5,17 @@ Two middlewares live here. Both must be installed (in this order) in
 
   1. `TenantMiddleware` — resolves `request.tenant` from the subdomain
      (or `X-Tenant-Slug` header in dev), plus `request.tenant_membership`
-     when the user is authenticated.
+     when the user is authenticated. **Critical:** when an authenticated
+     staff user lands on a tenant subdomain they have NO active
+     membership for, the session is force-logged-out and the request
+     continues as anonymous. Subdomain-as-tenant-boundary is the load-
+     bearing isolation guarantee — without this kill-the-session step,
+     a staff user on `acme.lumecrm.com` could navigate to
+     `evil.lumecrm.com` and have their session silently carry over
+     because the cookie is scoped to `.lumecrm.com` (necessary for the
+     subdomain-routing UX to work at all). Platform admins
+     (`is_superuser` or `is_platform_admin`) are intentionally exempt —
+     they can hop tenants for support reasons.
   2. `LocationMiddleware` — resolves `request.location` from the
      `lume_active_location` cookie, scoped to `request.tenant`. Falls back
      to the tenant's default location when the cookie is missing,
@@ -17,6 +27,10 @@ Subdomains "www", "admin", "api", and "localhost" are reserved and never
 treated as tenant slugs.
 """
 
+import logging
+
+from django.contrib.auth import logout as django_logout
+
 from .context import (
     reset_current_location,
     reset_current_tenant,
@@ -24,6 +38,8 @@ from .context import (
     set_current_tenant,
 )
 from .models import Location, Tenant, TenantMembership
+
+logger = logging.getLogger(__name__)
 
 
 RESERVED_SUBDOMAINS = {'www', 'admin', 'api', 'localhost', ''}
@@ -54,11 +70,63 @@ class TenantMiddleware:
         request.tenant = self._resolve_tenant(request)
         request.tenant_membership = self._resolve_membership(request)
 
+        # Tenant-isolation enforcement. See the module docstring —
+        # this is the kill-the-session step that prevents the
+        # subdomain session-cookie from leaking access across tenants.
+        self._enforce_tenant_isolation(request)
+
         token = set_current_tenant(request.tenant)
         try:
             return self.get_response(request)
         finally:
             reset_current_tenant(token)
+
+    def _enforce_tenant_isolation(self, request):
+        """If a Django-authenticated user is on a tenant subdomain
+        they have no active membership for, log them out fully so the
+        request continues as anonymous + the next request lands them
+        on the login page.
+
+        No-ops in three cases:
+          - Tenant didn't resolve (bare host, marketing pages, etc.) —
+            there's no tenant boundary to enforce.
+          - User isn't authenticated — nothing to revoke.
+          - User is a platform admin (`is_superuser` or
+            `is_platform_admin`). Support engineers + the platform
+            console need cross-tenant reach.
+
+        We logout via Django's helper rather than just clearing
+        `request.user` because the session cookie needs to be
+        invalidated server-side too — otherwise the next request
+        would re-attach the same session and re-trigger this code
+        in a loop.
+        """
+        user = getattr(request, 'user', None)
+        tenant = getattr(request, 'tenant', None)
+        if user is None or not user.is_authenticated or tenant is None:
+            return
+        if getattr(user, 'is_superuser', False) or getattr(user, 'is_platform_admin', False):
+            return
+        if request.tenant_membership is not None:
+            return
+
+        # Mismatch. Log a security event (not the user's email) and
+        # flush the session.
+        logger.warning(
+            'tenants.security.cross_tenant_session_terminated',
+            extra={
+                'tenant_slug': tenant.slug,
+                'user_id': user.id,
+                'path': request.path,
+            },
+        )
+        django_logout(request)
+        # Re-anonymise the current request so the rest of the stack
+        # sees an unauthenticated user immediately, not just on the
+        # next request.
+        from django.contrib.auth.models import AnonymousUser
+        request.user = AnonymousUser()
+        # Membership obviously stays None — already is.
 
     def _resolve_tenant(self, request):
         # 1. Try the request subdomain (production canonical path).

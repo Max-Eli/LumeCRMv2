@@ -24,12 +24,13 @@ from django.utils import timezone as djtz
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.audit.models import AuditLog
 from apps.audit.services import record
+from apps.tenants.api_permissions import IsTenantStaff
 from apps.tenants.context import get_current_tenant
 from apps.tenants.permissions import P
 
@@ -57,7 +58,7 @@ class FormTemplateViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = FormTemplateSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_queryset(self):
@@ -263,7 +264,7 @@ class FormSubmissionViewSet(viewsets.ReadOnlyModelViewSet):
     0011 for the design.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
     http_method_names = ['get', 'post', 'head', 'options']
 
     def get_queryset(self):

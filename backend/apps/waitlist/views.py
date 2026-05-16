@@ -29,12 +29,12 @@ from django.utils import timezone
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.exceptions import PermissionDenied, ValidationError
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.audit.models import AuditLog
 from apps.audit.services import record
+from apps.tenants.api_permissions import IsTenantStaff
 from apps.booking.permissions import PublicBookingPermission
 from apps.booking.views import (
     PublicBookingViewMixin,
@@ -199,7 +199,7 @@ class WaitlistEntryViewSet(viewsets.ModelViewSet):
     — audit trail must survive entry retirement.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_serializer_class(self):

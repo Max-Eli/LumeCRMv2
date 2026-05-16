@@ -2028,3 +2028,108 @@ class TenantMiddlewareOriginFallbackTests(TestCase):
             HTTP_ORIGIN='not-a-real-url',
         )
         self.assertIsNone(result['tenant'])
+
+
+# ── Cross-tenant isolation enforcement (security regression) ───────
+
+
+@_override_settings(ALLOWED_HOSTS=['*'])
+class CrossTenantSessionTerminationTests(TestCase):
+    """Bug discovered 2026-05-16: a staff user signed into tenant A
+    could navigate to tenant B's subdomain and silently carry their
+    session over (the session cookie is scoped to `.<domain>` so it
+    rides every subdomain). `TenantMiddleware` now force-logs-out
+    staff sessions that land on a tenant the user has no active
+    membership for. Platform admins are intentionally exempt — they
+    need cross-tenant reach for support.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant_a, cls.owner_a = _make_tenant_pair('iso-a')
+        cls.tenant_b, cls.owner_b = _make_tenant_pair('iso-b')
+
+    def _drive(self, *, user, host):
+        from django.test import RequestFactory
+        from apps.tenants.middleware import TenantMiddleware
+
+        rf = RequestFactory()
+        request = rf.get('/api/auth/me/', HTTP_HOST=host)
+        request.user = user
+
+        # Stand-in for a real session so logout() has something to flush.
+        # SessionMiddleware would populate this in a real request; we
+        # fake it minimally so django.contrib.auth.logout doesn't crash.
+        from django.contrib.sessions.backends.db import SessionStore
+        request.session = SessionStore()
+
+        captured: dict = {}
+
+        def fake_view(req):
+            captured['user_is_authenticated'] = req.user.is_authenticated
+            captured['membership'] = req.tenant_membership
+            captured['tenant'] = req.tenant
+            from django.http import HttpResponse
+            return HttpResponse('ok')
+
+        TenantMiddleware(fake_view)(request)
+        return captured
+
+    def test_staff_on_their_own_tenant_passes_through(self):
+        result = self._drive(user=self.owner_a, host='iso-a.lume.test')
+        self.assertTrue(result['user_is_authenticated'])
+        self.assertIsNotNone(result['membership'])
+        self.assertEqual(result['tenant'], self.tenant_a)
+
+    def test_staff_on_foreign_tenant_session_force_terminated(self):
+        # Owner of A hits tenant B's subdomain. Middleware MUST nuke
+        # the session so downstream views see an anonymous user.
+        result = self._drive(user=self.owner_a, host='iso-b.lume.test')
+        self.assertFalse(result['user_is_authenticated'])
+        self.assertIsNone(result['membership'])
+        self.assertEqual(result['tenant'], self.tenant_b)
+
+    def test_platform_admin_can_cross_tenants(self):
+        # Platform admins keep their session — used for support hops.
+        admin = get_user_model().objects.create_user(
+            email='iso-admin@test.local', password='pw',
+            is_platform_admin=True,
+        )
+        result = self._drive(user=admin, host='iso-b.lume.test')
+        self.assertTrue(result['user_is_authenticated'])
+        # No membership for admin on B — but the session stays alive.
+        self.assertIsNone(result['membership'])
+
+    def test_superuser_can_cross_tenants(self):
+        admin = get_user_model().objects.create_user(
+            email='iso-su@test.local', password='pw',
+            is_superuser=True, is_staff=True,
+        )
+        result = self._drive(user=admin, host='iso-b.lume.test')
+        self.assertTrue(result['user_is_authenticated'])
+
+    def test_anonymous_request_on_foreign_tenant_unaffected(self):
+        # Anonymous requests don't trigger the kill-step — there's no
+        # session to revoke. The middleware just sets tenant/membership.
+        from django.contrib.auth.models import AnonymousUser
+        result = self._drive(user=AnonymousUser(), host='iso-b.lume.test')
+        self.assertFalse(result['user_is_authenticated'])
+        self.assertEqual(result['tenant'], self.tenant_b)
+
+    def test_no_tenant_resolved_does_not_logout(self):
+        # On a bare/unknown host where tenant is None there's no
+        # tenant boundary to enforce — leave the session alone.
+        result = self._drive(user=self.owner_a, host='unknown.lume.test')
+        self.assertTrue(result['user_is_authenticated'])
+        self.assertIsNone(result['tenant'])
+
+
+def _make_tenant_pair(slug):
+    owner = get_user_model().objects.create_user(
+        email=f'{slug}-owner@test.local', password='pw',
+    )
+    tenant = create_tenant_with_defaults(
+        name=slug, slug=slug, owner_user=owner,
+        status=Tenant.Status.ACTIVE,
+    )
+    return tenant, owner

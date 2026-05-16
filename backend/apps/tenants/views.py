@@ -35,12 +35,13 @@ from django.utils.text import slugify
 from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied
-from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from apps.audit.models import AuditLog
 from apps.audit.services import record
+from apps.tenants.api_permissions import IsTenantStaff
 
 from .context import get_current_location, get_current_tenant
 from .models import (
@@ -652,7 +653,7 @@ class TenantSettingsView(APIView):
     sense for platform-admin operations, which live in Django admin.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
 
     def get_object(self) -> Tenant:
         tenant = get_current_tenant()
@@ -703,7 +704,7 @@ class JobTitleViewSet(viewsets.ReadOnlyModelViewSet):
     """
 
     serializer_class = JobTitleSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
 
     def get_queryset(self):
         tenant = get_current_tenant()
@@ -737,7 +738,7 @@ class MembershipViewSet(viewsets.ModelViewSet):
     one-time `temp_password` field if it created a new user.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_serializer_class(self):
@@ -1162,7 +1163,7 @@ class LocationViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = LocationSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
     http_method_names = ['get', 'post', 'patch', 'head', 'options']
 
     def get_queryset(self):
@@ -1356,7 +1357,7 @@ class ScheduleView(APIView):
     a malformed URL pointing at another tenant's id 404s.
     """
 
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsTenantStaff]
 
     def _get_membership_location(self, pk: int) -> MembershipLocation:
         tenant = get_current_tenant()
