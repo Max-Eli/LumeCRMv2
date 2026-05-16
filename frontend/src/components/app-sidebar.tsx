@@ -107,7 +107,6 @@ const NAV_LINKS: NavLink[] = [
       { href: '/catalog/memberships', label: 'Memberships' },
       { href: '/catalog/packages', label: 'Packages' },
       { href: '/catalog/gift-cards', label: 'Gift cards' },
-      { href: '/catalog/treatment-record-templates', label: 'EMR templates' },
     ],
   },
   // Staff is its own surface — promoted out of Settings because role
@@ -127,7 +126,21 @@ const NAV_LINKS: NavLink[] = [
       { href: '/staff/payroll', label: 'Payroll', roles: ['owner', 'manager'] },
     ],
   },
-  { href: '/forms', label: 'Forms', icon: FileText, group: 'location' },
+  // Forms surface — customer-facing client forms (intake + consent)
+  // AND provider-facing EMR templates (treatment records). Both are
+  // schema-driven forms; pairing them under one nav reduces the
+  // "where do I go to author a form?" guesswork operators hit when
+  // the two were in different menus.
+  {
+    href: '/forms',
+    label: 'Forms',
+    icon: FileText,
+    group: 'location',
+    children: [
+      { href: '/forms', label: 'Client forms' },
+      { href: '/forms/emr-templates', label: 'EMR templates' },
+    ],
+  },
   { href: '/reports', label: 'Reports', icon: BarChart3, group: 'location' },
   // Marketing — audiences, templates, campaigns. Owner + manager +
   // marketing roles by default (front-desk gets read-only audience

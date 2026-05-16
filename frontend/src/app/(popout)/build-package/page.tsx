@@ -516,7 +516,16 @@ function ServiceRowEditor({
           <SelectTrigger>
             <SelectValue
               placeholder={servicesLoading ? 'Loading services…' : 'Pick a service'}
-            />
+            >
+              {(v) => {
+                if (!v) {
+                  return servicesLoading ? 'Loading services…' : 'Pick a service';
+                }
+                const picked = services.find((s) => String(s.id) === v);
+                if (!picked) return v;
+                return `${picked.name} · $${dollarsFromCents(picked.price_cents)}`;
+              }}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {services.map((s) => (

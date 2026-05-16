@@ -1,5 +1,5 @@
 /**
- * `/catalog/treatment-record-templates` — list of EMR templates that
+ * `/forms/emr-templates` — list of EMR templates that
  * providers fill out at appointment time.
  *
  * Distinct from `/forms` (customer-facing intake + consent). These
@@ -45,7 +45,7 @@ export default function TreatmentTemplatesPage() {
         description="Structured forms providers fill out per appointment. Locked after signing with the same audit posture as chart notes."
         actions={
           canManage ? (
-            <Button render={<Link href="/catalog/treatment-record-templates/new" />} nativeButton={false}>
+            <Button render={<Link href="/forms/emr-templates/new" />} nativeButton={false}>
               <Plus className="size-4" />
               New template
             </Button>
@@ -87,7 +87,7 @@ function Section({
         {templates.map((t) => (
           <li key={t.id}>
             <Link
-              href={`/catalog/treatment-record-templates/${t.id}`}
+              href={`/forms/emr-templates/${t.id}`}
               className={cn(
                 'flex items-center gap-3 px-4 py-3 hover:bg-muted transition-colors group',
                 muted && 'opacity-60',
@@ -137,7 +137,7 @@ function EmptyState({ canManage }: { canManage: boolean }) {
       </p>
       {canManage ? (
         <Button
-          render={<Link href="/catalog/treatment-record-templates/new" />}
+          render={<Link href="/forms/emr-templates/new" />}
           nativeButton={false}
           className="mt-4"
         >

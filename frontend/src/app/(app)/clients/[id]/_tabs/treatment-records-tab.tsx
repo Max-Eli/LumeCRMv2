@@ -85,7 +85,7 @@ export function TreatmentRecordsTab({ customerId }: { customerId: number }) {
             Records are signed structured forms documenting what was performed
             in a session. Templates are managed in
             <span className="font-mono mx-1 text-xs px-1.5 py-0.5 rounded bg-muted">
-              Catalog → EMR templates
+              Forms → EMR templates
             </span>.
           </p>
           <Button onClick={() => setSignOpen(true)} className="mt-4">
@@ -232,7 +232,15 @@ function SignRecordDialog({
               }}
             >
               <SelectTrigger>
-                <SelectValue placeholder="Pick a template…" />
+                <SelectValue placeholder="Pick a template…">
+                  {(v) => {
+                    if (!v) return 'Pick a template…';
+                    const picked = (templates ?? []).find(
+                      (t) => String(t.id) === v,
+                    );
+                    return picked?.name ?? v;
+                  }}
+                </SelectValue>
               </SelectTrigger>
               <SelectContent>
                 {(templates ?? []).map((t) => (
@@ -386,7 +394,13 @@ function FieldInput({
         onValueChange={(v) => onChange(v ?? '')}
       >
         <SelectTrigger>
-          <SelectValue placeholder="Select…" />
+          <SelectValue placeholder="Select…">
+            {(v) => {
+              if (!v) return 'Select…';
+              const opt = (field.options ?? []).find((o) => o.value === v);
+              return opt?.label ?? v;
+            }}
+          </SelectValue>
         </SelectTrigger>
         <SelectContent>
           {(field.options ?? []).map((opt) => (

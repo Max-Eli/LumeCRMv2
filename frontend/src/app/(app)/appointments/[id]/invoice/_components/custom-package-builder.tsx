@@ -362,7 +362,14 @@ function ItemRowEditor({
           onValueChange={(v) => onChange({ service_id: v ?? '' })}
         >
           <SelectTrigger>
-            <SelectValue placeholder="Pick a service…" />
+            <SelectValue placeholder="Pick a service…">
+              {(v) => {
+                if (!v) return 'Pick a service…';
+                const picked = services.find((s) => String(s.id) === v);
+                if (!picked) return v;
+                return `${picked.name} · ${picked.price_dollars}`;
+              }}
+            </SelectValue>
           </SelectTrigger>
           <SelectContent>
             {services.length === 0 ? (

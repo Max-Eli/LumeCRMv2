@@ -1,5 +1,5 @@
 /**
- * `/catalog/treatment-record-templates/new` — author a new EMR
+ * `/forms/emr-templates/new` — author a new EMR
  * template. Routes to the detail page on save.
  */
 
@@ -18,7 +18,7 @@ export default function NewTreatmentTemplatePage() {
         title="New treatment template"
         description="Build the structured form your providers will fill out after a treatment."
         back={{
-          href: '/catalog/treatment-record-templates',
+          href: '/forms/emr-templates',
           label: 'All templates',
         }}
       />

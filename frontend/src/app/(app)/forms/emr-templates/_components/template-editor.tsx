@@ -206,7 +206,7 @@ export function TemplateEditor({
       } else {
         const created = await create.mutateAsync(payload);
         toast.success('Template created.');
-        router.replace(`/catalog/treatment-record-templates/${created.id}`);
+        router.replace(`/forms/emr-templates/${created.id}`);
       }
     } catch (err) {
       if (err instanceof ApiError && err.body && typeof err.body === 'object') {
@@ -227,7 +227,7 @@ export function TemplateEditor({
     try {
       await del.mutateAsync(template.id);
       toast.success('Template deleted.');
-      router.replace('/catalog/treatment-record-templates');
+      router.replace('/forms/emr-templates');
     } catch (err) {
       if (err instanceof ApiError && err.body && typeof err.body === 'object') {
         const body = err.body as { detail?: string };
@@ -411,7 +411,13 @@ function FieldRow({
             }
           >
             <SelectTrigger>
-              <SelectValue />
+              <SelectValue>
+                {(v) =>
+                  v && v in FIELD_TYPE_LABELS
+                    ? FIELD_TYPE_LABELS[v as TemplateFieldType]
+                    : 'Pick a type'
+                }
+              </SelectValue>
             </SelectTrigger>
             <SelectContent>
               {FIELD_TYPES.map((t) => (

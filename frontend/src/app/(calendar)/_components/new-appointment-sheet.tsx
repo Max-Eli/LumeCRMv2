@@ -320,7 +320,26 @@ export function NewAppointmentSheet({
                         placeholder={
                           selectedService ? 'Pick a provider' : 'Select a service first'
                         }
-                      />
+                      >
+                        {(v) => {
+                          // Base UI's SelectValue defaults to showing the
+                          // raw value (a numeric ID here) — render the
+                          // matching provider's name + job title instead.
+                          if (!v) {
+                            return selectedService
+                              ? 'Pick a provider'
+                              : 'Select a service first';
+                          }
+                          const picked = eligibleProviders.find(
+                            (p) => String(p.id) === v,
+                          );
+                          if (!picked) return v;
+                          const name = membershipName(picked);
+                          return picked.job_title_name
+                            ? `${name} · ${picked.job_title_name}`
+                            : name;
+                        }}
+                      </SelectValue>
                     </SelectTrigger>
                     <SelectContent>
                       {eligibleProviders.map((p) => (

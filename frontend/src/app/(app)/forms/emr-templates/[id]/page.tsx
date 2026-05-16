@@ -1,5 +1,5 @@
 /**
- * `/catalog/treatment-record-templates/[id]` — edit an EMR template.
+ * `/forms/emr-templates/[id]` — edit an EMR template.
  *
  * Schema changes auto-bump the template version on save; submitted
  * records snapshot the version they were signed against, so editing
@@ -41,7 +41,7 @@ export default function EditTreatmentTemplatePage({
         <PageHeader
           title="Template not found"
           back={{
-            href: '/catalog/treatment-record-templates',
+            href: '/forms/emr-templates',
             label: 'All templates',
           }}
         />
@@ -56,7 +56,7 @@ export default function EditTreatmentTemplatePage({
         title={template.name}
         description={`Version ${template.version} · ${template.service_ids.length} service${template.service_ids.length === 1 ? '' : 's'} assigned`}
         back={{
-          href: '/catalog/treatment-record-templates',
+          href: '/forms/emr-templates',
           label: 'All templates',
         }}
       />
