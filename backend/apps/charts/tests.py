@@ -1045,3 +1045,147 @@ class TreatmentRecordSubmissionTests(TestCase):
             HTTP_X_TENANT_SLUG=self.tenant.slug,
         )
         self.assertEqual(response.status_code, 405)
+
+
+# ── Starter library API ─────────────────────────────────────────────
+
+
+class StarterTemplatesAPITests(TestCase):
+    """The /api/treatment-record-templates/starters/ catalog +
+    starters/<slug>/ detail endpoint, plus the "clone via regular
+    create" flow tenants use to import a starter into their own DB.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('starter-spa')
+        cls.fd_user, _ = _make_front_desk(cls.tenant)
+
+    def setUp(self):
+        self.client = _client_for(self.owner)
+
+    def test_starters_catalog_returns_categorized_summaries(self):
+        response = self.client.get(
+            '/api/treatment-record-templates/starters/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        # Catalog shape: { categories: [...], starters: [...] }.
+        self.assertIn('categories', response.data)
+        self.assertIn('starters', response.data)
+        self.assertGreater(len(response.data['starters']), 0)
+        first = response.data['starters'][0]
+        # Summary shape — `field_count` instead of `fields` to keep
+        # the list payload light.
+        self.assertIn('slug', first)
+        self.assertIn('name', first)
+        self.assertIn('category', first)
+        self.assertIn('field_count', first)
+        self.assertNotIn('fields', first)
+
+    def test_starter_detail_returns_full_field_list(self):
+        # Pick whichever slug the catalog returned first.
+        catalog = self.client.get(
+            '/api/treatment-record-templates/starters/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        slug = catalog.data['starters'][0]['slug']
+
+        response = self.client.get(
+            f'/api/treatment-record-templates/starters/{slug}/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        self.assertEqual(response.data['slug'], slug)
+        self.assertIsInstance(response.data['fields'], list)
+        self.assertGreater(len(response.data['fields']), 0)
+        # Validate the first field at least carries the canonical
+        # shape the schema validator expects.
+        first_field = response.data['fields'][0]
+        self.assertIn('id', first_field)
+        self.assertIn('type', first_field)
+        self.assertIn('label', first_field)
+
+    def test_starter_detail_returns_404_for_unknown_slug(self):
+        response = self.client.get(
+            '/api/treatment-record-templates/starters/no-such-slug/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_starter_can_be_cloned_into_a_real_template(self):
+        # Fetch the starter, then POST its name + schema to the
+        # regular create endpoint — same flow the picker UI uses.
+        catalog = self.client.get(
+            '/api/treatment-record-templates/starters/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        slug = catalog.data['starters'][0]['slug']
+        detail = self.client.get(
+            f'/api/treatment-record-templates/starters/{slug}/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+
+        response = self.client.post(
+            '/api/treatment-record-templates/',
+            data={
+                'name': detail.data['name'],
+                'description': detail.data['description'],
+                'schema': {'fields': detail.data['fields']},
+                'is_active': True,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        # The cloned row is real + tenant-scoped + editable like any
+        # other template — version=1, no service assignments yet.
+        self.assertEqual(response.data['version'], 1)
+        self.assertEqual(response.data['service_ids'], [])
+        cloned = TreatmentRecordTemplate.objects.get(pk=response.data['id'])
+        self.assertEqual(cloned.tenant_id, self.tenant.id)
+        self.assertEqual(
+            len(cloned.schema['fields']),
+            len(detail.data['fields']),
+        )
+
+    def test_starters_endpoint_requires_authentication(self):
+        anon = APIClient()
+        response = anon.get(
+            '/api/treatment-record-templates/starters/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertIn(response.status_code, (401, 403))
+
+    def test_front_desk_can_read_starters_but_not_clone(self):
+        # Catalog reads are open to any tenant member (matches the
+        # rest of the templates list — providers need to see what
+        # they'll be filling out). Cloning a starter uses the regular
+        # POST /api/treatment-record-templates/, which is gated by
+        # MANAGE_SERVICES — front-desk gets blocked there.
+        fd_client = _client_for(self.fd_user)
+        catalog = fd_client.get(
+            '/api/treatment-record-templates/starters/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(catalog.status_code, 200)
+
+        slug = catalog.data['starters'][0]['slug']
+        detail = fd_client.get(
+            f'/api/treatment-record-templates/starters/{slug}/',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(detail.status_code, 200)
+
+        clone = fd_client.post(
+            '/api/treatment-record-templates/',
+            data={
+                'name': detail.data['name'],
+                'description': detail.data['description'],
+                'schema': {'fields': detail.data['fields']},
+                'is_active': True,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(clone.status_code, 403)

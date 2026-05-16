@@ -165,6 +165,87 @@ export function useDeleteTreatmentTemplate() {
   });
 }
 
+// ── Starter library (pre-built EMR templates) ──────────────────────
+
+
+export interface StarterTemplateSummary {
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  field_count: number;
+}
+
+export interface StarterTemplateCatalog {
+  categories: string[];
+  starters: StarterTemplateSummary[];
+}
+
+export interface StarterTemplateDetail {
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  fields: TemplateField[];
+}
+
+const STARTER_KEY = ['treatment-templates', 'starters'] as const;
+
+/** The catalog of pre-built EMR starter templates. Static for the
+ *  app's lifetime — long staleTime so the picker dialog opens
+ *  instantly on repeat visits. */
+export function useStarterTemplates() {
+  return useQuery<StarterTemplateCatalog>({
+    queryKey: STARTER_KEY,
+    queryFn: () =>
+      api.get<StarterTemplateCatalog>(
+        '/api/treatment-record-templates/starters/',
+      ),
+    staleTime: 60 * 60 * 1000, // 1 hour — content only changes on deploy
+  });
+}
+
+/** Full payload for a single starter (the catalog endpoint omits
+ *  `fields` to keep the list payload small). Used for the preview
+ *  pane + as the source for the clone-into-tenant flow. */
+export function useStarterTemplate(slug: string | undefined) {
+  return useQuery<StarterTemplateDetail>({
+    queryKey: [...STARTER_KEY, slug ?? ''],
+    queryFn: () =>
+      api.get<StarterTemplateDetail>(
+        `/api/treatment-record-templates/starters/${slug}/`,
+      ),
+    enabled: !!slug,
+    staleTime: 60 * 60 * 1000,
+  });
+}
+
+/** Clone a starter into a real, editable tenant template.
+ *
+ *  We just POST a regular create-template call with the starter's
+ *  name + schema; the backend doesn't need a dedicated endpoint
+ *  because there's nothing tenant-specific about the clone beyond
+ *  what the standard create already does. */
+export function useCloneStarterTemplate() {
+  const qc = useQueryClient();
+  return useMutation<TreatmentRecordTemplate, Error, StarterTemplateDetail>({
+    mutationFn: (starter) =>
+      api.post<TreatmentRecordTemplate>(
+        '/api/treatment-record-templates/',
+        {
+          name: starter.name,
+          description: starter.description,
+          schema: { fields: starter.fields },
+          is_active: true,
+        } satisfies CreateTemplateInput,
+      ),
+    onSuccess: (created) => {
+      qc.invalidateQueries({ queryKey: TEMPLATES_KEY });
+      qc.setQueryData(templateKey(created.id), created);
+    },
+  });
+}
+
 // ── TreatmentRecord (filled instance) ───────────────────────────────
 
 

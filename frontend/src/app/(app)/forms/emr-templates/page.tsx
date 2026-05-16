@@ -20,6 +20,7 @@ import {
   Sparkles,
 } from 'lucide-react';
 import Link from 'next/link';
+import { useState } from 'react';
 
 import { PageHeader } from '@/components/page-header';
 import { Button } from '@/components/ui/button';
@@ -30,10 +31,13 @@ import {
 } from '@/lib/treatments';
 import { cn } from '@/lib/utils';
 
+import { StarterPickerDialog } from './_components/starter-picker-dialog';
+
 export default function TreatmentTemplatesPage() {
   const me = useCurrentMembership();
   const canManage = me?.role === 'owner' || me?.role === 'manager';
   const { data: templates, isLoading } = useTreatmentTemplates();
+  const [pickerOpen, setPickerOpen] = useState(false);
 
   const active = (templates ?? []).filter((t) => t.is_active);
   const inactive = (templates ?? []).filter((t) => !t.is_active);
@@ -45,18 +49,38 @@ export default function TreatmentTemplatesPage() {
         description="Structured forms providers fill out per appointment. Locked after signing with the same audit posture as chart notes."
         actions={
           canManage ? (
-            <Button render={<Link href="/forms/emr-templates/new" />} nativeButton={false}>
-              <Plus className="size-4" />
-              New template
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => setPickerOpen(true)}
+              >
+                <Sparkles className="size-4" />
+                Browse template library
+              </Button>
+              <Button render={<Link href="/forms/emr-templates/new" />} nativeButton={false}>
+                <Plus className="size-4" />
+                New template
+              </Button>
+            </div>
           ) : null
         }
       />
 
+      {canManage ? (
+        <StarterPickerDialog
+          open={pickerOpen}
+          onOpenChange={setPickerOpen}
+        />
+      ) : null}
+
       {isLoading ? (
         <p className="text-sm text-muted-foreground">Loading…</p>
       ) : (templates?.length ?? 0) === 0 ? (
-        <EmptyState canManage={canManage} />
+        <EmptyState
+          canManage={canManage}
+          onBrowseLibrary={() => setPickerOpen(true)}
+        />
       ) : (
         <div className="space-y-8 mt-6">
           <Section title="Active" templates={active} />
@@ -123,7 +147,13 @@ function Section({
   );
 }
 
-function EmptyState({ canManage }: { canManage: boolean }) {
+function EmptyState({
+  canManage,
+  onBrowseLibrary,
+}: {
+  canManage: boolean;
+  onBrowseLibrary: () => void;
+}) {
   return (
     <div className="mt-8 rounded-xl border border-dashed bg-card px-10 py-16 text-center">
       <div className="inline-flex size-12 items-center justify-center rounded-full bg-muted mb-3">
@@ -132,18 +162,25 @@ function EmptyState({ canManage }: { canManage: boolean }) {
       <p className="font-medium">No templates yet</p>
       <p className="text-sm text-muted-foreground mt-1 max-w-md mx-auto">
         Templates are the structured forms your providers fill out after a
-        treatment — units used, lots, injection sites, observations. Build
-        one per service or share across services.
+        treatment — units used, lots, injection sites, observations. Start
+        from the library to skip the setup, or build a custom one from
+        scratch.
       </p>
       {canManage ? (
-        <Button
-          render={<Link href="/forms/emr-templates/new" />}
-          nativeButton={false}
-          className="mt-4"
-        >
-          <Plus className="size-4" />
-          Create your first template
-        </Button>
+        <div className="mt-5 flex items-center justify-center gap-2">
+          <Button type="button" onClick={onBrowseLibrary}>
+            <Sparkles className="size-4" />
+            Browse template library
+          </Button>
+          <Button
+            render={<Link href="/forms/emr-templates/new" />}
+            nativeButton={false}
+            variant="outline"
+          >
+            <Plus className="size-4" />
+            Build from scratch
+          </Button>
+        </div>
       ) : null}
     </div>
   );

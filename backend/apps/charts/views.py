@@ -495,6 +495,64 @@ class TreatmentRecordTemplateViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(is_active=False)
         return queryset
 
+    @action(detail=False, methods=['get'], url_path='starters')
+    def starters(self, request):
+        """`/api/treatment-record-templates/starters/` — read-only
+        catalog of pre-built starter templates.
+
+        Tenants don't get these pre-seeded into their DB. The picker
+        UI fetches this list, the operator picks one + clicks
+        "Use this template," and the frontend POSTs a regular
+        create-template call with the starter's `name + schema`.
+        After that, the tenant copy is fully editable + independent
+        of the starter library.
+
+        Returns a flat list grouped client-side by `category`.
+        """
+        from .starter_templates import STARTER_CATEGORIES, STARTER_TEMPLATES
+
+        # Lightweight shape — no `fields` payload on the list since
+        # it can be heavy. The detail endpoint below returns it.
+        rows = [
+            {
+                'slug': s['slug'],
+                'name': s['name'],
+                'description': s['description'],
+                'category': s['category'],
+                'field_count': len(s['fields']),
+            }
+            for s in STARTER_TEMPLATES
+        ]
+        return Response({
+            'categories': list(STARTER_CATEGORIES),
+            'starters': rows,
+        })
+
+    @action(
+        detail=False,
+        methods=['get'],
+        url_path=r'starters/(?P<slug>[a-z0-9-]+)',
+    )
+    def starter_detail(self, request, slug=None):
+        """`/api/treatment-record-templates/starters/<slug>/` — full
+        starter payload including the `fields` array. The picker
+        dialog calls this for the preview pane."""
+        from .starter_templates import starter_template_by_slug
+
+        starter = starter_template_by_slug(slug)
+        if starter is None:
+            return Response(
+                {'detail': 'Starter template not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response({
+            'slug': starter['slug'],
+            'name': starter['name'],
+            'description': starter['description'],
+            'category': starter['category'],
+            'fields': starter['fields'],
+        })
+
     def perform_create(self, serializer):
         tenant = get_current_tenant()
         if tenant is None:
