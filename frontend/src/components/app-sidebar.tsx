@@ -107,6 +107,7 @@ const NAV_LINKS: NavLink[] = [
       { href: '/catalog/memberships', label: 'Memberships' },
       { href: '/catalog/packages', label: 'Packages' },
       { href: '/catalog/gift-cards', label: 'Gift cards' },
+      { href: '/catalog/treatment-record-templates', label: 'EMR templates' },
     ],
   },
   // Staff is its own surface — promoted out of Settings because role

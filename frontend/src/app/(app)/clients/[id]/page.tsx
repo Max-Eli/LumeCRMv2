@@ -84,6 +84,7 @@ import { GiftCardsTab } from './_tabs/gift-cards-tab';
 import { MembershipsTab } from './_tabs/memberships-tab';
 import { NotesTab } from './_tabs/notes-tab';
 import { PackagesTab } from './_tabs/packages-tab';
+import { TreatmentRecordsTab } from './_tabs/treatment-records-tab';
 import { WalletTab } from './_tabs/wallet-tab';
 
 // ── Tab definitions ──────────────────────────────────────────────────────
@@ -100,6 +101,7 @@ const TABS: readonly TabDef[] = [
   { id: 'profile', label: 'Profile' },
   { id: 'appointments', label: 'Appointments' },
   { id: 'notes', label: 'Notes' },
+  { id: 'treatment-records', label: 'Treatment records' },
   { id: 'products', label: 'Products', comingPhase: 'Phase 2A · POS' },
   { id: 'memberships', label: 'Memberships' },
   { id: 'packages', label: 'Packages' },
@@ -118,6 +120,7 @@ const TAB_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   profile: User,
   appointments: Calendar,
   notes: ClipboardList,
+  'treatment-records': ClipboardList,
   products: ShoppingBag,
   memberships: CreditCard,
   packages: Package,
@@ -190,6 +193,8 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
           <FormsTab customerId={customer.id} />
         ) : activeTab.id === 'notes' ? (
           <NotesTab customerId={customer.id} />
+        ) : activeTab.id === 'treatment-records' ? (
+          <TreatmentRecordsTab customerId={customer.id} />
         ) : activeTab.id === 'appointments' ? (
           <AppointmentsTab customerId={customer.id} />
         ) : activeTab.id === 'wallet' ? (

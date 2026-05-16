@@ -209,3 +209,301 @@ class ChartNote(TenantedModel):
         if membership is None:
             return False
         return membership.pk == self.author_id
+
+
+# ── Treatment record templates + submissions (Phase 4A Session 3) ─────
+
+
+class TreatmentRecordTemplate(TenantedModel):
+    """Schema-driven form a provider fills out per appointment to
+    document what was actually delivered.
+
+    Distinct from `apps.forms.FormTemplate`:
+      - FormTemplate: customer-completed (intake + consent),
+        triggered before / at the visit.
+      - TreatmentRecordTemplate: provider-completed (chart-grade
+        record of what happened), triggered at or after the visit.
+
+    The schema shape mirrors FormTemplate.schema so the field
+    builder + render logic can share the same field-type vocabulary,
+    plus medical-specific extras: `number` (units used, dosages,
+    side counts) and the existing types (short_text, long_text,
+    choice_*, date, signature).
+
+    `version` increments on every schema-changing save so submitted
+    records can pin the version they were signed against — same
+    "what did the form look like when this was filled out" guarantee
+    that FormTemplate gives.
+
+    Tenant-scoped. Per-service assignment via
+    `ServiceTreatmentTemplateAssignment`. Read for clinical staff,
+    write for catalog managers (MANAGE_SERVICES).
+    """
+
+    name = models.CharField(
+        max_length=200,
+        help_text=(
+            'Operator-facing label, e.g. "Botox treatment record" '
+            'or "HydraFacial treatment record".'
+        ),
+    )
+    description = models.TextField(
+        blank=True,
+        help_text='Internal notes about when to use this template.',
+    )
+    schema = models.JSONField(
+        default=dict,
+        help_text=(
+            'Field definitions — same shape as FormTemplate.schema: '
+            '{"fields": [{"id": "...", "type": "...", "label": "...", '
+            '"required": true, ...}]}. Validated by the serializer.'
+        ),
+    )
+    version = models.PositiveIntegerField(
+        default=1,
+        help_text=(
+            'Auto-incremented when `schema` changes. '
+            'TreatmentRecord submissions snapshot the version they '
+            'were signed against so historical records stay legible '
+            'after the template evolves.'
+        ),
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text=(
+            'Inactive templates stop appearing in the "create record" '
+            'picker for new appointments. Existing records are unaffected.'
+        ),
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['name']
+        indexes = [
+            models.Index(fields=['tenant', 'is_active', 'name']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['tenant', 'name'],
+                name='trt_template_unique_tenant_name',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.name} (v{self.version})'
+
+
+class ServiceTreatmentTemplateAssignment(TenantedModel):
+    """Maps a `TreatmentRecordTemplate` to a `Service`.
+
+    When a provider opens an appointment to record what they did,
+    the templates assigned to that appointment's service are surfaced
+    first. Multiple assignments per service are allowed — a single
+    appointment can have both a "Botox treatment record" and a
+    "Photo documentation" template attached.
+
+    Soft-delete via the template's `is_active=False` — assignment
+    rows survive but stop surfacing.
+    """
+
+    template = models.ForeignKey(
+        TreatmentRecordTemplate,
+        on_delete=models.CASCADE,
+        related_name='service_assignments',
+    )
+    service = models.ForeignKey(
+        'services.Service',
+        on_delete=models.CASCADE,
+        related_name='treatment_template_assignments',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        constraints = [
+            models.UniqueConstraint(
+                fields=['template', 'service'],
+                name='trt_template_assignment_unique',
+            ),
+        ]
+
+    def __str__(self):
+        return f'{self.template.name} → {self.service.name}'
+
+
+class TreatmentRecord(TenantedModel):
+    """A signed treatment record — the structured equivalent of a
+    `ChartNote`, filled out per appointment by the provider.
+
+    Lifecycle is identical to ChartNote:
+
+        pending edit  ─►  locked  ─►  optional addendum chain
+        (≤60 min)         (forever)   (each addendum is a separate row)
+                              │
+                              ▼
+                           voided
+                           (owner/manager only, requires reason)
+
+    Why a separate model from ChartNote (vs. a single "Note" model
+    with optional structured fields):
+
+      - PHI posture is identical, but the data shape is different
+        (free-form text vs. structured answers keyed by field id).
+      - Different lifecycle for the schema (template versions,
+        snapshots) doesn't fit cleanly on ChartNote.
+      - Reads for compliance reporting can hit just the structured
+        records (e.g. "show me every Botox unit dosed last quarter")
+        without scanning free-form text.
+
+    The two share UI conventions (read-only viewer with addenda
+    threading, void styling) but separate API + model paths.
+    """
+
+    customer = models.ForeignKey(
+        'customers.Customer',
+        on_delete=models.PROTECT,
+        related_name='treatment_records',
+    )
+    appointment = models.ForeignKey(
+        'appointments.Appointment',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='treatment_records',
+        help_text=(
+            'The appointment this record documents. SET_NULL on '
+            "appointment delete because clinical records outlive the "
+            'operational reason they were written.'
+        ),
+    )
+
+    template = models.ForeignKey(
+        TreatmentRecordTemplate,
+        on_delete=models.PROTECT,
+        related_name='records',
+        help_text=(
+            'PROTECT — templates with submitted records cannot be '
+            "deleted; deactivate (is_active=False) to retire."
+        ),
+    )
+    template_version_at_signing = models.PositiveIntegerField(
+        help_text=(
+            'Snapshot of `template.version` at signing time. The '
+            'reader uses this + `schema_snapshot` to render the '
+            'record as it was at the moment of signing, regardless '
+            'of subsequent template changes.'
+        ),
+    )
+    schema_snapshot = models.JSONField(
+        default=dict,
+        help_text=(
+            "Frozen copy of the template's schema at signing time. "
+            'Lets the read-back render labels + field types even '
+            'after the template has been edited or deactivated.'
+        ),
+    )
+    answers = models.JSONField(
+        default=dict,
+        help_text=(
+            "PHI. Provider's responses keyed by field id. Shape "
+            'validated against `schema_snapshot` by the serializer.'
+        ),
+    )
+
+    author = models.ForeignKey(
+        'tenants.TenantMembership',
+        on_delete=models.PROTECT,
+        related_name='treatment_records_authored',
+    )
+    author_was_clinical = models.BooleanField(
+        default=False,
+        help_text=(
+            "Whether the author held a clinical job title at signing. "
+            "Snapshot — does NOT update if the provider changes job "
+            "title later. Used as the legal-status anchor on the record."
+        ),
+    )
+
+    signed_at = models.DateTimeField(
+        auto_now_add=True,
+        db_index=True,
+        help_text='Set on creation; never updated.',
+    )
+
+    # Addendum chain — same shape as ChartNote.parent_note. An
+    # addendum points at the original locked record; the original's
+    # parent_note is null. Only one level of nesting.
+    parent_record = models.ForeignKey(
+        'self',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='addenda',
+        help_text=(
+            'When set, this row is an addendum to another (locked) '
+            'record. Top-level records have parent_record=NULL. Only '
+            'one level of nesting allowed.'
+        ),
+    )
+
+    # Void state — same posture as ChartNote.
+    is_voided = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            'True when an owner/manager has invalidated this record. '
+            'Voided records are excluded from clinical reads by '
+            'default and rendered struck-through; the row survives.'
+        ),
+    )
+    voided_at = models.DateTimeField(null=True, blank=True)
+    voided_by = models.ForeignKey(
+        'tenants.TenantMembership',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='voided_treatment_records',
+    )
+    voided_reason = models.CharField(
+        max_length=500,
+        blank=True,
+        default='',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-signed_at']
+        indexes = [
+            # Customer profile — Treatment Records tab loads in
+            # signed_at desc per customer.
+            models.Index(fields=['tenant', 'customer', '-signed_at']),
+            # Author audit / compliance.
+            models.Index(fields=['tenant', 'author', '-signed_at']),
+            # Per-appointment lookup (provider opens a record from
+            # the appointment popover).
+            models.Index(fields=['tenant', 'appointment', '-signed_at']),
+            # Addendum threading.
+            models.Index(fields=['tenant', 'parent_record', 'signed_at']),
+        ]
+
+    def __str__(self):
+        when = timezone.localtime(self.signed_at).strftime('%Y-%m-%d %H:%M')
+        return f'{self.customer.full_name} · {self.template.name} · {when}'
+
+    # Reuse ChartNote's edit-window concept — same constant.
+    @property
+    def edit_window_ends_at(self) -> dt.datetime:
+        return self.signed_at + dt.timedelta(minutes=EDIT_WINDOW_MINUTES)
+
+    @property
+    def is_locked(self) -> bool:
+        return timezone.now() >= self.edit_window_ends_at
+
+    def can_be_edited_by(self, membership) -> bool:
+        if self.is_locked:
+            return False
+        if membership is None:
+            return False
+        return membership.pk == self.author_id

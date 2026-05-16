@@ -34,7 +34,13 @@ from apps.tenants.models import (
 )
 from apps.tenants.services import create_tenant_with_defaults
 
-from .models import EDIT_WINDOW_MINUTES, ChartNote
+from .models import (
+    EDIT_WINDOW_MINUTES,
+    ChartNote,
+    ServiceTreatmentTemplateAssignment,
+    TreatmentRecord,
+    TreatmentRecordTemplate,
+)
 
 User = get_user_model()
 
@@ -745,3 +751,297 @@ class ChartNoteVoidTests(TestCase):
         )
         # Body itself MUST NOT appear (PHI hygiene).
         self.assertNotIn('Wrong-patient note', str(log.metadata))
+
+
+# ── Treatment record templates + records ──────────────────────────
+
+
+from apps.services.models import Service, ServiceCategory
+
+
+def _make_service(tenant, *, name='HydraFacial', price_cents=15000):
+    cat, _ = ServiceCategory.objects.get_or_create(tenant=tenant, name='Default')
+    return Service.objects.create(
+        tenant=tenant, category=cat, name=name,
+        duration_minutes=30, price_cents=price_cents,
+        service_type=Service.ServiceType.REGULAR,
+    )
+
+
+def _valid_schema():
+    return {
+        'fields': [
+            {'id': 'units', 'type': 'number', 'label': 'Units used', 'required': True},
+            {'id': 'lot', 'type': 'short_text', 'label': 'Lot #'},
+            {'id': 'sites', 'type': 'long_text', 'label': 'Injection sites'},
+        ],
+    }
+
+
+class TreatmentRecordTemplateTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('emr-tpl')
+        cls.other_tenant, _ = _make_tenant('emr-tpl-other')
+        cls.service = _make_service(cls.tenant)
+
+    def setUp(self):
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def test_owner_can_create_template(self):
+        response = self.client.post(
+            reverse('treatment-record-template-list'),
+            data={
+                'name': 'Botox treatment record',
+                'schema': _valid_schema(),
+                'set_service_ids': [self.service.id],
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(
+            response.data['version'], 1,
+        )
+        self.assertEqual(response.data['service_ids'], [self.service.id])
+
+    def test_schema_must_have_fields_array(self):
+        response = self.client.post(
+            reverse('treatment-record-template-list'),
+            data={'name': 'Bad', 'schema': {'no_fields': True}},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_schema_field_id_must_match_pattern(self):
+        bad_schema = {'fields': [{'id': 'has spaces', 'type': 'short_text', 'label': 'X'}]}
+        response = self.client.post(
+            reverse('treatment-record-template-list'),
+            data={'name': 'Bad', 'schema': bad_schema},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_choice_field_requires_two_options(self):
+        bad_schema = {
+            'fields': [
+                {
+                    'id': 'severity',
+                    'type': 'choice_single',
+                    'label': 'Severity',
+                    'options': [{'value': 'low', 'label': 'Low'}],
+                },
+            ],
+        }
+        response = self.client.post(
+            reverse('treatment-record-template-list'),
+            data={'name': 'Bad choices', 'schema': bad_schema},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_version_bumps_on_schema_change(self):
+        response = self.client.post(
+            reverse('treatment-record-template-list'),
+            data={'name': 'V1', 'schema': _valid_schema()},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        tpl_id = response.data['id']
+        # Edit only `name` — version should NOT bump.
+        update = self.client.patch(
+            reverse('treatment-record-template-detail', kwargs={'pk': tpl_id}),
+            data={'name': 'V1-renamed'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(update.data['version'], 1)
+        # Edit `schema` — version SHOULD bump.
+        new_schema = _valid_schema()
+        new_schema['fields'].append({
+            'id': 'photos', 'type': 'long_text', 'label': 'Photo notes',
+        })
+        update2 = self.client.patch(
+            reverse('treatment-record-template-detail', kwargs={'pk': tpl_id}),
+            data={'schema': new_schema},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(update2.data['version'], 2)
+
+    def test_service_filter_returns_assigned_templates(self):
+        TreatmentRecordTemplate.objects.create(
+            tenant=self.tenant, name='Other (no service)',
+            schema=_valid_schema(),
+        )
+        assigned = TreatmentRecordTemplate.objects.create(
+            tenant=self.tenant, name='Assigned',
+            schema=_valid_schema(),
+        )
+        ServiceTreatmentTemplateAssignment.objects.create(
+            tenant=self.tenant, template=assigned, service=self.service,
+        )
+        response = self.client.get(
+            reverse('treatment-record-template-list'),
+            data={'service': self.service.id},
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        data = (
+            response.data.get('results', response.data)
+            if isinstance(response.data, dict)
+            else response.data
+        )
+        names = [row['name'] for row in data]
+        self.assertEqual(names, ['Assigned'])
+
+    def test_front_desk_can_read_but_not_write(self):
+        _, fd_membership = _make_front_desk(self.tenant)
+        fd_client = APIClient()
+        fd_client.force_login(fd_membership.user)
+
+        read = fd_client.get(
+            reverse('treatment-record-template-list'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(read.status_code, 200)
+
+        write = fd_client.post(
+            reverse('treatment-record-template-list'),
+            data={'name': 'Should fail', 'schema': _valid_schema()},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(write.status_code, 403)
+
+
+class TreatmentRecordSubmissionTests(TestCase):
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('emr-rec')
+        cls.provider = _make_provider(cls.tenant)
+        cls.service = _make_service(cls.tenant)
+        cls.customer = _make_customer(cls.tenant)
+        cls.template = TreatmentRecordTemplate.objects.create(
+            tenant=cls.tenant, name='Botox', schema=_valid_schema(), version=1,
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        self.client.force_login(self.provider.user)
+
+    def test_provider_signs_record(self):
+        response = self.client.post(
+            reverse('treatment-record-list'),
+            data={
+                'customer_id': self.customer.id,
+                'template_id': self.template.id,
+                'answers': {'units': 20, 'lot': 'LOT-Z9', 'sites': 'glabella, forehead'},
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        record_obj = TreatmentRecord.objects.get(pk=response.data['id'])
+        self.assertEqual(record_obj.author, self.provider)
+        self.assertTrue(record_obj.author_was_clinical)
+        self.assertEqual(record_obj.template_version_at_signing, 1)
+        # schema_snapshot frozen at signing time.
+        self.assertEqual(record_obj.schema_snapshot, _valid_schema())
+
+    def test_within_window_edit_allowed_by_author(self):
+        response = self.client.post(
+            reverse('treatment-record-list'),
+            data={
+                'customer_id': self.customer.id,
+                'template_id': self.template.id,
+                'answers': {'units': 10},
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        rec_id = response.data['id']
+        edit = self.client.patch(
+            reverse('treatment-record-detail', kwargs={'pk': rec_id}),
+            data={'answers': {'units': 12, 'lot': 'NEW-LOT'}},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(edit.status_code, 200, edit.data)
+        self.assertEqual(edit.data['answers']['units'], 12)
+
+    def test_locked_record_rejects_edit(self):
+        # Force the record to look locked by back-dating signed_at
+        # past EDIT_WINDOW_MINUTES.
+        from datetime import timedelta
+        from apps.charts.models import EDIT_WINDOW_MINUTES
+
+        rec = TreatmentRecord.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            template=self.template, template_version_at_signing=1,
+            schema_snapshot=_valid_schema(), answers={'units': 10},
+            author=self.provider, author_was_clinical=True,
+        )
+        TreatmentRecord.objects.filter(pk=rec.pk).update(
+            signed_at=djtz.now() - timedelta(minutes=EDIT_WINDOW_MINUTES + 1),
+        )
+        edit = self.client.patch(
+            reverse('treatment-record-detail', kwargs={'pk': rec.pk}),
+            data={'answers': {'units': 99}},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(edit.status_code, 403)
+
+    def test_addendum_creates_child_record(self):
+        from datetime import timedelta
+        from apps.charts.models import EDIT_WINDOW_MINUTES
+
+        parent = TreatmentRecord.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            template=self.template, template_version_at_signing=1,
+            schema_snapshot=_valid_schema(), answers={'units': 10},
+            author=self.provider, author_was_clinical=True,
+        )
+        # Lock the parent.
+        TreatmentRecord.objects.filter(pk=parent.pk).update(
+            signed_at=djtz.now() - timedelta(minutes=EDIT_WINDOW_MINUTES + 1),
+        )
+        response = self.client.post(
+            reverse('treatment-record-addendum', kwargs={'pk': parent.pk}),
+            data={'answers': {'units': 12, 'lot': 'corrected'}},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 201, response.data)
+        addendum = TreatmentRecord.objects.get(pk=response.data['id'])
+        self.assertEqual(addendum.parent_record, parent)
+
+    def test_owner_voids_locked_record(self):
+        from datetime import timedelta
+        from apps.charts.models import EDIT_WINDOW_MINUTES
+
+        rec = TreatmentRecord.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            template=self.template, template_version_at_signing=1,
+            schema_snapshot=_valid_schema(), answers={'units': 10},
+            author=self.provider, author_was_clinical=True,
+        )
+        TreatmentRecord.objects.filter(pk=rec.pk).update(
+            signed_at=djtz.now() - timedelta(minutes=EDIT_WINDOW_MINUTES + 1),
+        )
+        owner_client = APIClient()
+        owner_client.force_login(self.owner)
+        response = owner_client.post(
+            reverse('treatment-record-void', kwargs={'pk': rec.pk}),
+            data={'reason': 'Wrong patient.'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200, response.data)
+        rec.refresh_from_db()
+        self.assertTrue(rec.is_voided)
+        self.assertEqual(rec.voided_reason, 'Wrong patient.')
+
+    def test_destroy_returns_405(self):
+        rec = TreatmentRecord.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            template=self.template, template_version_at_signing=1,
+            schema_snapshot=_valid_schema(), answers={},
+            author=self.provider, author_was_clinical=True,
+        )
+        response = self.client.delete(
+            reverse('treatment-record-detail', kwargs={'pk': rec.pk}),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 405)
