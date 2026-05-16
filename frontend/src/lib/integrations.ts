@@ -55,11 +55,22 @@ export function useIntegrations() {
   });
 }
 
-/** Begin the OAuth flow for a provider. Currently 501 with
- *  `code='oauth_not_ready'` until Session 2 lands the real Meta
- *  flow; the page surfaces the backend's `detail` message. */
+/** Begin the OAuth flow for a provider. When ready, returns
+ *  `{ authorize_url }` and the page redirects to it. When the
+ *  backend has no credentials yet, returns 501 with
+ *  `code='oauth_not_ready'` for the page to render the "awaiting
+ *  setup" toast. */
+export interface ConnectBeginResponse {
+  authorize_url?: string;
+  state?: string;
+  connection_id?: number;
+  // Legacy `url` kept for backward compatibility with future providers
+  // that might return that shape; redirect logic prefers authorize_url.
+  url?: string;
+}
+
 export function useConnectIntegration() {
-  return useMutation<{ url?: string }, ApiError, { provider: IntegrationProviderKey }>({
+  return useMutation<ConnectBeginResponse, ApiError, { provider: IntegrationProviderKey }>({
     mutationFn: ({ provider }) =>
       api.post(`/api/integrations/${provider}/connect/begin/`, {}),
   });

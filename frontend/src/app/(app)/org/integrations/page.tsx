@@ -95,10 +95,18 @@ function ProviderCard({
       { provider: provider.key },
       {
         onSuccess: (data) => {
-          if (data.url) {
-            window.location.href = data.url;
+          // Backend returns `authorize_url` for Meta; future providers
+          // may return `url`. Either triggers a full-page redirect to
+          // the provider's consent screen. If neither is set the
+          // backend gave us nothing actionable — show a fallback.
+          const target = data.authorize_url ?? data.url;
+          if (target) {
+            window.location.href = target;
           } else {
-            toast.success('Connect flow launched.');
+            toast.message(
+              "Connection started, but the backend didn't return a "
+              + 'redirect URL. Check the integrations log.',
+            );
           }
         },
         onError: (err) => {

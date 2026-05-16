@@ -374,7 +374,19 @@ class OAuthConnectBeginTests(TestCase):
         url = reverse('integrations-connect-begin', args=['meta_instagram'])
         response = self.client_.post(url, HTTP_X_TENANT_SLUG=self.tenant.slug)
         self.assertEqual(response.status_code, status.HTTP_200_OK)
-        self.assertIn('authorize_url', response.data)
+        # FRONTEND CONTRACT — these exact field names are consumed by
+        # `frontend/src/lib/integrations.ts:ConnectBeginResponse` and the
+        # connect-button redirect logic in
+        # `frontend/src/app/(app)/org/integrations/page.tsx:handleConnect`.
+        # If you rename a key here, grep both files first and update the
+        # consumer in the same commit. A previous incident (2026-05-16)
+        # shipped a renamed key without updating the frontend; the OAuth
+        # flow completed server-side but the browser never redirected,
+        # showing only a "Connect flow launched" toast.
+        self.assertEqual(
+            set(response.data.keys()),
+            {'authorize_url', 'state', 'connection_id'},
+        )
         self.assertIn('state', response.data)
         # State is stored on the session.
         session = self.client_.session
