@@ -57,11 +57,21 @@ STATE_TTL_SECONDS = 600
 # `providers.py` — the duplication is intentional so the Meta App
 # Review submission and the runtime requested scopes can diverge
 # during a transitional period. If they drift, audit + reconcile.
+# Scope names below are the ones tied to the **Facebook Login for
+# Business** flow (the one we use — IG Business account linked to a
+# FB Page, page access token drives outbound). Meta also offers a
+# newer "Instagram Login with Business" flow whose scopes are prefixed
+# `instagram_business_*`; those are NOT valid with FB Login and Meta
+# rejects the OAuth request with "Invalid Scopes" if mixed in.
+#
+# Reference: developers.facebook.com/docs/permissions
 SCOPES_INSTAGRAM = (
-    'instagram_business_basic',
-    'instagram_business_manage_messages',
-    'pages_show_list',
-    'pages_manage_metadata',
+    'instagram_basic',              # read the IG Business account metadata
+    'instagram_manage_messages',    # send + receive DMs
+    'pages_show_list',              # list the FB Pages the user manages
+    'pages_messaging',              # required to subscribe to the messages webhook
+    'pages_manage_metadata',        # subscribe the Page to webhook events
+    'business_management',          # required when the Page is owned by a Business Manager
 )
 
 # Webhook fields we subscribe a Page to. `messages` covers inbound DMs;

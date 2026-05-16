@@ -67,8 +67,8 @@ Add (in this exact order):
      - **Login with the JavaScript SDK:** No (we use server-side flow)
      - Click **Save changes**.
 2. **Instagram** → pick **Instagram Business**
-   - This is the product that exposes `instagram_business_basic` and
-     `instagram_business_manage_messages` scopes.
+   - This is the product that exposes `instagram_basic` and
+     `instagram_manage_messages` scopes.
 3. **Messenger** (yes, even though we only want IG)
    - IG Business DMs ride on Messenger's webhook plumbing. You don't
      have to configure anything here; just enabling it is enough.
@@ -226,7 +226,7 @@ var didn't take — check the ECS service logs.
 ## Step 7 — Submit for Business Verification
 
 Meta requires Business Verification before granting access to the
-`instagram_business_manage_messages` scope.
+`instagram_manage_messages` scope.
 
 1. App Dashboard → left sidebar → **App Review** → **Business
    Verification**.
@@ -250,8 +250,8 @@ Once Business Verification is approved, request the scopes.
 
 1. App Dashboard → **App Review** → **Permissions and Features**.
 2. Search for each of these and click **Request** next to it:
-   - `instagram_business_basic`
-   - `instagram_business_manage_messages`
+   - `instagram_basic`
+   - `instagram_manage_messages`
    - `pages_show_list`
    - `pages_manage_metadata`
 3. For each scope, Meta will ask:

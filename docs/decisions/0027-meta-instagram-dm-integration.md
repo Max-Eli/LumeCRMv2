@@ -93,8 +93,8 @@ The flow:
                            client_id={META_APP_ID}
                            &redirect_uri={CALLBACK_URL}
                            &state={STATE}
-                           &scope=instagram_business_basic,
-                                  instagram_business_manage_messages,
+                           &scope=instagram_basic,
+                                  instagram_manage_messages,
                                   pages_show_list,
                                   pages_manage_metadata"
        }
@@ -189,7 +189,7 @@ Inbound message payload includes the sender's IG-scoped User ID
 (`sender.id`) and, on first message, can be supplemented with the
 sender's IG username via `GET /{ig-scoped-user-id}?fields=username`
 (scoped IDs don't expose usernames by default; the username lookup
-is gated by scope `instagram_business_basic`).
+is gated by scope `instagram_basic`).
 
 Matching priority:
 
@@ -405,7 +405,7 @@ boundary, same HIPAA defensibility.
 
 ### Acknowledged
 
-- Meta App Review for `instagram_business_manage_messages` typically
+- Meta App Review for `instagram_manage_messages` typically
   takes 1-3 weeks. Until approved, only the Meta App admins (us)
   can authenticate against the integration — production tenants
   see "connect" but the OAuth flow fails with Meta's "this app

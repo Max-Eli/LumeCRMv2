@@ -204,8 +204,8 @@ In the production CRM (`https://<tenant>.xn--lumcrm-5ua.com`):
 4. Click **Connect**. You'll be redirected to facebook.com:
    - You'll see Lumè CRM in the consent screen.
    - **Pick the Facebook Page** linked to your IG Business Account.
-   - Approve the requested scopes (`instagram_business_basic`,
-     `instagram_business_manage_messages`, `pages_show_list`,
+   - Approve the requested scopes (`instagram_basic`,
+     `instagram_manage_messages`, `pages_show_list`,
      `pages_manage_metadata`).
 5. Meta redirects you back to `https://api.xn--lumcrm-5ua.com/api/integrations/meta/oauth/callback/?code=...&state=...`
    which exchanges the code, subscribes the Page to messaging

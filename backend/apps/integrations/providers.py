@@ -71,10 +71,17 @@ PROVIDERS: dict[str, ProviderConfig] = {
             'Book appointments directly from a conversation',
             'Story replies + Mentions land in the same inbox',
         ],
+        # Facebook-Login-for-Business scope names (see meta.py
+        # SCOPES_INSTAGRAM for the full list + why). The `business_*`
+        # prefixed names belong to a different OAuth flow and Meta
+        # rejects them with "Invalid Scopes" when mixed in here.
         scopes=[
-            'instagram_business_basic',
-            'instagram_business_manage_messages',
+            'instagram_basic',
+            'instagram_manage_messages',
             'pages_show_list',
+            'pages_messaging',
+            'pages_manage_metadata',
+            'business_management',
         ],
         oauth_ready=False,
     ),

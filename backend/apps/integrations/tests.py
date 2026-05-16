@@ -394,8 +394,13 @@ class OAuthConnectBeginTests(TestCase):
         self.assertEqual(session.get('meta_oauth_provider'), 'meta_instagram')
         # Authorize URL carries the right query params.
         self.assertIn('client_id=test-app-id', response.data['authorize_url'])
+        # `instagram_manage_messages` is the Facebook-Login-for-Business
+        # scope (not the newer `instagram_business_manage_messages`
+        # which is for the separate Instagram Login flow Meta added in
+        # 2024). Renaming back to the `_business_` form here would mean
+        # Meta rejects the OAuth with "Invalid Scopes".
         self.assertIn(
-            'instagram_business_manage_messages',
+            'instagram_manage_messages',
             response.data['authorize_url'],
         )
         self.assertIn(f'state={response.data["state"]}', response.data['authorize_url'])
@@ -534,7 +539,7 @@ class OAuthCallbackTests(TestCase):
             return _Resp({'username': 'acmemedspa'})
         if 'me/permissions' in url:
             return _Resp({'data': [
-                {'permission': 'instagram_business_manage_messages', 'status': 'granted'},
+                {'permission': 'instagram_manage_messages', 'status': 'granted'},
                 {'permission': 'pages_show_list', 'status': 'granted'},
             ]})
         return _Resp({})
