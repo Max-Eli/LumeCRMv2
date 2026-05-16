@@ -6,12 +6,14 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Multi-location management',
   description:
-    'One brand, multiple locations, one bill. Per-location calendars, pricing, staff schedules. Org-level rollup dashboard. Single sign-on across sites.',
+    'Per-location calendars, pricing, staff schedules, and reports. An org-level dashboard shows every site alongside cross-location revenue. Bills per location, not per seat.',
 };
 
 export default function MultiLocationFeaturePage() {
   return (
     <FeaturePage
+      path="/features/multi-location"
+      breadcrumbLabel="Multi-location management"
       eyebrow="Multi-location"
       headline={
         <>
@@ -19,7 +21,7 @@ export default function MultiLocationFeaturePage() {
           <span className="accent-italic">one bill.</span>
         </>
       }
-      standfirst="Per-location calendars, pricing, staff schedules, and reports. Org-level dashboard rolls up revenue, appointments, and utilization across every site. The location switcher only appears when there's more than one to switch between."
+      standfirst="Per-location calendars, pricing, staff schedules, and reports. An org-level dashboard shows every site alongside cross-location revenue. The bill scales by location, not by seat."
       heroMock={<LocationsMock />}
       heroMockUrl="/org/dashboard"
       highlights={[
@@ -34,16 +36,14 @@ export default function MultiLocationFeaturePage() {
           body: (
             <>
               <p>
-                Every location has its own calendar, its own staff
-                schedule, its own service menu pricing, and its own
-                business hours. The Manhattan front desk doesn't see
-                Brooklyn's appointments unless they explicitly switch.
+                Every site has its own calendar, staff schedule, service
+                pricing, and business hours. The Manhattan front desk
+                doesn't see Brooklyn unless they switch.
               </p>
               <p>
-                Providers can be assigned to multiple locations with
-                different schedules at each. Sarah works 9-5 Monday
-                through Friday at Manhattan and Saturday only at
-                Brooklyn — Lumè handles both.
+                Providers can work different schedules at different
+                locations. Sarah works 9-to-5 weekdays in Manhattan and
+                Saturdays in Brooklyn — Lumè handles both.
               </p>
             </>
           ),
@@ -60,23 +60,23 @@ export default function MultiLocationFeaturePage() {
           body: (
             <>
               <p>
-                The org dashboard shows revenue, appointments, and
-                utilization across every location. Compare sites,
-                identify the top-performing one, see which is
-                underbooked.
+                The org dashboard shows every site at a glance, with
+                cross-location revenue surfaced inline. Compare
+                locations side-by-side; spot the top performer and the
+                underbooked one.
               </p>
               <p>
-                Every report supports a per-location filter, plus an
-                "all locations" rollup option. Same data, scoped to
-                whatever question you're asking.
+                Per-location filtering runs across the reports that
+                support it — revenue, appointments, utilization —
+                scoped to a single site or rolled up across the org.
               </p>
             </>
           ),
           bullets: [
-            'Cross-location revenue + appointment rollup',
-            'Per-location performance comparison',
-            'All reports filterable by location',
-            'Org-level vs location-level dashboards',
+            'Cross-location revenue surfaced in the org dashboard',
+            'Per-location filters on key reports',
+            'Multi-location data model (per-site pricing, staff, hours)',
+            'Org-level vs location-level views',
           ],
           mock: <CalendarMock />,
           mockUrl: '/calendar?location=brooklyn',
@@ -87,15 +87,12 @@ export default function MultiLocationFeaturePage() {
           body: (
             <>
               <p>
-                Lumè bills per location, not per seat. Add a front-desk
-                hire without re-negotiating. Hire a bookkeeper without
-                an upcharge. The price stays predictable as the team
-                grows.
+                Lumè bills per location, not per seat. Hire a bookkeeper
+                or a second receptionist without re-negotiating.
               </p>
               <p>
-                Location count is the only variable that changes the
-                bill — open a new site, the new site gets added to the
-                next invoice. Close one, it comes off.
+                Open a new site, it gets added to the next invoice.
+                Close one, it comes off. No contract amendment.
               </p>
             </>
           ),

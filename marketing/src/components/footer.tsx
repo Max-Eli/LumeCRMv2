@@ -33,6 +33,7 @@ const FOOTER_GROUPS = [
     links: [
       { href: '/medspas', label: 'For medspas' },
       { href: '/security', label: 'Security' },
+      { href: '/blog', label: 'Journal' },
       { href: '/about', label: 'About' },
       { href: '/demo', label: 'Request a demo' },
     ],

@@ -6,12 +6,14 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Consent forms & e-signature',
   description:
-    'E-signed consent forms for medspas: schema-versioned templates, tokenized fill links, snapshot-on-signing, and a full audit trail with IP and user-agent.',
+    'Schema-versioned templates for intake and per-treatment consent. Tokenized fill links. IP, user-agent, and timestamp captured on every signature.',
 };
 
 export default function FormsFeaturePage() {
   return (
     <FeaturePage
+      path="/features/forms"
+      breadcrumbLabel="Consent forms & e-signature"
       eyebrow="Consent forms"
       headline={
         <>
@@ -19,7 +21,7 @@ export default function FormsFeaturePage() {
           <span className="accent-italic">under audit.</span>
         </>
       }
-      standfirst="Schema-versioned templates for intake and per-treatment consent. Sent as tokenized links, signed on a tablet, snapshotted at the moment of signing. Audit trail captures IP, user-agent, and timestamp on every signature — the kind of record a medical board or HIPAA reviewer expects."
+      standfirst="Schema-versioned templates for intake and per-treatment consent. Tokenized fill links. IP, user-agent, and timestamp captured on every signature."
       heroMock={<FormMock />}
       heroMockUrl="/sign/9j4k…"
       highlights={[
@@ -34,16 +36,13 @@ export default function FormsFeaturePage() {
           body: (
             <>
               <p>
-                Lumè ships with a library of starter templates: general
-                intake, Botox consent, filler consent, laser consent,
-                photo release. Edit any starter, save it as your own
-                version, and the system auto-bumps the version number on
-                schema changes.
+                Starter templates ship for intake, Botox, filler, laser,
+                and photo release. Edit any starter; the system
+                auto-bumps the version on schema changes.
               </p>
               <p>
-                Per-service consent forms auto-assign when an appointment
-                with that service is booked. Lifetime intake forms
-                assign once, on first visit.
+                Per-service consent auto-assigns on booking. Lifetime
+                intake assigns once, on first visit.
               </p>
             </>
           ),
@@ -60,16 +59,15 @@ export default function FormsFeaturePage() {
           body: (
             <>
               <p>
-                The front desk sends the form via SMS or hands the client
-                an iPad. The fill page works without a login — a
-                256-bit URL token is the credential. The client fills
-                the form, signs with their finger or a stylus, and the
-                signed copy lands in the chart.
+                Send the form via SMS or hand the client an iPad. No
+                login required — a 256-bit URL token is the credential.
+                The client signs with a finger or stylus and the signed
+                copy lands in the chart.
               </p>
               <p>
-                Tokens are single-use for signing. Once signed, the form
-                is immutable; reopening it returns the signed view, not
-                the editable view.
+                Tokens are single-use. Once signed, the form is
+                immutable; reopening it returns the signed view, not the
+                editable one.
               </p>
             </>
           ),
@@ -88,15 +86,14 @@ export default function FormsFeaturePage() {
           body: (
             <>
               <p>
-                When a form is signed, Lumè captures: the IP address, the
-                user-agent string, the timestamp, the signature image,
-                and a snapshot of the template at the moment of signing.
-                That snapshot means an evolving template never rewrites
-                a signed past — what the client signed is what stays.
+                Lumè captures the IP, user-agent, timestamp, signature
+                image, and a snapshot of the template at signing. So
+                when you revise next month's wording, last month's
+                signed forms still reference last month's text.
               </p>
               <p>
                 Voids are a separate transition with a required reason.
-                Voided forms remain in the audit log; they don't get
+                Voided forms stay in the audit log; they don't get
                 deleted.
               </p>
             </>

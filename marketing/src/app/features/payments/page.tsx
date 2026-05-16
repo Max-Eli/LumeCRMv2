@@ -6,12 +6,14 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Payments & invoicing',
   description:
-    'Invoicing built for end-of-day reconciliation: cash, check, card-on-terminal, owner-only sixty-day reopen, and zero platform fee on card volume.',
+    'Card, cash, and check recorded with payment reference. Integrated card processing inside the appointment flow. Daily close-out matches the drawer. Sixty-day reopen window.',
 };
 
 export default function PaymentsFeaturePage() {
   return (
     <FeaturePage
+      path="/features/payments"
+      breadcrumbLabel="Payments & invoicing"
       eyebrow="Payments"
       headline={
         <>
@@ -19,13 +21,13 @@ export default function PaymentsFeaturePage() {
           <span className="accent-italic">end-of-day reconciliation.</span>
         </>
       }
-      standfirst="Cash, check, card-on-terminal, and other methods recorded with payment reference. Owner-only sixty-day reopen window. Daily close-out matches the cash drawer at end of shift. No platform fee on card volume — your processor stays your processor."
+      standfirst="Card, cash, and check recorded with payment reference. Integrated card processing inside the appointment flow — no separate terminal to reconcile against. Daily close-out matches the drawer. Sixty-day reopen window."
       heroMock={<InvoiceMock />}
       heroMockUrl="/appointments/4218/invoice"
       highlights={[
-        { value: '0%', label: 'Platform fee on card volume.' },
+        { value: 'Integrated', label: 'Card processing inside the appointment flow.' },
         { value: '60 days', label: 'Owner-only reopen window for closed invoices.' },
-        { value: '4 methods', label: 'Cash, check, card-on-terminal, other.' },
+        { value: '4 methods', label: 'Card, cash, check, and other tracked together.' },
       ]}
       details={[
         {
@@ -34,16 +36,14 @@ export default function PaymentsFeaturePage() {
           body: (
             <>
               <p>
-                Every appointment gets an invoice the moment it's booked.
-                Service line items snapshot the price at booking time so
-                future price changes don't retroactively alter quoted
-                appointments. The front desk takes payment when the
-                client checks out; the appointment moves to "completed"
-                only after the invoice closes.
+                Every appointment opens an invoice on booking. Service
+                prices snapshot at booking, so future price changes
+                don't retroactively alter quoted appointments. The
+                appointment moves to "completed" only when the invoice
+                closes.
               </p>
               <p>
-                Tax calculates per line item using the service's
-                configured rate. Multi-state spas can configure different
+                Tax calculates per line item; multi-state spas configure
                 rates per location.
               </p>
             </>
@@ -61,24 +61,24 @@ export default function PaymentsFeaturePage() {
           body: (
             <>
               <p>
-                The daily close-out report breaks gross down by payment
-                method — cash, check, card-on-terminal, other — for any
-                date range. Front-desk reconciles the cash drawer
-                against the cash column; the manager reconciles the
-                terminal against the card column.
+                Daily close-out breaks gross by method: card, cash,
+                check, other. The four totals reconcile against a
+                single ledger — not a CRM ledger plus a separate
+                terminal report.
               </p>
               <p>
-                No platform fee on card volume. Lumè doesn't process
-                payments — your existing terminal stays your terminal.
-                We record what you collected, not what we charged for it.
+                Card payments process through Lumè's licensed payment
+                partner inside the appointment flow. Specific rates
+                are quoted at contracting based on your card-present
+                versus card-not-present mix.
               </p>
             </>
           ),
           bullets: [
             'Per-payment-method daily close-out report',
             'CSV export for accounting',
-            'Card terminal stays separate (no markup)',
-            'Tip handling on a per-tenant toggle',
+            'Card processing through a licensed payment partner',
+            'PCI DSS-compliant payment partner',
           ],
           mock: <ReportsMock />,
           mockUrl: '/reports/financial/daily-close-out',
@@ -90,15 +90,14 @@ export default function PaymentsFeaturePage() {
             <>
               <p>
                 Owners and managers can reopen a closed invoice within
-                sixty days of close — useful for refunds, payment
-                method corrections, and legitimate disputes. The reopen
-                action records who, when, and why. Voiding an invoice
-                requires a written reason and never deletes the record.
+                sixty days. The reopen records who, when, and why.
+                Voiding requires a written reason and never deletes the
+                record.
               </p>
               <p>
-                Reopens are gated by a dedicated permission that's
-                locked against per-user override — separation of duties
-                at the role level, not at the individual.
+                The reopen permission is locked at the role level — no
+                per-user overrides, no end-runs around separation of
+                duties.
               </p>
             </>
           ),

@@ -37,7 +37,7 @@ export default function DemoRequestPage() {
             <span className="accent-italic">configured for your spa.</span>
           </>
         }
-        standfirst="Tell us about your medspa. We'll set up a private 30-minute walkthrough with the product configured for your service menu, your providers, and your locations. We respond within one business day."
+        standfirst="Tell us about your medspa. We'll set up a 30-minute walkthrough configured on your service menu, your providers, your locations. One business day to a calendar invite."
       />
 
       <section>
@@ -62,7 +62,7 @@ export default function DemoRequestPage() {
                   <Step
                     n="03"
                     title="Walkthrough on your workflow"
-                    body="If you can share a sample export from your current platform, we configure the demo on your real services and providers."
+                    body="Share a sample export from your current platform and we'll configure the demo on your real services and providers."
                   />
                   <Step
                     n="04"
@@ -77,6 +77,33 @@ export default function DemoRequestPage() {
                 className="lg:col-span-8 space-y-8"
                 noValidate
               >
+                {/* Honeypot: bots that fill every field will fill this
+                    one. Real users never see it (off-screen + aria-hidden
+                    + tabindex -1 + autocomplete off). The server action
+                    silently drops submissions where this field has a
+                    value. See ./actions.ts for the check. */}
+                <div
+                  aria-hidden="true"
+                  style={{
+                    position: 'absolute',
+                    left: '-9999px',
+                    width: '1px',
+                    height: '1px',
+                    overflow: 'hidden',
+                  }}
+                >
+                  <label htmlFor="f-website">
+                    Leave this field blank
+                    <input
+                      id="f-website"
+                      name="website"
+                      type="text"
+                      tabIndex={-1}
+                      autoComplete="off"
+                    />
+                  </label>
+                </div>
+
                 <div className="grid gap-8 sm:grid-cols-2">
                   <Field
                     name="first_name"
@@ -285,8 +312,8 @@ function ThankYou() {
       </h2>
       <p className="mt-6 text-base leading-relaxed text-foreground/80">
         A real person reads every request. You'll hear back within one
-        business day with a calendar link and a few notes about how
-        we'd configure the walkthrough for your spa.
+        business day with a calendar link and a few notes on how we'd
+        configure the demo for your spa.
       </p>
       <p className="mt-8 text-sm text-muted-foreground">
         — The Lumè team

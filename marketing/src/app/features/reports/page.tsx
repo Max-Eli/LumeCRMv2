@@ -6,12 +6,14 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Reporting',
   description:
-    'Twenty-two pre-built reports across financial, staff, guests, and operations. Live data, CSV export with HIPAA confirmation, audit-logged on every run.',
+    'Daily close-out, AR aging, revenue by service / provider / location, schedule utilization, no-show rate, booking lead time. Live data, CSV export, audit-logged.',
 };
 
 export default function ReportsFeaturePage() {
   return (
     <FeaturePage
+      path="/features/reports"
+      breadcrumbLabel="Reporting"
       eyebrow="Reports"
       headline={
         <>
@@ -19,7 +21,7 @@ export default function ReportsFeaturePage() {
           <span className="accent-italic">No spreadsheet wrestling.</span>
         </>
       }
-      standfirst="Daily close-out, AR aging, revenue by service / provider / location, schedule utilization, no-show rates, top spenders, booking lead time. All running against live data; CSV export with HIPAA confirmation gate; audit-logged on every run."
+      standfirst="Daily close-out, AR aging, revenue by service / provider / location, schedule utilization, no-show rate, top spenders, booking lead time. Live data. CSV export. Audit-logged on every run."
       heroMock={<ReportsMock />}
       heroMockUrl="/reports/financial/sales-by-date-range"
       highlights={[
@@ -63,16 +65,13 @@ export default function ReportsFeaturePage() {
           body: (
             <>
               <p>
-                Financial reports require the financial-reports
-                permission (owner, manager, bookkeeper by default).
+                Financial reports gate to owner, manager, and bookkeeper.
                 Guest reports gate to owner, manager, and marketing.
-                Operations reports are open to the whole staff,
-                including front desk.
+                Operations is open to the whole staff.
               </p>
               <p>
-                Per-category gating means you can hire a bookkeeper and
-                give them the financials without exposing the medical
-                history of every patient on the chart side.
+                Hire a bookkeeper. They see revenue without seeing the
+                medical history attached to it.
               </p>
             </>
           ),
@@ -92,15 +91,14 @@ export default function ReportsFeaturePage() {
             <>
               <p>
                 Every report exports to CSV in one click. Server-side
-                streaming means a 100,000-row export doesn't lock up
-                the browser or the backend.
+                streaming handles 100k-row exports without locking up
+                the browser.
               </p>
               <p>
-                Reports that include per-customer data — top spenders,
-                inactive clients, AR aging — fire a PHI confirmation
-                modal before the download. The confirmation is logged
-                in the audit trail with the operator's name. SOC 2
-                attestation evidence built in.
+                Reports with per-customer data — top spenders, inactive
+                clients, AR aging — fire a PHI confirmation modal
+                first. The confirmation is audit-logged with the
+                operator's name. SOC 2 evidence built in.
               </p>
             </>
           ),

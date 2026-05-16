@@ -1,12 +1,21 @@
 import { PageHero } from '@/components/page-hero';
+import { ProductFrame } from '@/components/product-frame';
+import { AuditLogMock } from '@/components/product-mocks';
 import { ScrollReveal } from '@/components/scroll-reveal';
 
 import type { Metadata } from 'next';
 
+const COMPLIANCE_MARKERS = [
+  { label: 'HIPAA', body: 'Compliant by architecture.' },
+  { label: 'BAA', body: 'Signed with every customer.' },
+  { label: 'SOC 2 Type II', body: 'Audit in progress.' },
+  { label: 'AWS', body: 'BAA-eligible infrastructure.' },
+];
+
 export const metadata: Metadata = {
   title: 'Security & HIPAA',
   description:
-    'How Lumè handles patient data: tenant isolation at the database, role-based permissions, append-only audit logging, and AWS infrastructure under a signed BAA.',
+    'Tenant isolation at the database. Role-based permissions resolved per request. Append-only audit logging on every PHI access. AWS infrastructure under a signed BAA.',
 };
 
 const COMMITMENTS = [
@@ -59,8 +68,25 @@ export default function SecurityPage() {
             <span className="accent-italic">architecture, not by checkbox.</span>
           </>
         }
-        standfirst="Lumè was designed from day one with HIPAA compliance baked into every layer: tenant isolation enforced at the database, role-based permissions resolved per request, append-only audit logging on every PHI access, and AWS infrastructure under a signed Business Associate Agreement."
+        standfirst="HIPAA compliance was a day-one design constraint, not an afterthought. Tenant data is isolated at the database. Permissions resolve per request. Every PHI read writes an audit entry. AWS sits under a signed BAA."
       />
+
+      {/* Compliance marker strip — four scannable labels for the
+          quick-scan reader. Type-driven, no icons. */}
+      <section className="border-b border-border bg-foreground/[0.02]">
+        <div className="mx-auto max-w-7xl px-6 lg:px-10 py-14 lg:py-16">
+          <ul className="grid gap-y-8 gap-x-12 sm:grid-cols-2 lg:grid-cols-4">
+            {COMPLIANCE_MARKERS.map((marker) => (
+              <li key={marker.label} className="border-l-2 border-accent/50 pl-5">
+                <p className="font-display text-2xl text-foreground sm:text-3xl">
+                  {marker.label}
+                </p>
+                <p className="mt-2 text-sm text-foreground/70">{marker.body}</p>
+              </li>
+            ))}
+          </ul>
+        </div>
+      </section>
 
       <section>
         <div className="mx-auto max-w-7xl px-6 lg:px-10 py-20 lg:py-28">
@@ -69,20 +95,19 @@ export default function SecurityPage() {
             <article className="lg:col-span-7">
               <ScrollReveal>
                 <p className="text-lg leading-[1.85] text-foreground/85">
-                  Most CRM platforms treat HIPAA compliance as a tier
-                  upgrade — a "secure" plan that costs 2x the regular
-                  plan and ships with a few extra features bolted on.
-                  That model creates a two-track product where the
-                  compliance posture is a marketing differentiator, not
-                  an architectural one.
+                  Most CRM platforms treat HIPAA as a tier upgrade. A
+                  "secure" plan at 2x the regular price, with a few
+                  extra features bolted on. That model creates a
+                  two-track product, where the compliance posture is a
+                  marketing line, not an architectural one.
                 </p>
                 <p className="mt-4 text-lg leading-[1.85] text-foreground/85">
                   Lumè doesn't have a "secure tier." Every customer is
-                  on the HIPAA-compliant architecture from day one
-                  because there's only one architecture. Tenant
-                  isolation, role-based permissions, audit logging, and
-                  PHI containment are foundational — built into the
-                  models and middleware, not patched on as an upsell.
+                  on the HIPAA-compliant architecture because there's
+                  only one architecture. Tenant isolation, role-based
+                  permissions, audit logging, and PHI containment are
+                  foundational. They're built into the models and the
+                  middleware, not patched on as an upsell.
                 </p>
               </ScrollReveal>
 
@@ -91,23 +116,23 @@ export default function SecurityPage() {
                   What "HIPAA-compliant" means here
                 </h2>
                 <p className="mt-4 text-base leading-[1.85] text-foreground/85">
-                  The product surface is built on a SOC 2-aligned spine:
-                  least privilege, traceability, change management,
-                  separation of duties. Production infrastructure runs
-                  on AWS services covered by a Business Associate
-                  Agreement. Postgres is KMS-encrypted at rest. Email
-                  goes through SES with the proper SPF / DKIM / DMARC
-                  posture. Backups are encrypted; key rotation is
-                  automated; access is logged.
+                  The product is built on a SOC 2-aligned spine: least
+                  privilege, traceability, change management,
+                  separation of duties. Production runs on AWS services
+                  covered by a Business Associate Agreement. Postgres
+                  is KMS-encrypted at rest. Email goes through SES with
+                  the right SPF, DKIM, and DMARC posture. Backups are
+                  encrypted, key rotation is automated, access is
+                  logged.
                 </p>
                 <p className="mt-4 text-base leading-[1.85] text-foreground/85">
                   The product also makes the hard choice consistently.
-                  Email containing PHI — a signed-consent copy, for
-                  example — sends only when an operator initiates the
-                  send, because automated PHI delivery would require
-                  per-customer authorization that most spas don't
-                  capture today. CSV exports of per-customer data fire
-                  a confirmation gate before the download. Every
+                  Email containing PHI (a signed-consent copy, for
+                  example) sends only when an operator initiates it,
+                  because automated PHI delivery would require
+                  per-customer authorization most spas don't capture
+                  today. CSV exports of per-customer data fire a
+                  confirmation gate before the download. Every
                   confirmation is logged.
                 </p>
               </ScrollReveal>
@@ -117,17 +142,17 @@ export default function SecurityPage() {
                   Production posture
                 </h2>
                 <p className="mt-4 text-base leading-[1.85] text-foreground/85">
-                  Lumè's production environment runs on AWS under a
-                  signed BAA. Postgres is encrypted at rest with KMS;
-                  backups are encrypted; key rotation is automated. SES
-                  handles email with DKIM, SPF, and DMARC configured.
-                  Audit log tables are append-only at the database
-                  trigger level — UPDATE and DELETE statements are
-                  rejected.
+                  Production runs on AWS under a signed BAA. Postgres
+                  encrypted at rest with KMS. Backups encrypted, key
+                  rotation automated. SES handles email with DKIM, SPF,
+                  and DMARC configured. Audit log tables are append-only
+                  at the database trigger level. UPDATE and DELETE
+                  statements are rejected.
                 </p>
                 <p className="mt-4 text-base leading-[1.85] text-foreground/85">
-                  SOC 2 Type II is in progress. We can share the in-progress
-                  audit scope and a list of mapped controls on request.
+                  SOC 2 Type II is in progress. We can share the
+                  in-progress audit scope and a list of mapped controls
+                  on request.
                 </p>
               </ScrollReveal>
             </article>
@@ -158,6 +183,38 @@ export default function SecurityPage() {
                 </ol>
               </div>
             </aside>
+          </div>
+        </div>
+      </section>
+
+      {/* Visual proof: the audit log surface, rendered. This is the
+          one HIPAA control most operators want to see "live" before
+          they trust the architecture claim. */}
+      <section className="border-t border-border bg-foreground/[0.02]">
+        <div className="mx-auto max-w-7xl px-6 lg:px-10 py-20 lg:py-28">
+          <div className="grid items-center gap-12 lg:grid-cols-12 lg:gap-16">
+            <ScrollReveal className="lg:col-span-5">
+              <p className="eyebrow text-foreground/60">The audit trail, in practice</p>
+              <h2 className="mt-4 font-serif text-3xl font-medium text-foreground sm:text-4xl">
+                Every PHI read, every state change, recorded.
+              </h2>
+              <p className="mt-5 text-base leading-relaxed text-foreground/75 sm:text-lg">
+                The audit log is append-only at the database trigger
+                level — UPDATE and DELETE statements on the audit
+                table are rejected. Owners and managers can query by
+                date, user, or resource. The log includes IP and
+                user-agent on every entry.
+              </p>
+              <p className="mt-3 text-sm leading-relaxed text-foreground/65">
+                Entries shown right are illustrative. The real
+                surface is identical.
+              </p>
+            </ScrollReveal>
+            <ScrollReveal delay={140} className="lg:col-span-7 lg:col-start-6">
+              <ProductFrame url="/audit?range=last_60_min">
+                <AuditLogMock />
+              </ProductFrame>
+            </ScrollReveal>
           </div>
         </div>
       </section>

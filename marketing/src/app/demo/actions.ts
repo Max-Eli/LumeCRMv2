@@ -86,6 +86,21 @@ export async function sendDemoRequest(
   _prev: DemoRequestState,
   formData: FormData,
 ): Promise<DemoRequestState> {
+  // Honeypot: a visually-hidden `website` field that real humans never
+  // see. Naive form-spam bots fill every input on the page, so if this
+  // field comes back with content, the submission is almost certainly
+  // a bot. We silently return success — don't error, because telling
+  // the bot it tripped invites it to retry with a smarter strategy.
+  // Real leads never see this field hit; bot leads never reach the
+  // inbox.
+  if (pull(formData, 'website')) {
+    console.warn('[sendDemoRequest] honeypot tripped — dropping silently.');
+    return {
+      status: 'success',
+      message: "Thanks — we'll be in touch.",
+    };
+  }
+
   const data: DemoRequestPayload = {
     first_name: pull(formData, 'first_name'),
     last_name: pull(formData, 'last_name'),

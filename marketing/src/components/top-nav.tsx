@@ -3,19 +3,22 @@
  *
  * Editorial / luxury approach: thin top rule (no shadow, no glass),
  * the brand mark on the left at restrained size, a small set of nav
- * links in the center-right, and a single CTA pair on the far right
- * (Sign in → CRM, Request demo). No mega-menu, no submenus. Nav links
- * are small caps + tracked; the eye reads them as section markers,
- * not buttons.
+ * links in the center-right, and the "Get a demo" CTA on the far
+ * right. No mega-menu, no submenus. Nav links are small caps +
+ * tracked; the eye reads them as section markers, not buttons.
  *
  * The mobile breakpoint hides the inline nav and surfaces a simple
  * "Menu" disclosure — done with the native `<details>` so we don't
  * pull a JS dependency in for a 5-link menu.
+ *
+ * No Sign-in link: Lumè is sales-led right now. Every customer goes
+ * through a demo and signed contract before a tenant subdomain is
+ * provisioned, so a public Sign-in button would mislead visitors and
+ * generate support load. When self-serve sign-up lands, restore the
+ * link pointing at `APP_URL` from `lib/utils`.
  */
 
 import Link from 'next/link';
-
-import { APP_URL } from '@/lib/utils';
 
 import { BrandMark } from './brand-mark';
 
@@ -24,6 +27,7 @@ const NAV_LINKS = [
   { href: '/medspas', label: 'For medspas' },
   { href: '/security', label: 'Security' },
   { href: '/pricing', label: 'Pricing' },
+  { href: '/blog', label: 'Journal' },
   { href: '/about', label: 'About' },
 ] as const;
 
@@ -49,17 +53,11 @@ export function TopNav() {
           </nav>
 
           <div className="hidden items-center gap-3 lg:flex">
-            <a
-              href={APP_URL}
-              className="eyebrow text-foreground/70 hover:text-foreground transition-colors"
-            >
-              Sign in
-            </a>
             <Link
               href="/demo"
               className="inline-flex h-9 items-center rounded-full border border-foreground bg-foreground px-4 text-xs font-medium uppercase tracking-[0.16em] text-background hover:bg-foreground/90 transition-colors"
             >
-              Request a demo
+              Get a demo
             </Link>
           </div>
 
@@ -78,11 +76,8 @@ export function TopNav() {
                 </Link>
               ))}
               <div className="my-1 h-px bg-border" />
-              <a href={APP_URL} className="block px-4 py-2 text-sm text-foreground hover:bg-muted/40">
-                Sign in
-              </a>
               <Link href="/demo" className="block px-4 py-2 text-sm font-medium text-accent hover:bg-muted/40">
-                Request a demo
+                Get a demo
               </Link>
             </div>
           </details>

@@ -11,29 +11,29 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'For medspas',
   description:
-    'Why Lumè is built for medical spas — the clinical workflows, compliance demands, and operational realities that general-purpose CRMs miss.',
+    'Why Lumè is built for medical spas. The clinical workflows, compliance demands, and operational realities that general-purpose CRMs miss.',
 };
 
 const FAILURE_MODES = [
   {
     title: 'Salon platforms.',
     body:
-      "Mindbody, Vagaro, Booker — built for haircuts and yoga classes, then patched to handle injectables. They lack treatment-cycle scheduling, per-service consent recurrence, and the medical-grade audit trail a state board expects.",
+      "Mindbody, Vagaro, Booker. Built for haircuts and yoga, then patched to handle injectables. They lack treatment-cycle scheduling, per-service consent, and the medical-grade audit trail a state board expects.",
   },
   {
     title: 'High-end salon platforms.',
     body:
-      "Boulevard targets the high-end salon market. The booking experience is excellent; the medical workflows aren't there. No consent-versioning, no per-treatment audit trail, no medical-spa-specific reporting like consent-expiration tracking.",
+      "Boulevard targets high-end salons. The booking experience is excellent; the medical workflows aren't there. No consent versioning. No per-treatment audit trail. No medspa-specific reporting.",
   },
   {
     title: 'Enterprise spa software.',
     body:
-      "Zenoti is built for spa chains with hundreds of locations. Powerful, but priced and configured for that scale — most independent and small-chain medspas spend twelve months in implementation and never use 30% of the surface.",
+      "Zenoti is built for spa chains with hundreds of locations. Priced and configured for that scale. Most independent and small-chain medspas spend twelve months in implementation and never use a third of the surface.",
   },
   {
     title: "General doctor's office EMRs.",
     body:
-      "Athena, Epic, Practice Fusion — designed for medical visits, not retail aesthetics. They handle charting and ICD coding well; they fail at booking with deposits, retail product sales, and the customer-facing polish a medspa client expects.",
+      "Athena, Epic, Practice Fusion. Built for medical visits, not retail aesthetics. They do charting and ICD coding well; they fail at deposit booking, retail product sales, and the customer-facing polish a medspa client expects.",
   },
 ];
 
@@ -42,25 +42,25 @@ const WORKFLOW_FITS = [
     eyebrow: 'Treatment-cycle scheduling',
     title: 'Schedule the next visit at the right interval, automatically.',
     body:
-      "Botox at 12-14 weeks. Filler at 6-12 months depending on product. Laser series at 4-6 weeks. Lumè knows the recommended interval for each service in your menu and surfaces the next-visit suggestion at checkout — not as a calendar invite the client never opens, but as a deposit-on-book flow that converts.",
+      "Botox at 12-14 weeks. Filler at 6-12 months. Laser series at 4-6 weeks. Lumè knows the interval for every service in your menu and prompts the next-visit deposit booking at checkout — not a calendar invite the client never opens.",
   },
   {
     eyebrow: 'Consent that follows the treatment',
     title: 'Per-treatment consent forms, signed at the visit.',
     body:
-      "A general intake form gets signed once per client. Per-treatment consent (Botox, filler, lasers) signs every visit because the risk profile is per-procedure. Lumè handles both rules: lifetime intake on first visit, per-visit consent auto-assigned when the appointment books.",
+      "Intake signs once per client. Per-treatment consent (Botox, filler, lasers) signs every visit, because the risk profile is per-procedure. Lumè handles both: intake on first visit, per-treatment consent auto-assigned on every booking.",
   },
   {
-    eyebrow: 'Pricing that respects the chair',
-    title: 'No platform fee on card volume.',
+    eyebrow: 'Payments built into the flow',
+    title: "Take a card without leaving the appointment.",
     body:
-      "Most spa platforms take 1-3% of card volume on top of your processor fees. On a $2M annual book that's $20-60K a year going to the software vendor for the privilege of letting you take payments. Lumè doesn't process payments and doesn't charge for them — your existing terminal, your existing processor, your existing rate.",
+      "Most spa platforms split payments off into a separate system — a third-party terminal, a Square account, an end-of-day reconciliation step done by hand. Lumè processes card payments inside the same flow as charts, consent, and booking, through a licensed financial partner. The daily close-out is one set of numbers, not two.",
   },
   {
     eyebrow: 'Medical-grade audit trail',
-    title: 'Every PHI access logged, every state change traceable.',
+    title: 'Every PHI access logged. Every state change traceable.',
     body:
-      "If your medical board asks who viewed Sarah Chen's chart on May 12th, you can answer. Lumè writes an audit log entry on every PHI read — append-only, immutable in production, queryable by date range, user, or resource. SOC 2 CC 6.1 + HIPAA §164.312(b) satisfied by architecture, not by retrofit.",
+      "If your medical board asks who viewed Sarah Chen's chart on May 12th, you can answer. Every PHI read writes an append-only audit entry, queryable by date, user, or resource. SOC 2 CC 6.1 and HIPAA §164.312(b) satisfied by architecture, not retrofit.",
   },
 ];
 
@@ -75,7 +75,7 @@ export default function ForMedspasPage() {
             <span className="accent-italic">Not a salon tool with extras.</span>
           </>
         }
-        standfirst="Most CRMs medspas use today were designed for haircuts, yoga classes, or general doctors' offices, then patched to handle injectables. Lumè was built for medical spa workflows from day one — clinical compliance, treatment-cycle scheduling, per-service consent recurrence, and the financial reconciliation the front desk actually does."
+        standfirst="Most CRMs medspas use were built for haircuts, yoga classes, or general doctors' offices. Lumè was built for medspas: clinical compliance, treatment-cycle scheduling, per-procedure consent, and the close-out a front desk actually does."
       />
 
       {/* Why other tools fall short */}
@@ -90,7 +90,7 @@ export default function ForMedspasPage() {
                   <span className="accent-italic">All built for someone else.</span>
                 </>
               }
-              description="Medspas have spent the last decade adapting platforms designed for other industries. Each comes with specific compromises."
+              description="Medspas have spent the last decade adapting platforms designed for other industries. Each comes with a specific set of compromises."
             />
           </ScrollReveal>
 
@@ -117,7 +117,7 @@ export default function ForMedspasPage() {
                   <span className="accent-italic">other platforms get wrong.</span>
                 </>
               }
-              description="The specific operational realities of running a medical spa, and how Lumè handles each one."
+              description="The operational realities of running a medspa, and how Lumè handles each."
             />
           </ScrollReveal>
 
@@ -167,7 +167,7 @@ export default function ForMedspasPage() {
               <p className="mt-4 eyebrow text-foreground/60">9:00 am</p>
               <p className="mt-2 font-serif text-lg font-medium text-foreground">Open the calendar</p>
               <p className="mt-1 text-sm leading-relaxed text-foreground/70">
-                Per-provider columns show the day, scoped to your location. Coffee in hand, you can see who's booked, who's confirmed, and which appointments need the consent form sent before arrival.
+                Per-provider columns show today's schedule for your location. See who's booked, who's confirmed, and which appointments need consent sent before arrival.
               </p>
             </ScrollReveal>
 
@@ -178,7 +178,7 @@ export default function ForMedspasPage() {
               <p className="mt-4 eyebrow text-foreground/60">11:30 am</p>
               <p className="mt-2 font-serif text-lg font-medium text-foreground">Check in a returning client</p>
               <p className="mt-1 text-sm leading-relaxed text-foreground/70">
-                Sarah's been here twelve times. The chart loads in under a second with her allergies, last visit, and the pending Botox consent ready to sign on the iPad before the provider sees her.
+                Sarah's been here twelve times. Her chart loads in under a second with allergies, last visit, and the pending Botox consent ready to sign on the iPad.
               </p>
             </ScrollReveal>
 
@@ -207,10 +207,9 @@ export default function ForMedspasPage() {
                   See Lumè configured for your medspa.
                 </h2>
                 <p className="mt-4 max-w-2xl text-base leading-relaxed text-background/80">
-                  We'll set up a private walkthrough with the product
-                  configured for your service menu, your providers, and
-                  your locations. Coming from another platform? We scope
-                  the migration during the call.
+                  We'll configure the demo on your service menu, your
+                  providers, your locations. Coming from another
+                  platform? We scope the migration during the call.
                 </p>
               </div>
               <div className="lg:col-span-4 lg:text-right">

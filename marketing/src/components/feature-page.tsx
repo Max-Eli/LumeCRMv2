@@ -22,6 +22,7 @@ import type { ReactNode } from 'react';
 
 import { ProductFrame } from '@/components/product-frame';
 import { ScrollReveal } from '@/components/scroll-reveal';
+import { breadcrumbJsonLd, jsonLd } from '@/lib/seo';
 
 export interface FeatureDetail {
   eyebrow: string;
@@ -42,6 +43,14 @@ export interface FeaturePageProps {
   details: (FeatureDetail & { mock?: ReactNode; mockUrl?: string })[];
   /** Cross-link cards at the bottom (usually 2 sibling features). */
   related: { href: string; label: string; title: string }[];
+  /** The path this page renders at, e.g. `/features/booking`. Used to
+   *  emit a correct `BreadcrumbList` JSON-LD record. Optional: when
+   *  omitted, we still render the page but skip the breadcrumb
+   *  payload. */
+  path?: string;
+  /** Human-readable breadcrumb label for this feature, e.g. "Booking
+   *  calendar". Defaults to `eyebrow` when omitted. */
+  breadcrumbLabel?: string;
 }
 
 export function FeaturePage({
@@ -53,9 +62,25 @@ export function FeaturePage({
   highlights,
   details,
   related,
+  path,
+  breadcrumbLabel,
 }: FeaturePageProps) {
+  const breadcrumb = path
+    ? breadcrumbJsonLd([
+        { name: 'Home', path: '/' },
+        { name: 'Features', path: '/features' },
+        { name: breadcrumbLabel ?? eyebrow, path },
+      ])
+    : null;
+
   return (
     <>
+      {breadcrumb ? (
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{ __html: jsonLd(breadcrumb) }}
+        />
+      ) : null}
       {/* Hero */}
       <section className="border-b border-border">
         <div className="mx-auto max-w-7xl px-6 lg:px-10 pt-20 pb-12 lg:pt-28 lg:pb-16">

@@ -340,3 +340,98 @@ export function LocationsMock() {
     </div>
   );
 }
+
+// ── Audit log ─────────────────────────────────────────────────────────
+
+const AUDIT_ENTRIES = [
+  {
+    actor: 'sarah.kim',
+    action: 'PHI_READ',
+    resource: 'customer:c-4218',
+    detail: 'Opened chart',
+    ip: '192.0.2.14',
+    timestamp: '14:22:09',
+  },
+  {
+    actor: 'marco.diaz',
+    action: 'FORM_SIGNED',
+    resource: 'consent:botox-v3:c-4218',
+    detail: 'Submitted',
+    ip: '203.0.113.51',
+    timestamp: '14:18:51',
+  },
+  {
+    actor: 'sarah.kim',
+    action: 'INVOICE_CLOSED',
+    resource: 'invoice:inv-9824',
+    detail: 'Closed · $612.00 · card',
+    ip: '192.0.2.14',
+    timestamp: '14:11:33',
+  },
+  {
+    actor: 'system',
+    action: 'REPORT_EXPORT',
+    resource: 'report:sales-by-date',
+    detail: 'CSV · phi_confirmed=true',
+    ip: '—',
+    timestamp: '14:05:02',
+  },
+  {
+    actor: 'owner.lee',
+    action: 'PERMISSION_GRANT',
+    resource: 'role:bookkeeper · user:r-3120',
+    detail: 'financial_reports.view',
+    ip: '198.51.100.7',
+    timestamp: '13:47:18',
+  },
+];
+
+const ACTION_TONE: Record<string, string> = {
+  PHI_READ: 'text-foreground/70',
+  FORM_SIGNED: 'text-accent',
+  INVOICE_CLOSED: 'text-foreground/70',
+  REPORT_EXPORT: 'text-accent',
+  PERMISSION_GRANT: 'text-foreground/70',
+};
+
+export function AuditLogMock() {
+  return (
+    <div className="absolute inset-0 flex flex-col">
+      <div className="flex items-center justify-between border-b border-foreground/10 px-5 py-3">
+        <div>
+          <p className="font-serif text-base font-medium">Audit log</p>
+          <p className="text-[10px] text-foreground/55">Last 60 minutes · append-only</p>
+        </div>
+        <span className="rounded-full bg-foreground/[0.04] px-2.5 py-1 font-mono text-[10px] text-foreground/55">
+          Live
+        </span>
+      </div>
+      <div className="flex items-center gap-4 border-b border-foreground/10 bg-foreground/[0.02] px-5 py-2 text-[9px] uppercase tracking-wide text-foreground/45">
+        <span className="w-16">Time</span>
+        <span className="w-20">Actor</span>
+        <span className="w-28">Action</span>
+        <span className="flex-1">Resource</span>
+        <span className="w-20">IP</span>
+      </div>
+      <div className="flex-1 divide-y divide-foreground/5 overflow-hidden">
+        {AUDIT_ENTRIES.map((e, i) => (
+          <div
+            key={i}
+            className="flex items-center gap-4 px-5 py-2 font-mono text-[10px] tabular-nums"
+          >
+            <span className="w-16 text-foreground/55">{e.timestamp}</span>
+            <span className="w-20 truncate text-foreground/85">{e.actor}</span>
+            <span className={cn('w-28 truncate font-medium', ACTION_TONE[e.action])}>
+              {e.action}
+            </span>
+            <span className="flex-1 truncate text-foreground/65">
+              <span className="text-foreground/40">{e.resource}</span>
+              <span className="ml-2 text-foreground/55">{e.detail}</span>
+            </span>
+            <span className="w-20 truncate text-foreground/45">{e.ip}</span>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}

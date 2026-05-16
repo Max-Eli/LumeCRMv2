@@ -30,11 +30,18 @@ import {
 } from '@/components/product-mocks';
 import { ScrollReveal } from '@/components/scroll-reveal';
 import { SectionEyebrow } from '@/components/section-eyebrow';
-import { APP_URL } from '@/lib/utils';
+import { jsonLd, softwareApplicationJsonLd } from '@/lib/seo';
 
 export default function HomePage() {
   return (
     <>
+      {/* Home-page structured data: tells search engines this is a
+          medspa-vertical B2B SaaS product, not a generic website.
+          Eligible for Google's product knowledge-graph treatment. */}
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: jsonLd(softwareApplicationJsonLd()) }}
+      />
       <Hero />
       <CapabilityStrip />
       <Capabilities />
@@ -67,9 +74,9 @@ function Hero() {
               className="hero-rise mt-8 max-w-2xl text-lg leading-relaxed text-foreground/80 sm:text-xl"
               style={{ animationDelay: '260ms' }}
             >
-              Booking, client charts, e-signed consent forms, payments, and
-              twenty-two real-time reports — HIPAA-compliant, multi-location
-              ready, designed specifically for the way medspas operate.
+              Booking, charts, consent, integrated payments, and
+              twenty-two live reports. HIPAA-compliant. BAA included.
+              Implementation in two to four weeks.
             </p>
             <div
               className="hero-rise mt-10 flex flex-wrap items-center gap-6"
@@ -81,32 +88,25 @@ function Hero() {
               >
                 Get a demo
               </Link>
-              <a
-                href={APP_URL}
-                className="text-sm font-medium text-foreground/70 hover:text-foreground transition-colors"
-              >
-                <span className="link-underline decoration-accent">Sign in →</span>
-              </a>
             </div>
 
-            {/* Concrete trust bullets — three short claims that mean
-                something specific. Replaces the literary "01 idea"
-                pull-out that previously sat in the right column. */}
+            {/* Three differentiators a medspa owner will scan in
+                a single second. Each is a fact, not a turn of phrase. */}
             <ul
               className="hero-rise mt-12 grid grid-cols-1 gap-4 text-sm text-foreground/75 sm:grid-cols-3"
               style={{ animationDelay: '500ms' }}
             >
               <li className="border-l-2 border-accent/50 pl-4">
-                <span className="block font-serif text-base font-medium text-foreground">HIPAA-compliant</span>
-                Architectural, not a checkbox.
+                <span className="block font-serif text-base font-medium text-foreground">BAA in every contract</span>
+                HIPAA isn't an upgrade tier.
+              </li>
+              <li className="border-l-2 border-accent/50 pl-4">
+                <span className="block font-serif text-base font-medium text-foreground">Integrated payments</span>
+                Card, cash, and check inside the appointment flow.
               </li>
               <li className="border-l-2 border-accent/50 pl-4">
                 <span className="block font-serif text-base font-medium text-foreground">Built for medspas</span>
-                Not adapted from a salon tool.
-              </li>
-              <li className="border-l-2 border-accent/50 pl-4">
-                <span className="block font-serif text-base font-medium text-foreground">No payment markup</span>
-                Pricing is one clean line.
+                Not a salon platform with extras bolted on.
               </li>
             </ul>
           </div>
@@ -167,9 +167,9 @@ const CAPABILITIES: CapabilityRow[] = [
   {
     n: '01',
     label: 'Booking',
-    title: 'A calendar built for multi-provider operations.',
+    title: 'A calendar that knows who works where.',
     body:
-      "Per-provider columns, per-location scoping, and working-hours awareness. Drag to reschedule, click to take payment, see at a glance which appointments still need consent before check-in.",
+      "Each provider gets their own column. Drag to reschedule. Click to take payment. Unsigned consent is flagged before the client walks in.",
     bullets: [
       'Per-provider, per-location columns',
       'Drag-to-reschedule with conflict detection',
@@ -183,9 +183,9 @@ const CAPABILITIES: CapabilityRow[] = [
   {
     n: '02',
     label: 'Client charts',
-    title: 'Every client record in one place.',
+    title: 'The whole client, on one page.',
     body:
-      'Contact, treatment history, allergies, signed consent forms, outstanding paperwork, and provider-only notes — accessible in two taps from the calendar or the search bar.',
+      "Treatment history, allergies, signed consents, outstanding paperwork, invoice history, provider notes. Two clicks from the calendar. The same record across every location.",
     bullets: [
       'Searchable across all locations',
       'Treatment history with outcome tracking',
@@ -199,9 +199,9 @@ const CAPABILITIES: CapabilityRow[] = [
   {
     n: '03',
     label: 'Consent forms',
-    title: 'E-signed consent that holds up to a compliance review.',
+    title: 'Consent forms that survive an audit.',
     body:
-      'Schema-versioned templates for intake and per-treatment consent. Sent as tokenized links, signed on a tablet, snapshotted at the moment of signing — so an evolving template never rewrites a signed past.',
+      "Intake signs once. Per-treatment consent signs every visit. One tokenized link. Every signature captures IP and user-agent. The template is snapshotted at signing, so next month's edits never rewrite last month's record.",
     bullets: [
       'Version-snapshotted at signing',
       'Tokenized fill links (no login required)',
@@ -215,14 +215,14 @@ const CAPABILITIES: CapabilityRow[] = [
   {
     n: '04',
     label: 'Payments',
-    title: 'Invoicing built around end-of-day reconciliation.',
+    title: 'Invoicing and integrated payments in one flow.',
     body:
-      'Cash, check, card-on-terminal, and other — recorded with payment reference, owner-reopenable within sixty days, void with a required reason. The numbers match the cash drawer at close.',
+      "Card, cash, and check go in with a payment reference. Card processing runs through our licensed payment partner inside the appointment flow — no separate terminal to reconcile against. Daily close-out splits totals by method. Sixty-day reopen window.",
     bullets: [
       'Owner-only 60-day reopen window',
       'Per-payment-method daily close-out',
       'Tax handled per service line item',
-      'No platform fee on card volume',
+      'Integrated card processing through a licensed partner',
     ],
     href: '/features/payments',
     url: '/appointments/4218/invoice',
@@ -231,12 +231,12 @@ const CAPABILITIES: CapabilityRow[] = [
   {
     n: '05',
     label: 'Reports',
-    title: 'Twenty-two reports across financial, staff, guests, and operations.',
+    title: 'The reports your accountant keeps asking for.',
     body:
-      'Daily close-out, AR aging, revenue by service / provider / location, schedule utilization, top spenders, no-show rates, booking lead time — all running against live data, all exportable to CSV with a HIPAA confirmation gate.',
+      'Twenty-two of them: daily close-out, AR aging, revenue by service or provider or location, no-show rate, top spenders, booking lead time. Live data. Every CSV export sits behind a HIPAA confirm and is audit-logged.',
     bullets: [
       '22 pre-built reports',
-      'Live data — no nightly refresh delay',
+      'Live data, no nightly refresh delay',
       'CSV export with PHI confirmation',
       'Audit-logged on every run',
     ],
@@ -247,13 +247,13 @@ const CAPABILITIES: CapabilityRow[] = [
   {
     n: '06',
     label: 'Multi-location',
-    title: 'One brand, multiple locations, one bill.',
+    title: 'Open a second location without re-onboarding.',
     body:
-      'Per-location calendars, pricing, staff schedules, and reporting. The org-level dashboard rolls up revenue, appointments, and utilization across every site. The location switcher only appears when the team has more than one to switch between.',
+      "Each site gets its own calendar, pricing, and staff schedule. An org-level dashboard shows every location alongside cross-location revenue. The location switcher only appears for staff who span more than one.",
     bullets: [
       'Per-location pricing + staff',
-      'Org-level rollup dashboard',
-      'Per-location reporting filters',
+      'Org-level locations dashboard',
+      'Per-location revenue + reporting filters',
       'Single sign-on across sites',
     ],
     href: '/features/multi-location',
@@ -268,14 +268,14 @@ function Capabilities() {
       <div className="mx-auto max-w-7xl px-6 lg:px-10 py-24 lg:py-32">
         <ScrollReveal>
           <SectionEyebrow
-            eyebrow="What's in the platform"
+            eyebrow="The platform"
             headline={
               <>
-                Six core capabilities,{' '}
-                <span className="accent-italic">built specifically for medspas.</span>
+                Six capabilities,{' '}
+                <span className="accent-italic">every one for medspas.</span>
               </>
             }
-            description="Each one designed for the actual workflows medical spas run every day — not retrofit from a salon, gym, or general-purpose CRM."
+            description="Not a salon tool with the word 'aesthetics' pasted on top."
           />
         </ScrollReveal>
 
@@ -339,19 +339,19 @@ function CapabilityRow({ cap, flip }: { cap: CapabilityRow; flip: boolean }) {
 
 const REASONS = [
   {
-    label: 'Built for medspas, not retrofit.',
+    label: 'Built for medspas, not adapted.',
     body:
-      "Most CRMs medspas use today were designed for salons, yoga studios, or general doctors' offices, then patched to handle injectables and lasers. Lumè was built for medspa workflows from the first migration: treatment-cycle scheduling, per-service consent recurrence, multi-provider rooms, and the close-out reconciliation a front desk actually does.",
+      'Mindbody for salons. Boulevard for high-end salons. Zenoti for spa chains. None of them built around treatment-cycle scheduling, per-procedure consent, multi-provider rooms, or a close-out that matches the drawer.',
   },
   {
-    label: 'HIPAA compliance is structural.',
+    label: "HIPAA isn't a pricing tier.",
     body:
-      'Tenant isolation enforced at the database. Role-based permissions resolved per request from a forty-permission catalog. Append-only audit logging on every PHI access. AWS infrastructure under a signed BAA. The compliance posture is the architecture — not a separate "secure" tier.',
+      "Every customer runs on the same compliant architecture. Tenant data isolated at the database. Audit log on every PHI read. AWS under a signed BAA, included in your standard contract.",
   },
   {
     label: 'Pricing without the games.',
     body:
-      'One per-seat number, scaled by location count. No platform fee on card volume. No annual contract lockout. No tier upgrade required to export your own data. The Business Associate Agreement is included.',
+      "Per location, not per seat. No annual contract. No paywall on data export. No setup fee. No “Pro” tier hiding what you assumed was standard.",
   },
 ];
 
@@ -362,8 +362,8 @@ function WhyLume() {
         <ScrollReveal>
           <SectionEyebrow
             eyebrow="Why Lumè"
-            headline="Built for the way medspas actually run."
-            description="Three specific differences from the platforms most medspas are using today."
+            headline="Three things other platforms get wrong."
+            description="Each is a deliberate choice baked into how Lumè is built, not a roadmap promise."
           />
         </ScrollReveal>
 
@@ -404,10 +404,11 @@ function Compliance() {
                 <span className="accent-italic">architecture, not by checkbox.</span>
               </h2>
               <p className="mt-5 max-w-2xl text-base leading-relaxed text-foreground/75 sm:text-lg">
-                Tenant isolation at the database layer. Role-based permissions
-                resolved per request. Append-only audit logging on every PHI
-                read and write. AWS infrastructure under a signed Business
-                Associate Agreement. SOC 2 Type II in progress.
+                Tenant data isolated at the database layer. Permissions
+                resolved per request from a forty-permission catalog.
+                Audit log entries on every PHI read and every state
+                change. AWS infrastructure under a signed BAA. SOC 2
+                Type II in progress.
               </p>
             </div>
             <div className="lg:col-span-4 lg:col-start-9 lg:text-right">
@@ -434,14 +435,14 @@ function DemoCta() {
         <ScrollReveal>
           <div className="grid gap-10 lg:grid-cols-12 lg:items-center">
             <div className="lg:col-span-7">
-              <p className="eyebrow text-background/60">See it in 30 minutes</p>
+              <p className="eyebrow text-background/60">Thirty-minute demo</p>
               <h2 className="mt-4 font-display text-4xl sm:text-5xl lg:text-6xl">
-                See Lumè running on workflows like yours.
+                See Lumè running on your spa, not a generic one.
               </h2>
               <p className="mt-6 max-w-2xl text-base leading-relaxed text-background/80 sm:text-lg">
-                Tell us about your spa. We'll set up a private 30-minute
-                walkthrough with the product configured for your service
-                menu, your providers, and your locations.
+                Send us your service menu. We'll configure the demo on
+                your real data. Thirty minutes. The first call is the
+                demo.
               </p>
             </div>
 
@@ -453,7 +454,7 @@ function DemoCta() {
                 Get a demo
               </Link>
               <p className="mt-4 text-xs text-background/55">
-                No long sales cycle. We respond within one business day.
+                One business day to a calendar invite.
               </p>
             </div>
           </div>

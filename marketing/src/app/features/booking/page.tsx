@@ -6,12 +6,14 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Booking calendar',
   description:
-    'Multi-provider booking calendar built for medspas: per-provider columns, online booking with deposit, automated reminders, conflict detection.',
+    'Per-provider columns, online booking with deposit, SMS + email reminders, and conflict detection at submit. The booking calendar for multi-provider medspas.',
 };
 
 export default function BookingFeaturePage() {
   return (
     <FeaturePage
+      path="/features/booking"
+      breadcrumbLabel="Booking calendar"
       eyebrow="Booking"
       headline={
         <>
@@ -19,7 +21,7 @@ export default function BookingFeaturePage() {
           <span className="accent-italic">multi-provider spas.</span>
         </>
       }
-      standfirst="Per-provider columns, per-location scoping, working-hours awareness, and online booking with deposit-on-book. Lumè handles the way medspas actually schedule — multiple providers, multiple rooms, treatment-cycle awareness, and consent-before-checkin."
+      standfirst="Per-provider columns. Working hours and breaks honored at the booking layer. Online booking with deposit-on-book. Consent flagged before check-in."
       heroMock={<CalendarMock />}
       heroMockUrl="/calendar"
       highlights={[
@@ -34,15 +36,14 @@ export default function BookingFeaturePage() {
           body: (
             <>
               <p>
-                The day view splits into per-provider columns, each scoped
-                to that provider's working hours and bookable services.
-                Block-out times, lunch breaks, and personal-day events
-                stay visible — and stay unbookable.
+                The day view splits into per-provider columns. Each
+                provider's working hours, lunch breaks, and personal-day
+                blocks are honored automatically — and stay unbookable.
               </p>
               <p>
-                Drag any appointment to reschedule. Provider conflicts,
-                room conflicts, and equipment conflicts surface
-                immediately — no double-booking gets saved.
+                Drag to reschedule. Provider, room, and equipment
+                conflicts get caught at submit, so a double-booking
+                never saves.
               </p>
             </>
           ),
@@ -59,14 +60,14 @@ export default function BookingFeaturePage() {
           body: (
             <>
               <p>
-                Your clients book directly through your branded booking
-                page — no app to download, no account to create. Pick a
-                service, pick a provider, pick a time, pay the deposit.
+                Clients book through your branded page. No app to
+                download. No account to create. Pick service, provider,
+                time. Pay the deposit.
               </p>
               <p>
-                Deposits flow into the invoice automatically. If the
-                client cancels inside your policy window, the deposit
-                converts to a credit. If they no-show, you keep it.
+                Deposits flow into the invoice automatically. Cancel
+                inside the policy window, the deposit converts to a
+                credit. No-show, you keep it.
               </p>
             </>
           ),
@@ -81,18 +82,17 @@ export default function BookingFeaturePage() {
         },
         {
           eyebrow: 'Reminders',
-          title: 'Automated SMS and email reminders that reduce no-shows.',
+          title: 'SMS and email reminders that cut no-shows 30-50%.',
           body: (
             <>
               <p>
-                Lumè sends a confirmation immediately after booking, a
-                72-hour reminder, and a 24-hour reminder by default.
-                Reminder cadence is per-tenant configurable, and clients
-                can confirm or reschedule by SMS reply.
+                Confirmation on booking. 72-hour reminder. 24-hour
+                reminder. Clients confirm or reschedule by SMS reply.
+                Cadence is configurable per tenant.
               </p>
               <p>
-                Automated reminders typically reduce no-show rates by
-                30-50% versus manual phone confirmation.
+                Automated reminders typically cut no-show rates 30-50%
+                versus manual phone calls.
               </p>
             </>
           ),

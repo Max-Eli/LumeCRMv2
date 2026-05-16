@@ -6,12 +6,14 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Client charts',
   description:
-    'Complete client records for medspas: contact, treatment history, allergies, signed consent forms, outstanding paperwork, and provider-only notes — accessible in two taps.',
+    'Treatment history, allergies, signed consents, outstanding paperwork, provider notes, invoice history. Two clicks from the calendar. Searchable across every location.',
 };
 
 export default function ChartsFeaturePage() {
   return (
     <FeaturePage
+      path="/features/charts"
+      breadcrumbLabel="Client charts"
       eyebrow="Client charts"
       headline={
         <>
@@ -19,7 +21,7 @@ export default function ChartsFeaturePage() {
           <span className="accent-italic">one place.</span>
         </>
       }
-      standfirst="Contact, treatment history, allergies, signed consent forms, outstanding paperwork, provider notes, and invoice history — accessible from the calendar in two taps. Searchable across every chart your spa has, regardless of location."
+      standfirst="Treatment history, allergies, signed consents, outstanding paperwork, provider notes, invoice history. Two clicks from the calendar. Searchable across every location."
       heroMock={<ChartMock />}
       heroMockUrl="/clients/sarah-chen"
       highlights={[
@@ -34,15 +36,14 @@ export default function ChartsFeaturePage() {
           body: (
             <>
               <p>
-                Every booking, payment, signed form, and treatment outcome
-                lives on the client's chart. The Overview tab shows the
-                last visit, the next scheduled appointment, outstanding
-                forms, and any provider notes flagged as important.
+                Every booking, payment, signed form, and treatment
+                outcome lives on the chart. The Overview tab shows last
+                visit, next appointment, outstanding forms, and flagged
+                notes.
               </p>
               <p>
-                If a client visits multiple locations, their chart follows
-                them. Allergies entered at one location appear at every
-                location.
+                The chart follows the client across locations. Allergies
+                entered in Brooklyn appear in Manhattan.
               </p>
             </>
           ),
@@ -55,18 +56,18 @@ export default function ChartsFeaturePage() {
         },
         {
           eyebrow: 'Provider notes',
-          title: 'Internal notes separated from the public chart.',
+          title: 'Internal notes, separated from the front-desk view.',
           body: (
             <>
               <p>
-                Provider notes are visible to providers and managers only —
-                front-desk staff don't see them. Useful for clinical
-                observations, behavioral notes, or anything that
-                shouldn't surface on a checkout receipt.
+                Provider notes are visible to providers and managers
+                only. The front desk never sees them. Useful for
+                clinical observations and behavioral notes — anything
+                that shouldn't surface on a checkout receipt.
               </p>
               <p>
-                Notes are timestamped and authored, so the audit trail
-                shows who wrote what and when.
+                Every note is timestamped and authored, so the audit
+                trail shows who wrote what and when.
               </p>
             </>
           ),
@@ -85,14 +86,14 @@ export default function ChartsFeaturePage() {
           body: (
             <>
               <p>
-                The chart shows pending consent forms inline — the front
-                desk sees what needs signing before checkout, and the
-                provider sees it before they start the treatment.
+                Pending consents show inline on the chart. The front
+                desk sees what needs signing before checkout. The
+                provider sees it before treatment starts.
               </p>
               <p>
                 Per-visit consent (Botox, filler, lasers) auto-assigns
-                when the appointment is booked. Lifetime intake forms
-                assign once on first appointment.
+                on booking. Lifetime intake assigns once, on first
+                visit.
               </p>
             </>
           ),
