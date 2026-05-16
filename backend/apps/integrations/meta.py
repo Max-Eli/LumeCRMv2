@@ -305,14 +305,22 @@ def _ig_exchange_code_for_short_token(code: str) -> tuple[str, str]:
 
 
 def _ig_exchange_short_for_long_token(short_token: str) -> tuple[str, int | None]:
-    """GET graph.instagram.com/access_token?grant_type=ig_exchange_token.
+    """Exchange short-lived IG token for a long-lived (~60 day) one.
+
+    Endpoint: graph.instagram.com/access_token
+
+    Meta's docs say GET on this endpoint with query params, but the
+    live API returns 400 'Unsupported request - method type: get' as
+    of 2026-05. POST with the same params as form-encoded body
+    works. Empirical, not documented — file an issue if Meta ever
+    updates the docs to match.
 
     Returns (long_token, expires_in_seconds). Long-lived IG tokens
     typically expire in 5184000 seconds (60 days).
     """
-    response = requests.get(
+    response = requests.post(
         IG_GRAPH_EXCHANGE_TOKEN_URL,
-        params={
+        data={
             'grant_type': 'ig_exchange_token',
             'client_secret': settings.INSTAGRAM_APP_SECRET,
             'access_token': short_token,

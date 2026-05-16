@@ -351,10 +351,14 @@ class MetaOAuthCallbackView(APIView):
         )
 
         return HttpResponse(status=302, headers={
-            'Location': self._redirect_url('connected=instagram'),
+            'Location': self._redirect_url(
+                'connected=instagram', tenant=tenant,
+            ),
         })
 
-    def _redirect_with_error(self, message: str, *, code: str) -> HttpResponse:
+    def _redirect_with_error(
+        self, message: str, *, code: str, tenant=None,
+    ) -> HttpResponse:
         # NOTE: `message` is reserved by logging's LogRecord — must use a
         # different key in `extra=`.
         logger.warning(
@@ -363,16 +367,49 @@ class MetaOAuthCallbackView(APIView):
         )
         from urllib.parse import urlencode
         return HttpResponse(status=302, headers={
-            'Location': self._redirect_url(urlencode({
-                'integration_error': code,
-                'integration_error_message': message[:200],
-            })),
+            'Location': self._redirect_url(
+                urlencode({
+                    'integration_error': code,
+                    'integration_error_message': message[:200],
+                }),
+                tenant=tenant,
+            ),
         })
 
     @staticmethod
-    def _redirect_url(query: str) -> str:
+    def _redirect_url(query: str, *, tenant=None) -> str:
+        """Build the post-OAuth redirect URL.
+
+        Each tenant's CRM lives at `{slug}.{bare_domain}` — the OAuth
+        flow originates there, so we must redirect BACK there (not to
+        the bare apex, which serves the marketing site and 404s on
+        `/org/integrations`).
+
+        PUBLIC_BASE_URL points at the bare domain (`https://{bare}`).
+        We swap its hostname for `{tenant.slug}.{bare}` when we have a
+        tenant. When tenant resolution failed before reaching this
+        point (rare: state mismatch / tenant_missing), we fall back
+        to PUBLIC_BASE_URL bare — the user lands on the marketing
+        site with the error params in the URL, which is ugly but
+        better than a stuck spinner.
+        """
+        from urllib.parse import urlparse, urlunparse
         from django.conf import settings
-        base = settings.PUBLIC_BASE_URL.rstrip('/')
+
+        parsed = urlparse(settings.PUBLIC_BASE_URL)
+        host = parsed.hostname or ''
+        if tenant is not None and tenant.slug:
+            # Strip any leading `www.` so we don't end up with
+            # `acme.www.example.com`.
+            bare_host = host[4:] if host.startswith('www.') else host
+            host = f'{tenant.slug}.{bare_host}'
+
+        netloc = host
+        if parsed.port:
+            netloc = f'{host}:{parsed.port}'
+        base = urlunparse((
+            parsed.scheme, netloc, '', '', '', '',
+        )).rstrip('/')
         return f'{base}/org/integrations?{query}'
 
 

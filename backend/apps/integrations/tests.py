@@ -530,15 +530,9 @@ class OAuthCallbackTests(TestCase):
         return _R()
 
     def _mock_get(self, *args, **kwargs):
-        """Stub graph.instagram.com GETs (long-token exchange + /me)."""
+        """Stub graph.instagram.com GETs (only the /me profile call here;
+        the long-token exchange is POSTed)."""
         url = args[0]
-        if 'graph.instagram.com/access_token' in url:
-            # Short → long-lived exchange. Returns 60-day token.
-            return self._resp({
-                'access_token': 'long-lived-ig-token',
-                'token_type': 'bearer',
-                'expires_in': 5184000,
-            })
         if '/me' in url:
             return self._resp({
                 'user_id': '17841405822304914',
@@ -548,7 +542,7 @@ class OAuthCallbackTests(TestCase):
         return self._resp({})
 
     def _mock_post(self, *args, **kwargs):
-        """Stub api.instagram.com (code exchange) + IG subscribe-apps."""
+        """Stub IG POST endpoints: code exchange, long-token exchange, subscribe-apps."""
         url = args[0]
         if 'api.instagram.com/oauth/access_token' in url:
             return self._resp({
@@ -558,6 +552,14 @@ class OAuthCallbackTests(TestCase):
                     'instagram_business_basic',
                     'instagram_business_manage_messages',
                 ],
+            })
+        if 'graph.instagram.com/access_token' in url:
+            # Long-lived token exchange — POST not GET per the
+            # empirical workaround noted in _ig_exchange_short_for_long_token.
+            return self._resp({
+                'access_token': 'long-lived-ig-token',
+                'token_type': 'bearer',
+                'expires_in': 5184000,
             })
         if 'subscribed_apps' in url:
             return self._resp({'success': True})
