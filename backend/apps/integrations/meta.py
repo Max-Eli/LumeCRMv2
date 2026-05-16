@@ -235,26 +235,44 @@ class TokenExchangeResult:
 
 
 def exchange_code_for_connection(code: str) -> TokenExchangeResult:
-    """Full code → long-lived IG token chain (Instagram Login flow).
+    """Full code → IG token chain (Instagram Login flow).
 
     Steps:
       1. POST code → short-lived (1-hour) IG user token at
          api.instagram.com/oauth/access_token. Response carries
          {access_token, user_id, permissions}.
-      2. GET short-lived → long-lived (~60d) token via
+      2. Best-effort: exchange short → long-lived (~60d) token via
          graph.instagram.com/access_token?grant_type=ig_exchange_token.
+         Meta's docs say GET on this endpoint, but the live API has
+         been rejecting both GET and POST with "Unsupported method"
+         errors as of 2026-05. When the exchange fails we fall back
+         to the short token — the connection works for ~1 hour and
+         the operator must reconnect. TODO(session-2B): resolve the
+         right endpoint and remove the fallback.
       3. GET /me to confirm the user_id + fetch the username for the
          integrations UI.
       4. Webhook subscription is registered after the Connection row
          is saved (callback view calls `subscribe_ig_user_to_webhooks`).
 
-    Any step that fails raises MetaOAuthError with operator-readable copy.
+    Step 1 / 3 failures raise MetaOAuthError. Step 2 failures only log.
     """
     short_token, ig_user_id = _ig_exchange_code_for_short_token(code)
-    long_token, expires_in = _ig_exchange_short_for_long_token(short_token)
+
+    # Long-token exchange is best-effort right now (see TODO above).
+    try:
+        access_token, expires_in = _ig_exchange_short_for_long_token(short_token)
+        token_kind = 'long-lived'
+    except MetaOAuthError as e:
+        logger.warning(
+            'integrations.meta.long_token_exchange_failed_using_short',
+            extra={'error': str(e)[:300]},
+        )
+        access_token = short_token
+        expires_in = 3600  # 1 hour — the documented short-token TTL
+        token_kind = 'short-lived (fallback)'
 
     # /me confirms the user_id and gives us the username for display.
-    profile = _ig_fetch_me(long_token)
+    profile = _ig_fetch_me(access_token)
     ig_username = profile.get('username', '')
     # Belt-and-braces: prefer /me's user_id over the short-token
     # response in case Meta's response shapes drift independently.
@@ -264,13 +282,21 @@ def exchange_code_for_connection(code: str) -> TokenExchangeResult:
         or ig_user_id
     )
 
-    granted = _ig_fetch_granted_permissions(long_token)
+    granted = _ig_fetch_granted_permissions(access_token)
     expires_at = int(time.time()) + (expires_in or 60 * 24 * 3600)
+    logger.info(
+        'integrations.meta.connection_tokens_ready',
+        extra={
+            'ig_user_id': ig_user_id,
+            'token_kind': token_kind,
+            'expires_at': expires_at,
+        },
+    )
 
     return TokenExchangeResult(
         ig_user_id=ig_user_id,
         ig_username=ig_username,
-        access_token=long_token,
+        access_token=access_token,
         granted_scopes=granted,
         expires_at=expires_at,
     )
