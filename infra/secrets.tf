@@ -132,3 +132,33 @@ resource "aws_secretsmanager_secret" "integrations_fernet_key" {
 
   tags = { Name = "${local.name_prefix}-integrations-fernet-key" }
 }
+
+
+# ── Instagram Login credentials (ADR 0027 revision 2) ──────────────
+#
+# Instagram Login uses a separate App ID + Secret from the parent
+# Meta App (above). These come from the Instagram product config
+# inside the Meta App dashboard. The Instagram Login OAuth flow
+# authenticates the spa directly via instagram.com — no Facebook
+# account or Page required.
+#
+# Populated post-bootstrap via:
+#   aws secretsmanager put-secret-value --secret-id lume-prod/instagram-app-id ...
+
+resource "aws_secretsmanager_secret" "instagram_app_id" {
+  name                    = "${local.name_prefix}/instagram-app-id"
+  description             = "Instagram product App ID inside the Meta App (different from META_APP_ID) for ${var.environment}."
+  kms_key_id              = aws_kms_key.secrets.arn
+  recovery_window_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-instagram-app-id" }
+}
+
+resource "aws_secretsmanager_secret" "instagram_app_secret" {
+  name                    = "${local.name_prefix}/instagram-app-secret"
+  description             = "Instagram product App Secret. Sensitive — full IG Business API access via Instagram Login."
+  kms_key_id              = aws_kms_key.secrets.arn
+  recovery_window_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-instagram-app-secret" }
+}

@@ -299,6 +299,22 @@ META_OAUTH_REDIRECT_URI = env(
 )
 META_TEST_MODE = env.bool('META_TEST_MODE', default=False)
 
+# ── Instagram Business Login ───────────────────────────────────────
+#
+# The Instagram product configured inside the Meta App has its OWN
+# App ID + Secret, distinct from the parent Meta App credentials
+# above. Used for the IG-only OAuth flow (ADR 0027 revision 2) that
+# authenticates the spa directly via Instagram, no Facebook account
+# or Page required. Meta App admins find these under:
+#   Meta App dashboard → Instagram → Settings → 'Instagram App ID' / 'Instagram App Secret'
+#
+# The webhook secret (META_WEBHOOK_VERIFY_TOKEN) is shared across
+# both Instagram + future Facebook Messenger paths because the Meta
+# App has a single webhook configuration covering all subscribed
+# products.
+INSTAGRAM_APP_ID = env('INSTAGRAM_APP_ID', default='')
+INSTAGRAM_APP_SECRET = env('INSTAGRAM_APP_SECRET', default='')
+
 # ── Integration token encryption ────────────────────────────────────
 #
 # Field-level encryption for OAuth tokens stored on Connection rows.

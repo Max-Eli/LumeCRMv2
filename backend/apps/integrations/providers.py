@@ -141,25 +141,21 @@ def _is_oauth_ready(provider_key: str) -> bool:
       1. The credentials it needs are present in settings, AND
       2. The OAuth flow is implemented for it.
 
-    (1) alone isn't sufficient — having a Meta App ID lets the IG
-    flow work, but FB Messenger + WhatsApp share the same App while
-    needing their own OAuth + webhook routing that we haven't built
-    yet. Flipping their `oauth_ready` to True because IG credentials
-    exist would surface a Connect button that 501s.
+    Instagram uses the **Instagram Login** flow (ADR 0027 revision 2),
+    which has its OWN App ID + Secret distinct from the parent Meta
+    App. Future Facebook Messenger uses the parent META_* credentials.
 
     Session 1 implements meta_instagram only. Sessions 2-3 add FB
     Messenger + WhatsApp; flip their entries here as each ships.
     """
     from django.conf import settings
 
-    _META_CREDENTIALS_PRESENT = bool(
-        getattr(settings, 'META_APP_ID', '')
-        and getattr(settings, 'META_APP_SECRET', '')
-        and getattr(settings, 'META_WEBHOOK_VERIFY_TOKEN', '')
-    )
-
     if provider_key == 'meta_instagram':
-        return _META_CREDENTIALS_PRESENT
+        return bool(
+            getattr(settings, 'INSTAGRAM_APP_ID', '')
+            and getattr(settings, 'INSTAGRAM_APP_SECRET', '')
+            and getattr(settings, 'META_WEBHOOK_VERIFY_TOKEN', '')
+        )
     # meta_facebook + meta_whatsapp: OAuth flow not yet implemented.
     if provider_key.startswith('meta_'):
         return False

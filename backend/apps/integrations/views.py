@@ -289,9 +289,9 @@ class MetaOAuthCallbackView(APIView):
 
         try:
             tokens = meta_oauth.exchange_code_for_connection(code)
-            meta_oauth.subscribe_page_to_webhooks(
-                page_id=tokens.page_id,
-                page_access_token=tokens.page_access_token,
+            meta_oauth.subscribe_ig_user_to_webhooks(
+                ig_user_id=tokens.ig_user_id,
+                access_token=tokens.access_token,
             )
         except meta_oauth.MetaOAuthError as e:
             connection.status = Connection.Status.ERROR
@@ -314,22 +314,20 @@ class MetaOAuthCallbackView(APIView):
             return self._redirect_with_error(str(e), code='oauth_failed')
 
         # Success — persist tokens (encrypted) + flip status.
-        connection.external_id = tokens.page_id
+        # external_id holds the IG user_id; that's what Meta sends as
+        # entry[].id on every webhook delivery, so payload routing
+        # can find this Connection in one query.
+        connection.external_id = tokens.ig_user_id
         connection.external_name = (
-            f'{tokens.page_name} (@{tokens.instagram_username})'
-            if tokens.instagram_username else tokens.page_name
+            f'@{tokens.ig_username}' if tokens.ig_username
+            else f'IG account {tokens.ig_user_id}'
         )
         connection.set_auth_data({
-            'page_id': tokens.page_id,
-            'page_access_token': tokens.page_access_token,
-            'instagram_business_account_id': tokens.instagram_business_account_id,
-            'instagram_username': tokens.instagram_username,
+            'ig_user_id': tokens.ig_user_id,
+            'access_token': tokens.access_token,
+            'ig_username': tokens.ig_username,
             'granted_scopes': tokens.granted_scopes,
             'expires_at': tokens.expires_at,
-            # FB user ID is needed for the Meta data-deletion callback
-            # to identify which Connection to revoke when this user
-            # later removes the app.
-            'fb_user_id': tokens.fb_user_id,
         })
         connection.status = Connection.Status.CONNECTED
         connection.connected_at = timezone.now()
@@ -346,8 +344,8 @@ class MetaOAuthCallbackView(APIView):
             metadata={
                 'event': 'connection_established',
                 'provider': provider,
-                'external_id': tokens.page_id,
-                'instagram_username': tokens.instagram_username,
+                'external_id': tokens.ig_user_id,
+                'instagram_username': tokens.ig_username,
                 'granted_scopes': tokens.granted_scopes,
             },
         )

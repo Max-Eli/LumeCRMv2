@@ -48,6 +48,20 @@ GRAPH_API_VERSION = 'v22.0'
 GRAPH_BASE = f'https://graph.facebook.com/{GRAPH_API_VERSION}'
 OAUTH_DIALOG_URL = f'https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth'
 
+# ── Instagram Login (Business) endpoints ───────────────────────────
+#
+# Distinct from the Facebook Login endpoints above. Instagram Login
+# is a Meta-supported OAuth flow released in 2024 that authenticates
+# the spa directly via instagram.com — no Facebook account or Page
+# required. Uses the Instagram product's separate App ID / Secret
+# (see INSTAGRAM_APP_ID / INSTAGRAM_APP_SECRET in settings/base.py).
+#
+# Reference: developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login
+IG_OAUTH_AUTHORIZE_URL = 'https://www.instagram.com/oauth/authorize'
+IG_OAUTH_TOKEN_URL = 'https://api.instagram.com/oauth/access_token'
+IG_GRAPH_BASE = f'https://graph.instagram.com/{GRAPH_API_VERSION}'
+IG_GRAPH_EXCHANGE_TOKEN_URL = 'https://graph.instagram.com/access_token'
+
 # Per ADR 0027 §2 — state tokens older than this are rejected as
 # replays. 10 min is comfortable for a real human consent flow
 # without leaving the door open for long-window replays.
@@ -57,21 +71,16 @@ STATE_TTL_SECONDS = 600
 # `providers.py` — the duplication is intentional so the Meta App
 # Review submission and the runtime requested scopes can diverge
 # during a transitional period. If they drift, audit + reconcile.
-# Scope names below are the ones tied to the **Facebook Login for
-# Business** flow (the one we use — IG Business account linked to a
-# FB Page, page access token drives outbound). Meta also offers a
-# newer "Instagram Login with Business" flow whose scopes are prefixed
-# `instagram_business_*`; those are NOT valid with FB Login and Meta
-# rejects the OAuth request with "Invalid Scopes" if mixed in.
+# Instagram Login scopes — the `instagram_business_*` family
+# released with the 2024 IG Business Login flow. Different from the
+# Facebook Login scopes (which use bare `instagram_*` + `pages_*`)
+# and ONLY valid for the IG Login OAuth endpoint above. Mixing them
+# with the FB Login OAuth gets rejected with "Invalid Scopes".
 #
-# Reference: developers.facebook.com/docs/permissions
+# Reference: developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login/business-login
 SCOPES_INSTAGRAM = (
-    'instagram_basic',              # read the IG Business account metadata
-    'instagram_manage_messages',    # send + receive DMs
-    'pages_show_list',              # list the FB Pages the user manages
-    'pages_messaging',              # required to subscribe to the messages webhook
-    'pages_manage_metadata',        # subscribe the Page to webhook events
-    'business_management',          # required when the Page is owned by a Business Manager
+    'instagram_business_basic',           # read account profile + media
+    'instagram_business_manage_messages', # send + receive DMs
 )
 
 # Webhook fields we subscribe a Page to. `messages` covers inbound DMs;
@@ -184,23 +193,27 @@ def _consteq(a: str, b: str) -> bool:
 
 
 def build_authorize_url(*, provider: str, state: str) -> str:
-    """Construct the Facebook OAuth dialog URL for the given provider."""
-    if provider == 'meta_instagram':
-        scopes = SCOPES_INSTAGRAM
-    else:
-        # FB Messenger + WhatsApp wire up in future sessions.
-        raise MetaOAuthError(
-            f'OAuth flow for provider {provider!r} is not implemented yet.'
-        )
+    """Construct the OAuth authorize URL for the given provider.
 
-    params = {
-        'client_id': settings.META_APP_ID,
-        'redirect_uri': settings.META_OAUTH_REDIRECT_URI,
-        'state': state,
-        'scope': ','.join(scopes),
-        'response_type': 'code',
-    }
-    return f'{OAUTH_DIALOG_URL}?{_urlparse.urlencode(params)}'
+    For `meta_instagram` this is the Instagram Login authorize URL —
+    the spa logs in directly with their IG credentials, no Facebook
+    account needed. For future `meta_facebook` (FB Messenger) this
+    will return the Facebook OAuth dialog URL using the FB App ID.
+    """
+    if provider == 'meta_instagram':
+        params = {
+            'client_id': settings.INSTAGRAM_APP_ID,
+            'redirect_uri': settings.META_OAUTH_REDIRECT_URI,
+            'state': state,
+            'scope': ','.join(SCOPES_INSTAGRAM),
+            'response_type': 'code',
+        }
+        return f'{IG_OAUTH_AUTHORIZE_URL}?{_urlparse.urlencode(params)}'
+
+    # FB Messenger + WhatsApp wire up in future sessions.
+    raise MetaOAuthError(
+        f'OAuth flow for provider {provider!r} is not implemented yet.'
+    )
 
 
 # ── Token exchange ──────────────────────────────────────────────────
@@ -208,176 +221,162 @@ def build_authorize_url(*, provider: str, state: str) -> str:
 
 @dataclass
 class TokenExchangeResult:
-    """What we keep after the short-lived → long-lived → page-token chain."""
-    page_id: str
-    page_name: str
-    page_access_token: str
-    instagram_business_account_id: str
-    instagram_username: str
+    """Result of the Instagram Login token-exchange chain.
+
+    `ig_user_id` is the IG-scoped user identifier — also what Meta
+    puts in `entry[].id` on every webhook delivery, so we store it
+    as `Connection.external_id` for fast payload routing.
+    """
+    ig_user_id: str
+    ig_username: str
+    access_token: str           # long-lived (~60 day) IG access token
     granted_scopes: list[str]
-    expires_at: int | None  # Unix timestamp; None for non-expiring tokens
-    # FB user ID of the person who authorised the connection. Captured
-    # so the Meta data-deletion callback can find this Connection when
-    # that user later removes the app from their FB settings.
-    fb_user_id: str
+    expires_at: int | None      # Unix timestamp; None if non-expiring
 
 
 def exchange_code_for_connection(code: str) -> TokenExchangeResult:
-    """Full code → page-token chain for an Instagram connection.
+    """Full code → long-lived IG token chain (Instagram Login flow).
 
-    Steps (per ADR 0027 §2):
-      1. Exchange `code` for a short-lived user token.
-      2. Exchange short-lived user token for a long-lived (60d) user token.
-      3. Call `/me/accounts` to list Pages the user manages.
-      4. Pick the first Page that has an `instagram_business_account` link.
-      5. The /me/accounts response already includes a Page access token
-         derived from the long-lived user token — use it.
-      6. Fetch the IG Business Account's username for display.
+    Steps:
+      1. POST code → short-lived (1-hour) IG user token at
+         api.instagram.com/oauth/access_token. Response carries
+         {access_token, user_id, permissions}.
+      2. GET short-lived → long-lived (~60d) token via
+         graph.instagram.com/access_token?grant_type=ig_exchange_token.
+      3. GET /me to confirm the user_id + fetch the username for the
+         integrations UI.
+      4. Webhook subscription is registered after the Connection row
+         is saved (callback view calls `subscribe_ig_user_to_webhooks`).
 
     Any step that fails raises MetaOAuthError with operator-readable copy.
     """
-    short_token = _exchange_code_for_short_token(code)
-    long_token = _exchange_short_for_long_token(short_token)
-    fb_user_id = _fetch_me_id(long_token)
-    pages = _list_pages_with_ig(long_token)
+    short_token, ig_user_id = _ig_exchange_code_for_short_token(code)
+    long_token, expires_in = _ig_exchange_short_for_long_token(short_token)
 
-    if not pages:
-        raise MetaOAuthError(
-            "No Facebook Page with a linked Instagram Business account was "
-            "found on this Meta account. Make sure your Instagram is "
-            "converted to a Business account and linked to a Facebook Page."
-        )
+    # /me confirms the user_id and gives us the username for display.
+    profile = _ig_fetch_me(long_token)
+    ig_username = profile.get('username', '')
+    # Belt-and-braces: prefer /me's user_id over the short-token
+    # response in case Meta's response shapes drift independently.
+    ig_user_id = str(
+        profile.get('user_id')
+        or profile.get('id')
+        or ig_user_id
+    )
 
-    page = pages[0]  # Session 3 will add a picker for multi-page tenants
-    page_id = page['id']
-    page_name = page.get('name', '')
-    page_access_token = page['access_token']
-    ig_business = page.get('instagram_business_account', {}) or {}
-    ig_id = ig_business.get('id', '')
-    if not ig_id:
-        raise MetaOAuthError(
-            f'Page {page_name!r} reported an IG link but no Business '
-            'Account ID. Reconnect and retry.'
-        )
-
-    ig_username = _fetch_ig_username(ig_id, page_access_token)
-    granted = _fetch_granted_scopes(long_token)
-
-    # Page access tokens derived from a long-lived user token inherit
-    # ~60d expiry. We don't store the precise expiry from this endpoint
-    # — Session 2's refresh job re-issues against /me/accounts which
-    # always returns a fresh token.
-    expires_at = int(time.time()) + 60 * 24 * 3600
+    granted = _ig_fetch_granted_permissions(long_token)
+    expires_at = int(time.time()) + (expires_in or 60 * 24 * 3600)
 
     return TokenExchangeResult(
-        page_id=page_id,
-        page_name=page_name,
-        page_access_token=page_access_token,
-        instagram_business_account_id=ig_id,
-        instagram_username=ig_username,
+        ig_user_id=ig_user_id,
+        ig_username=ig_username,
+        access_token=long_token,
         granted_scopes=granted,
         expires_at=expires_at,
-        fb_user_id=fb_user_id,
     )
 
 
-def _fetch_me_id(user_access_token: str) -> str:
-    """GET /me?fields=id — the FB user ID of the consenting user."""
-    response = requests.get(
-        f'{GRAPH_BASE}/me',
-        params={'access_token': user_access_token, 'fields': 'id'},
-        timeout=15,
-    )
-    payload = _expect_json(response, step='fb user id fetch')
-    return payload.get('id', '')
+def _ig_exchange_code_for_short_token(code: str) -> tuple[str, str]:
+    """POST api.instagram.com/oauth/access_token. Returns (short_token, user_id).
 
-
-def _exchange_code_for_short_token(code: str) -> str:
-    """POST /oauth/access_token — code → short-lived user token."""
-    response = requests.get(
-        f'{GRAPH_BASE}/oauth/access_token',
-        params={
-            'client_id': settings.META_APP_ID,
-            'client_secret': settings.META_APP_SECRET,
+    Form-encoded body, NOT query params — IG's OAuth token endpoint
+    enforces this. Sending as query params returns a 400 with a
+    cryptic 'missing grant_type' error even though the field is set.
+    """
+    response = requests.post(
+        IG_OAUTH_TOKEN_URL,
+        data={
+            'client_id': settings.INSTAGRAM_APP_ID,
+            'client_secret': settings.INSTAGRAM_APP_SECRET,
+            'grant_type': 'authorization_code',
             'redirect_uri': settings.META_OAUTH_REDIRECT_URI,
             'code': code,
         },
         timeout=15,
     )
-    return _extract_access_token(response, step='short-token exchange')
-
-
-def _exchange_short_for_long_token(short_token: str) -> str:
-    """Upgrade the short-lived user token to a 60-day long-lived one."""
-    response = requests.get(
-        f'{GRAPH_BASE}/oauth/access_token',
-        params={
-            'grant_type': 'fb_exchange_token',
-            'client_id': settings.META_APP_ID,
-            'client_secret': settings.META_APP_SECRET,
-            'fb_exchange_token': short_token,
-        },
-        timeout=15,
-    )
-    return _extract_access_token(response, step='long-token exchange')
-
-
-def _list_pages_with_ig(user_access_token: str) -> list[dict]:
-    """GET /me/accounts — returns pages with IG business account info."""
-    response = requests.get(
-        f'{GRAPH_BASE}/me/accounts',
-        params={
-            'access_token': user_access_token,
-            'fields': 'id,name,access_token,instagram_business_account{id}',
-        },
-        timeout=15,
-    )
-    payload = _expect_json(response, step='page listing')
-    return [p for p in payload.get('data', []) if p.get('instagram_business_account')]
-
-
-def _fetch_ig_username(ig_business_account_id: str, page_access_token: str) -> str:
-    """GET /{ig-id}?fields=username — display name for the IG account."""
-    response = requests.get(
-        f'{GRAPH_BASE}/{ig_business_account_id}',
-        params={
-            'access_token': page_access_token,
-            'fields': 'username',
-        },
-        timeout=15,
-    )
-    payload = _expect_json(response, step='IG username fetch')
-    return payload.get('username', '')
-
-
-def _fetch_granted_scopes(user_access_token: str) -> list[str]:
-    """GET /me/permissions — list of granted permission names."""
-    response = requests.get(
-        f'{GRAPH_BASE}/me/permissions',
-        params={'access_token': user_access_token},
-        timeout=15,
-    )
-    payload = _expect_json(response, step='scope listing')
-    return [
-        p['permission'] for p in payload.get('data', [])
-        if p.get('status') == 'granted'
-    ]
-
-
-def subscribe_page_to_webhooks(*, page_id: str, page_access_token: str) -> None:
-    """POST /{page-id}/subscribed_apps — enable webhook delivery."""
-    response = requests.post(
-        f'{GRAPH_BASE}/{page_id}/subscribed_apps',
-        data={
-            'access_token': page_access_token,
-            'subscribed_fields': ','.join(PAGE_SUBSCRIBED_FIELDS),
-        },
-        timeout=15,
-    )
-    payload = _expect_json(response, step='webhook subscription')
-    if not payload.get('success', False):
+    payload = _expect_json(response, step='ig short-lived token')
+    token = payload.get('access_token', '')
+    user_id = str(payload.get('user_id', ''))
+    if not token:
         raise MetaOAuthError(
-            f'Meta reported webhook subscription failed: {payload!r}'
+            f'Instagram returned no access_token in the code exchange: {payload}'
+        )
+    return token, user_id
+
+
+def _ig_exchange_short_for_long_token(short_token: str) -> tuple[str, int | None]:
+    """GET graph.instagram.com/access_token?grant_type=ig_exchange_token.
+
+    Returns (long_token, expires_in_seconds). Long-lived IG tokens
+    typically expire in 5184000 seconds (60 days).
+    """
+    response = requests.get(
+        IG_GRAPH_EXCHANGE_TOKEN_URL,
+        params={
+            'grant_type': 'ig_exchange_token',
+            'client_secret': settings.INSTAGRAM_APP_SECRET,
+            'access_token': short_token,
+        },
+        timeout=15,
+    )
+    payload = _expect_json(response, step='ig long-lived token')
+    token = payload.get('access_token', '')
+    expires_in = payload.get('expires_in')
+    if not token:
+        raise MetaOAuthError(
+            f'Instagram returned no long-lived access_token: {payload}'
+        )
+    return token, expires_in
+
+
+def _ig_fetch_me(access_token: str) -> dict:
+    """GET graph.instagram.com/v22.0/me — profile info (id, username, name)."""
+    response = requests.get(
+        f'{IG_GRAPH_BASE}/me',
+        params={
+            'access_token': access_token,
+            'fields': 'user_id,username,name',
+        },
+        timeout=15,
+    )
+    return _expect_json(response, step='ig profile fetch')
+
+
+def _ig_fetch_granted_permissions(access_token: str) -> list[str]:
+    """Best-effort: list permissions granted on the long-lived token.
+
+    Unlike Facebook Login (where /me/permissions is documented), the
+    Instagram Login flow doesn't expose a runtime permissions endpoint
+    — scopes are pinned at token-issue time. We return the requested
+    scope list as a stand-in; any one missing would have failed the
+    OAuth grant outright.
+    """
+    return list(SCOPES_INSTAGRAM)
+
+
+def subscribe_ig_user_to_webhooks(*, ig_user_id: str, access_token: str) -> None:
+    """POST /{ig-user-id}/subscribed_apps — enable webhook delivery.
+
+    Without this, Meta won't deliver inbound DMs even with valid
+    OAuth + tokens. Subscription persists until the operator
+    disconnects or revokes access via Instagram.
+
+    Note: subscribes the IG user account directly, not a Facebook
+    Page — the structural difference vs the FB Login flow. Meta
+    interprets the absence of `subscribed_fields` here as 'all
+    enabled fields' for the Instagram product, which is what we want
+    (messages + messaging_postbacks).
+    """
+    response = requests.post(
+        f'{IG_GRAPH_BASE}/{ig_user_id}/subscribed_apps',
+        params={'access_token': access_token},
+        timeout=15,
+    )
+    payload = _expect_json(response, step='webhook subscribe')
+    if not payload.get('success'):
+        raise MetaOAuthError(
+            f'Failed to subscribe IG user {ig_user_id} to messaging '
+            f'webhooks: {payload}'
         )
 
 
@@ -716,14 +715,20 @@ def _resolve_thread_and_customer(
 # ── Data deletion processing ────────────────────────────────────────
 
 
-def revoke_connections_for_user(fb_user_id: str) -> list[tuple[int, str]]:
-    """Force-disconnect every Connection authorised by this FB user.
+def revoke_connections_for_user(user_id: str) -> list[tuple[int, str]]:
+    """Force-disconnect every Connection authorised by this user.
 
-    Returns `[(connection_id, page_id), ...]` for the rows that were
-    revoked — page_id captured BEFORE the field is wiped so the
-    caller can persist it for the deletion audit trail. Tokens are
-    cleared atomically; the rows stay in the database so the tenant
-    sees "disconnected — reauthorisation needed" in their
+    `user_id` is the identifier Meta sends in the signed_request
+    payload on the data-deletion callback. For the Instagram Login
+    flow that's the IG user_id (also stored on Connection as
+    external_id); for legacy FB Login Connection rows it'd be the
+    fb_user_id buried in auth_data_dict.
+
+    Returns `[(connection_id, external_id), ...]` for the rows that
+    were revoked — external_id captured BEFORE the field is wiped so
+    the caller can persist it in the deletion audit trail. Tokens
+    are cleared atomically; the rows stay in the database so the
+    tenant sees "disconnected — reauthorisation needed" in their
     integrations UI.
 
     SocialMessages + SocialThreads are NOT deleted — they belong to
@@ -734,17 +739,18 @@ def revoke_connections_for_user(fb_user_id: str) -> list[tuple[int, str]]:
     from django.db import transaction
 
     affected: list[tuple[int, str]] = []
-    if not fb_user_id:
+    if not user_id:
         return affected
 
-    # We stored fb_user_id inside the encrypted auth_data blob, so we
-    # can't filter on it at the SQL layer. Iterate every CONNECTED
-    # row and check after decryption. This is a small-N table in
-    # practice (one row per (tenant, provider) and most tenants have
-    # at most a few). If it ever grows, lift fb_user_id to a column.
-    candidates = Connection.objects.filter(
-        provider__startswith='meta_',
-        status=Connection.Status.CONNECTED,
+    # Fast path: Instagram Login stores ig_user_id directly as
+    # external_id on the Connection row, so we can filter at the SQL
+    # layer for those. For legacy FB Login rows (if any), fall back
+    # to the post-decrypt match below.
+    candidates = list(
+        Connection.objects.filter(
+            provider__startswith='meta_',
+            status=Connection.Status.CONNECTED,
+        )
     )
     for conn in candidates:
         try:
@@ -757,12 +763,17 @@ def revoke_connections_for_user(fb_user_id: str) -> list[tuple[int, str]]:
                 extra={'connection_id': conn.pk},
             )
             continue
-        if payload.get('fb_user_id') != fb_user_id:
+        # Match either form:
+        #   - IG Login: external_id (== ig_user_id) directly
+        #   - Legacy FB Login: auth_data['fb_user_id']
+        matches_ig = conn.external_id == user_id
+        matches_fb = payload.get('fb_user_id') == user_id
+        if not (matches_ig or matches_fb):
             continue
 
-        # Capture page_id BEFORE we wipe the field — the caller
+        # Capture external_id BEFORE we wipe the field — the caller
         # persists it for the audit trail.
-        page_id_at_revoke = conn.external_id
+        external_id_at_revoke = conn.external_id
 
         with transaction.atomic():
             conn.status = Connection.Status.DISCONNECTED
@@ -773,13 +784,13 @@ def revoke_connections_for_user(fb_user_id: str) -> list[tuple[int, str]]:
             conn.last_error_at = timezone.now()
             conn.last_error_message = (
                 'Disconnected via Meta data-deletion callback — '
-                'user removed the app from Facebook.'
+                'user removed the app from Meta.'
             )
             conn.save(update_fields=[
                 'status', 'auth_data', 'external_id', 'external_name',
                 'disconnected_at', 'last_error_at', 'last_error_message',
                 'updated_at',
             ])
-            affected.append((conn.pk, page_id_at_revoke))
+            affected.append((conn.pk, external_id_at_revoke))
 
     return affected

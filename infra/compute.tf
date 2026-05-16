@@ -146,6 +146,17 @@ locals {
           name      = "INTEGRATIONS_FERNET_KEY"
           valueFrom = aws_secretsmanager_secret.integrations_fernet_key.arn
         },
+        # Instagram Login credentials (separate from META_APP_*).
+        # Drives the IG-only OAuth flow that doesn't require a
+        # Facebook account or Page. ADR 0027 revision 2.
+        {
+          name      = "INSTAGRAM_APP_ID"
+          valueFrom = aws_secretsmanager_secret.instagram_app_id.arn
+        },
+        {
+          name      = "INSTAGRAM_APP_SECRET"
+          valueFrom = aws_secretsmanager_secret.instagram_app_secret.arn
+        },
       ]
 
       # Container starts gunicorn directly. settings/base.py reads

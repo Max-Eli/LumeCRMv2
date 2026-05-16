@@ -360,8 +360,8 @@ from . import meta as _meta  # noqa: E402
 
 
 @override_settings(
-    META_APP_ID='test-app-id',
-    META_APP_SECRET='test-app-secret',
+    INSTAGRAM_APP_ID='test-ig-app-id',
+    INSTAGRAM_APP_SECRET='test-ig-app-secret',
     META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
     META_OAUTH_REDIRECT_URI='https://api.xn--lumcrm-5ua.test/api/integrations/meta/oauth/callback/',
 )
@@ -392,15 +392,19 @@ class OAuthConnectBeginTests(TestCase):
         session = self.client_.session
         self.assertEqual(session.get('meta_oauth_state'), response.data['state'])
         self.assertEqual(session.get('meta_oauth_provider'), 'meta_instagram')
-        # Authorize URL carries the right query params.
-        self.assertIn('client_id=test-app-id', response.data['authorize_url'])
-        # `instagram_manage_messages` is the Facebook-Login-for-Business
-        # scope (not the newer `instagram_business_manage_messages`
-        # which is for the separate Instagram Login flow Meta added in
-        # 2024). Renaming back to the `_business_` form here would mean
-        # Meta rejects the OAuth with "Invalid Scopes".
+        # Authorize URL targets the Instagram Login OAuth dialog with
+        # the Instagram product's App ID (NOT the parent Meta App ID).
+        self.assertTrue(
+            response.data['authorize_url'].startswith(
+                'https://www.instagram.com/oauth/authorize?'
+            )
+        )
+        self.assertIn('client_id=test-ig-app-id', response.data['authorize_url'])
+        # `instagram_business_manage_messages` is the Instagram-Login
+        # scope name (not the Facebook-Login bare `instagram_manage_messages`).
+        # ADR 0027 revision 2 swapped from FB Login to IG Login.
         self.assertIn(
-            'instagram_manage_messages',
+            'instagram_business_manage_messages',
             response.data['authorize_url'],
         )
         self.assertIn(f'state={response.data["state"]}', response.data['authorize_url'])
@@ -411,7 +415,10 @@ class OAuthConnectBeginTests(TestCase):
         self.assertEqual(connection.status, Connection.Status.CONNECTING)
 
 
-@override_settings(META_APP_ID='', META_APP_SECRET='', META_WEBHOOK_VERIFY_TOKEN='')
+@override_settings(
+    INSTAGRAM_APP_ID='', INSTAGRAM_APP_SECRET='',
+    META_WEBHOOK_VERIFY_TOKEN='',
+)
 class OAuthConnectBeginNotReadyTests(TestCase):
     """When env credentials aren't set, the endpoint still returns 501
     with code='oauth_not_ready' (matches the pre-ADR-0027 behavior)."""
@@ -494,14 +501,14 @@ class OAuthStateTokenTests(TestCase):
 
 
 @override_settings(
-    META_APP_ID='test-app-id',
-    META_APP_SECRET='test-app-secret',
+    INSTAGRAM_APP_ID='test-ig-app-id',
+    INSTAGRAM_APP_SECRET='test-ig-app-secret',
     META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
     META_OAUTH_REDIRECT_URI='http://localhost:8000/api/integrations/meta/oauth/callback/',
     PUBLIC_BASE_URL='http://localhost:3000',
 )
 class OAuthCallbackTests(TestCase):
-    """End-to-end exercise of the callback view with Meta calls mocked."""
+    """End-to-end exercise of the callback view with IG Login calls mocked."""
 
     def setUp(self):
         self.tenant, self.owner = _make_tenant_with_owner('cbtest')
@@ -513,44 +520,52 @@ class OAuthCallbackTests(TestCase):
         )
         self.state = begin.data['state']
 
-    def _mock_token_chain(self, *args, **kwargs):
-        """Return appropriate stub JSON for each Graph API URL."""
-        class _Resp:
-            def __init__(self, body):
-                self.status_code = 200
-                self._body = body
-                self.text = ''
+    @staticmethod
+    def _resp(body):
+        class _R:
+            status_code = 200
+            text = ''
             def json(self):
-                return self._body
+                return body
+        return _R()
 
+    def _mock_get(self, *args, **kwargs):
+        """Stub graph.instagram.com GETs (long-token exchange + /me)."""
         url = args[0]
-        if 'oauth/access_token' in url:
-            return _Resp({'access_token': 'long-or-short-token', 'token_type': 'bearer'})
-        if 'me/accounts' in url:
-            return _Resp({
-                'data': [{
-                    'id': 'page-id-123',
-                    'name': 'Acme Med Spa',
-                    'access_token': 'page-access-token-xyz',
-                    'instagram_business_account': {'id': 'ig-bus-id-456'},
-                }],
+        if 'graph.instagram.com/access_token' in url:
+            # Short → long-lived exchange. Returns 60-day token.
+            return self._resp({
+                'access_token': 'long-lived-ig-token',
+                'token_type': 'bearer',
+                'expires_in': 5184000,
             })
-        if '/ig-bus-id-456' in url and 'username' in kwargs.get('params', {}).get('fields', ''):
-            return _Resp({'username': 'acmemedspa'})
-        if 'me/permissions' in url:
-            return _Resp({'data': [
-                {'permission': 'instagram_manage_messages', 'status': 'granted'},
-                {'permission': 'pages_show_list', 'status': 'granted'},
-            ]})
-        return _Resp({})
+        if '/me' in url:
+            return self._resp({
+                'user_id': '17841405822304914',
+                'username': 'acmemedspa',
+                'name': 'Acme Med Spa',
+            })
+        return self._resp({})
+
+    def _mock_post(self, *args, **kwargs):
+        """Stub api.instagram.com (code exchange) + IG subscribe-apps."""
+        url = args[0]
+        if 'api.instagram.com/oauth/access_token' in url:
+            return self._resp({
+                'access_token': 'short-lived-ig-token',
+                'user_id': '17841405822304914',
+                'permissions': [
+                    'instagram_business_basic',
+                    'instagram_business_manage_messages',
+                ],
+            })
+        if 'subscribed_apps' in url:
+            return self._resp({'success': True})
+        return self._resp({})
 
     def test_successful_callback_persists_encrypted_tokens(self):
-        with patch('apps.integrations.meta.requests.get', side_effect=self._mock_token_chain), \
-             patch('apps.integrations.meta.requests.post', return_value=type('R', (), {
-                 'status_code': 200,
-                 'text': '',
-                 'json': lambda self: {'success': True},
-             })()):
+        with patch('apps.integrations.meta.requests.get', side_effect=self._mock_get), \
+             patch('apps.integrations.meta.requests.post', side_effect=self._mock_post):
             response = self.client_.get(
                 reverse('integrations-meta-oauth-callback')
                 + f'?code=test-code&state={self.state}'
@@ -562,16 +577,17 @@ class OAuthCallbackTests(TestCase):
             tenant=self.tenant, provider='meta_instagram',
         )
         self.assertEqual(connection.status, Connection.Status.CONNECTED)
-        self.assertEqual(connection.external_id, 'page-id-123')
+        # external_id holds the IG user_id (what Meta sends as
+        # entry[].id in webhook payloads, used for fast routing).
+        self.assertEqual(connection.external_id, '17841405822304914')
         self.assertIn('acmemedspa', connection.external_name)
         # Decrypts back to what we stored.
         payload = connection.auth_data_dict
-        self.assertEqual(payload['page_id'], 'page-id-123')
-        self.assertEqual(payload['page_access_token'], 'page-access-token-xyz')
-        self.assertEqual(payload['instagram_business_account_id'], 'ig-bus-id-456')
-        self.assertEqual(payload['instagram_username'], 'acmemedspa')
+        self.assertEqual(payload['ig_user_id'], '17841405822304914')
+        self.assertEqual(payload['access_token'], 'long-lived-ig-token')
+        self.assertEqual(payload['ig_username'], 'acmemedspa')
         # Tokens NEVER stored in plaintext (sanity).
-        self.assertNotIn('page-access-token-xyz', connection.auth_data)
+        self.assertNotIn('long-lived-ig-token', connection.auth_data)
 
     def test_invalid_state_redirects_with_error(self):
         response = self.client_.get(

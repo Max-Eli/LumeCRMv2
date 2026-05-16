@@ -70,6 +70,9 @@ data "aws_iam_policy_document" "ecs_execution_secrets" {
       aws_secretsmanager_secret.meta_app_secret.arn,
       aws_secretsmanager_secret.meta_webhook_verify_token.arn,
       aws_secretsmanager_secret.integrations_fernet_key.arn,
+      # Instagram Login credentials.
+      aws_secretsmanager_secret.instagram_app_id.arn,
+      aws_secretsmanager_secret.instagram_app_secret.arn,
     ]
   }
 
