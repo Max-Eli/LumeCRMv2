@@ -349,34 +349,134 @@ def _ig_exchange_code_for_short_token(code: str) -> tuple[str, str]:
 def _ig_exchange_short_for_long_token(short_token: str) -> tuple[str, int | None]:
     """Exchange short-lived IG token for a long-lived (~60 day) one.
 
-    Endpoint: graph.instagram.com/access_token
-
-    Meta's docs say GET on this endpoint with query params, but the
-    live API returns 400 'Unsupported request - method type: get' as
-    of 2026-05. POST with the same params as form-encoded body
-    works. Empirical, not documented — file an issue if Meta ever
-    updates the docs to match.
+    Meta's docs say `GET https://graph.instagram.com/access_token` but
+    the live API returns 400 IGApiException code 100 "Unsupported
+    method" regardless of HTTP verb. Known issue (in2code-de/instagram#41
+    opened Dec 2024, unresolved). Until Meta fixes their API or docs,
+    we try several plausible endpoint variants in order and return
+    the first one that succeeds.
 
     Returns (long_token, expires_in_seconds). Long-lived IG tokens
-    typically expire in 5184000 seconds (60 days).
+    typically expire in 5184000 seconds (60 days). Raises
+    MetaOAuthError with details of each attempt if all fail.
     """
-    response = requests.post(
-        IG_GRAPH_EXCHANGE_TOKEN_URL,
-        data={
-            'grant_type': 'ig_exchange_token',
-            'client_secret': settings.INSTAGRAM_APP_SECRET,
-            'access_token': short_token,
+    attempts = [
+        # 1. The officially-documented endpoint + method.
+        {
+            'label': 'docs-default GET graph.instagram.com/access_token',
+            'method': 'GET',
+            'url': 'https://graph.instagram.com/access_token',
+            'params': {
+                'grant_type': 'ig_exchange_token',
+                'client_secret': settings.INSTAGRAM_APP_SECRET,
+                'access_token': short_token,
+            },
         },
-        timeout=15,
-    )
-    payload = _expect_json(response, step='ig long-lived token')
-    token = payload.get('access_token', '')
-    expires_in = payload.get('expires_in')
-    if not token:
-        raise MetaOAuthError(
-            f'Instagram returned no long-lived access_token: {payload}'
+        # 2. Same endpoint, POST with form body (some Meta endpoints
+        #    accept either method despite docs saying one).
+        {
+            'label': 'POST graph.instagram.com/access_token',
+            'method': 'POST',
+            'url': 'https://graph.instagram.com/access_token',
+            'data': {
+                'grant_type': 'ig_exchange_token',
+                'client_secret': settings.INSTAGRAM_APP_SECRET,
+                'access_token': short_token,
+            },
+        },
+        # 3. The same `api.instagram.com/oauth/access_token` endpoint
+        #    that issued the short token, with the exchange grant type.
+        #    Mirrors how Facebook Login reuses one endpoint for both
+        #    code-exchange and token-exchange.
+        {
+            'label': 'POST api.instagram.com/oauth/access_token (reuse-endpoint pattern)',
+            'method': 'POST',
+            'url': IG_OAUTH_TOKEN_URL,
+            'data': {
+                'grant_type': 'ig_exchange_token',
+                'client_id': settings.INSTAGRAM_APP_ID,
+                'client_secret': settings.INSTAGRAM_APP_SECRET,
+                'access_token': short_token,
+            },
+        },
+        # 4. Facebook Graph API path with fb_exchange_token grant —
+        #    some 3rd-party docs (Meta's own ig-mcp sample) use this
+        #    for IG tokens despite it being an FB-Login path.
+        {
+            'label': 'GET graph.facebook.com/v22.0/oauth/access_token fb_exchange_token',
+            'method': 'GET',
+            'url': f'{GRAPH_BASE}/oauth/access_token',
+            'params': {
+                'grant_type': 'fb_exchange_token',
+                'client_id': settings.INSTAGRAM_APP_ID,
+                'client_secret': settings.INSTAGRAM_APP_SECRET,
+                'fb_exchange_token': short_token,
+            },
+        },
+    ]
+
+    last_error: str = ''
+    for attempt in attempts:
+        try:
+            if attempt['method'] == 'GET':
+                response = requests.get(
+                    attempt['url'],
+                    params=attempt['params'],
+                    timeout=15,
+                )
+            else:
+                response = requests.post(
+                    attempt['url'],
+                    data=attempt['data'],
+                    timeout=15,
+                )
+        except requests.RequestException as e:
+            last_error = f'{attempt["label"]} → network error: {e}'
+            logger.warning(
+                'integrations.meta.long_token_attempt_failed',
+                extra={'label': attempt['label'], 'error': str(e)[:200]},
+            )
+            continue
+
+        if response.status_code == 200:
+            try:
+                payload = response.json()
+            except ValueError:
+                payload = {}
+            token = payload.get('access_token', '')
+            expires_in = payload.get('expires_in')
+            if token:
+                logger.info(
+                    'integrations.meta.long_token_attempt_succeeded',
+                    extra={
+                        'label': attempt['label'],
+                        'expires_in': expires_in,
+                    },
+                )
+                return token, expires_in
+
+        # 4xx / 5xx — log the body shape for the next round of debugging
+        try:
+            body = response.json()
+            meta_err = body.get('error', body)
+        except ValueError:
+            meta_err = {'raw': response.text[:200]}
+        last_error = (
+            f'{attempt["label"]} → {response.status_code}: '
+            f'{meta_err.get("message", meta_err)}'
         )
-    return token, expires_in
+        logger.warning(
+            'integrations.meta.long_token_attempt_failed',
+            extra={
+                'label': attempt['label'],
+                'status': response.status_code,
+                'meta_error': meta_err,
+            },
+        )
+
+    raise MetaOAuthError(
+        f'All long-lived token exchange attempts failed. Last: {last_error}'
+    )
 
 
 def _ig_fetch_me(access_token: str, *, ig_user_id: str = '') -> dict:
