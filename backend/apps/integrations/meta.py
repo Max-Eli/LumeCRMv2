@@ -56,10 +56,16 @@ OAUTH_DIALOG_URL = f'https://www.facebook.com/{GRAPH_API_VERSION}/dialog/oauth'
 # required. Uses the Instagram product's separate App ID / Secret
 # (see INSTAGRAM_APP_ID / INSTAGRAM_APP_SECRET in settings/base.py).
 #
+# IMPORTANT: graph.instagram.com does NOT accept a version prefix
+# in the URL path (unlike graph.facebook.com which requires
+# `/v22.0/...`). Meta's IG API returns a misleading "Unsupported
+# request - method type: get/post" (IGApiException code 100) when
+# you include `/v22.0/`. Confirmed empirically 2026-05.
+#
 # Reference: developers.facebook.com/docs/instagram-platform/instagram-api-with-instagram-login
 IG_OAUTH_AUTHORIZE_URL = 'https://www.instagram.com/oauth/authorize'
 IG_OAUTH_TOKEN_URL = 'https://api.instagram.com/oauth/access_token'
-IG_GRAPH_BASE = f'https://graph.instagram.com/{GRAPH_API_VERSION}'
+IG_GRAPH_BASE = 'https://graph.instagram.com'   # NO version prefix
 IG_GRAPH_EXCHANGE_TOKEN_URL = 'https://graph.instagram.com/access_token'
 
 # Per ADR 0027 §2 — state tokens older than this are rejected as
