@@ -103,6 +103,11 @@ locals {
         # webhook (mounted under /api/marketing/twilio/...).
         { name = "TWILIO_FROM_NUMBER", value = var.twilio_from_number },
         { name = "TWILIO_STATUS_CALLBACK_URL", value = "https://api.${var.domain_name}/api/marketing/twilio/status-callback/" },
+        # Meta OAuth redirect URI — MUST match what's registered in
+        # the Meta App dashboard (App Settings → Facebook Login →
+        # Valid OAuth Redirect URIs). Mismatch = browser-visible
+        # OAuth error from Facebook, not a 4xx from us.
+        { name = "META_OAUTH_REDIRECT_URI", value = "https://api.${var.domain_name}/api/integrations/meta/oauth/callback/" },
       ]
 
       secrets = [
@@ -121,6 +126,25 @@ locals {
         {
           name      = "TWILIO_AUTH_TOKEN"
           valueFrom = aws_secretsmanager_secret.twilio_auth_token.arn
+        },
+        # Meta Instagram integration — ADR 0027. The OAuth flow stays
+        # disabled cleanly (provider.oauth_ready=False) until ALL four
+        # are populated; safe to deploy in any order.
+        {
+          name      = "META_APP_ID"
+          valueFrom = aws_secretsmanager_secret.meta_app_id.arn
+        },
+        {
+          name      = "META_APP_SECRET"
+          valueFrom = aws_secretsmanager_secret.meta_app_secret.arn
+        },
+        {
+          name      = "META_WEBHOOK_VERIFY_TOKEN"
+          valueFrom = aws_secretsmanager_secret.meta_webhook_verify_token.arn
+        },
+        {
+          name      = "INTEGRATIONS_FERNET_KEY"
+          valueFrom = aws_secretsmanager_secret.integrations_fernet_key.arn
         },
       ]
 

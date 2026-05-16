@@ -1,8 +1,8 @@
 # 05 — First deploy
 
 Goal: from a freshly hardened AWS account, end with a running CRM at
-`https://api.lumecrm.com` answering `/healthz` with 200, and the
-frontend at `https://lumecrm.com` rendering the login page.
+`https://api.xn--lumcrm-5ua.com` answering `/healthz` with 200, and the
+frontend at `https://xn--lumcrm-5ua.com` rendering the login page.
 
 ## Prerequisites
 
@@ -88,7 +88,7 @@ docker buildx build \
 cd ../frontend
 docker buildx build \
   --platform linux/arm64 \
-  --build-arg NEXT_PUBLIC_API_BASE=https://api.lumecrm.com \
+  --build-arg NEXT_PUBLIC_API_BASE=https://api.xn--lumcrm-5ua.com \
   -t $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/lume-prod-frontend:latest \
   --push \
   .
@@ -152,17 +152,17 @@ the very first deploy where CI hasn't run yet.)
 
 ```bash
 # Liveness — should return 200 always
-curl -i https://api.lumecrm.com/healthz/live
+curl -i https://api.xn--lumcrm-5ua.com/healthz/live
 
 # Readiness — should return 200 (DB SELECT 1 succeeded)
-curl -i https://api.lumecrm.com/healthz
+curl -i https://api.xn--lumcrm-5ua.com/healthz
 
 # Frontend — should return the login page HTML
-curl -i https://lumecrm.com/login
+curl -i https://xn--lumcrm-5ua.com/login
 ```
 
 If any of these fail:
-- DNS not propagated yet — `dig api.lumecrm.com` should return the
+- DNS not propagated yet — `dig api.xn--lumcrm-5ua.com` should return the
   ALB's IP.
 - ALB target group "unhealthy" — check CloudWatch logs at
   `/lume-crm/prod/backend` for the actual error.

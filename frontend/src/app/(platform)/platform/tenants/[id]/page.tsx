@@ -85,7 +85,7 @@ export default function PlatformTenantDetailPage({ params }: { params: Promise<{
             <StatusPill status={tenant.status} />
           </div>
           <p className="mt-2 text-sm text-muted-foreground font-mono">
-            {tenant.slug}.lumecrm.com
+            {tenant.slug}.xn--lumcrm-5ua.com
           </p>
         </div>
       </header>

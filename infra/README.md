@@ -51,17 +51,17 @@ failure leaves a half-finished zone Terraform can't reason about.
 
 ```bash
 aws route53 create-hosted-zone \
-  --name lumecrm.com \
+  --name xn--lumcrm-5ua.com \
   --caller-reference "$(date +%s)"
 
 # Print the NS records — copy them to your registrar.
-aws route53 list-hosted-zones-by-name --dns-name lumecrm.com
+aws route53 list-hosted-zones-by-name --dns-name xn--lumcrm-5ua.com
 aws route53 get-hosted-zone --id <zone-id>
 ```
 
 Update the registrar to point at those four NS records. DNS
 propagation is typically <1 hr but can be longer. Once `dig NS
-lumecrm.com` returns the AWS nameservers, continue.
+xn--lumcrm-5ua.com` returns the AWS nameservers, continue.
 
 ### 2. Bootstrap the state backend
 
@@ -113,7 +113,7 @@ docker tag lume-prod-backend:bootstrap $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
 docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/lume-prod-backend:latest
 
 # Frontend
-docker build --build-arg NEXT_PUBLIC_API_BASE=https://api.lumecrm.com \
+docker build --build-arg NEXT_PUBLIC_API_BASE=https://api.xn--lumcrm-5ua.com \
   -t lume-prod-frontend:bootstrap ./frontend
 docker tag lume-prod-frontend:bootstrap $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/lume-prod-frontend:latest
 docker push $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/lume-prod-frontend:latest
@@ -136,7 +136,7 @@ aws ecs update-service \
 After ~3 min, hit the ALB DNS name (in `terraform output`):
 
 ```bash
-curl https://api.lumecrm.com/healthz/live
+curl https://api.xn--lumcrm-5ua.com/healthz/live
 ```
 
 Should return `{"status":"alive"}`.

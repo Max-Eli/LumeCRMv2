@@ -132,7 +132,7 @@ regardless of source.
 or `X-Tenant-Slug` header (dev). Both fail for the public booking
 page in two real scenarios:
 
-- A tenant shares `https://acmespa.lumecrm.com/book/acmespa` —
+- A tenant shares `https://acmespa.xn--lumcrm-5ua.com/book/acmespa` —
   subdomain works, but a customer who lands on the marketing site
   at `https://promo.spa.com` and clicks "Book" doesn't carry the
   subdomain.

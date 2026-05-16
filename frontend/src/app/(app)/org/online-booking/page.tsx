@@ -313,7 +313,7 @@ function BookingUrlCard({
   // window.origin at render time. Falls back to a sensible default
   // during SSR before hydration.
   const origin =
-    typeof window !== 'undefined' ? window.location.origin : 'https://lumecrm.com';
+    typeof window !== 'undefined' ? window.location.origin : 'https://xn--lumcrm-5ua.com';
   const url = `${origin}/book/${tenant.slug}`;
 
   const handleCopy = async () => {

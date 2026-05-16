@@ -105,7 +105,7 @@ export default function PlatformLoginPage() {
                     type="email"
                     autoComplete="email"
                     autoFocus
-                    placeholder="you@lumecrm.com"
+                    placeholder="you@xn--lumcrm-5ua.com"
                     disabled={login.isPending}
                     {...form.register('email')}
                   />

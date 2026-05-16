@@ -51,7 +51,7 @@ def _make_tenant(slug: str, *, status_value=Tenant.Status.ACTIVE) -> tuple[Tenan
 
 def _platform_admin_client() -> tuple[User, APIClient]:
     """Sign in a platform admin (no tenant memberships)."""
-    user = _make_user('platform-admin@lumecrm.com', is_platform_admin=True)
+    user = _make_user('platform-admin@xn--lumcrm-5ua.com', is_platform_admin=True)
     client = APIClient()
     client.force_login(user)
     return user, client

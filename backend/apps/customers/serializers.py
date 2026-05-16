@@ -115,6 +115,10 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
             'referral_code',
             # Provenance (read-only)
             'external_id', 'external_source', 'imported_at',
+            # Acquisition (ADR 0027 §8a) — first-touch, read-only
+            'acquisition_source',
+            'instagram_handle',
+            'is_social_guest',
             # Timestamps
             'created_at', 'updated_at',
         ]
@@ -122,6 +126,12 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
             'id', 'full_name',
             'referral_code',
             'external_id', 'external_source', 'imported_at',
+            # acquisition_source is immutable from the API — set on
+            # create by whichever view created the customer, never
+            # overwritten. See ADR 0027 §8a.
+            'acquisition_source',
+            'instagram_handle',
+            'is_social_guest',
             'created_at', 'updated_at',
             # Consent + suppression metadata: only set by the backend
             # (booking_form, unsubscribe_link, manual ops). The opt-in

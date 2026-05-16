@@ -136,7 +136,7 @@ function TenantRow({
         <div className="min-w-0">
           <p className="font-medium text-foreground truncate">{tenant.name}</p>
           <p className="text-xs text-muted-foreground font-mono truncate">
-            {tenant.slug}.lumecrm.com
+            {tenant.slug}.xn--lumcrm-5ua.com
           </p>
         </div>
       </TableCell>

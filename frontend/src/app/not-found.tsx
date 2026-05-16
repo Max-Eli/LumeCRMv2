@@ -60,10 +60,10 @@ export default function NotFoundPage() {
         <p className="mt-12 text-[11px] text-muted-foreground">
           Need a hand? Reach out to your spa&rsquo;s team or
           <a
-            href="mailto:support@lumecrm.com"
+            href="mailto:support@xn--lumcrm-5ua.com"
             className="ml-1 underline underline-offset-2 hover:text-foreground"
           >
-            support@lumecrm.com
+            support@xn--lumcrm-5ua.com
           </a>
           .
         </p>

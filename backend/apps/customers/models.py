@@ -195,6 +195,61 @@ class Customer(TenantedModel):
     external_source = models.CharField(max_length=50, blank=True, help_text="e.g. 'zenoti', 'vagaro'")
     imported_at = models.DateTimeField(null=True, blank=True)
 
+    # ── Acquisition source (ADR 0027 §8a) ──────────────────────────
+    # First-touch attribution — answers "where did this customer
+    # originally come from?" Set at create; immutable thereafter so
+    # historical reports stay accurate. Distinct from `referral_source`
+    # (which is the operator-facing free-form text "told us about by
+    # Mary") and from `Appointment.source` (which captures the booking
+    # surface, not the customer's origin).
+    class AcquisitionSource(models.TextChoices):
+        INSTAGRAM = 'instagram', 'Instagram DM'
+        FACEBOOK = 'facebook', 'Facebook Messenger'
+        WHATSAPP = 'whatsapp', 'WhatsApp'
+        ONLINE_BOOKING = 'online_booking', 'Online booking page'
+        WALK_IN = 'walk_in', 'Walk-in'
+        REFERRAL = 'referral', 'Client referral'
+        ZENOTI_IMPORT = 'zenoti_import', 'Zenoti import'
+        VAGARO_IMPORT = 'vagaro_import', 'Vagaro import'
+        MANUAL = 'manual', 'Manually added by staff'
+        OTHER = 'other', 'Other'
+
+    acquisition_source = models.CharField(
+        max_length=20,
+        choices=AcquisitionSource.choices,
+        default=AcquisitionSource.MANUAL,
+        db_index=True,
+        help_text=(
+            'Where this customer originally entered the CRM. Immutable '
+            'after create. Drives "Revenue by acquisition source" reports.'
+        ),
+    )
+
+    # ── Instagram (ADR 0027) ───────────────────────────────────────
+    # Stored when the customer DMs the tenant on IG. Used to match
+    # subsequent inbound messages to the same customer record. The
+    # @ prefix is stripped on save (one canonical form).
+    instagram_handle = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        db_index=True,
+        help_text='IG handle without the @ prefix.',
+    )
+
+    # Marks a Customer row auto-created by a social DM where the
+    # operator has not yet confirmed the person's identity. Hidden
+    # from the main customer list by default; lives in the social
+    # inbox until merged into a real customer (or promoted in place).
+    is_social_guest = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            'True for placeholder rows created by an inbound social DM '
+            'from an unknown sender. Hidden from the main directory.'
+        ),
+    )
+
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)

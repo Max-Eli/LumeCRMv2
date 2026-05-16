@@ -21,6 +21,7 @@ import {
   Calendar,
   Clock,
   FileText,
+  Inbox,
   LayoutDashboard,
   LogOut,
   Megaphone,
@@ -62,6 +63,10 @@ interface NavLink {
    *  actually means something. Defaults to `'location'` (the day-to-
    *  day, current-site surfaces). */
   group?: 'location' | 'organization';
+  /** When set, hide the link entirely from members whose role is
+   *  NOT in this list. Mirrors the backend permission gate so the
+   *  user doesn't click through to a 403. */
+  roles?: ReadonlyArray<'owner' | 'manager' | 'front_desk' | 'provider' | 'bookkeeper' | 'marketing'>;
   /** Optional sub-links shown when the parent is active (i.e. the
    *  current path starts with `href`). Each sub-link can be role-
    *  gated; if `roles` is set, only members whose role is in the
@@ -156,6 +161,17 @@ const NAV_LINKS: NavLink[] = [
       { href: '/marketing/templates', label: 'Templates', roles: ['owner', 'manager', 'marketing'] },
       { href: '/marketing/campaigns', label: 'Campaigns', roles: ['owner', 'manager', 'marketing'] },
     ],
+  },
+  // Social inbox — Instagram Business DMs (FB + WhatsApp later).
+  // Distinct from /inbox (SMS popout) because social DMs are batched
+  // triage, not real-time front-desk work alongside the calendar.
+  // Owner + manager only (mirrors backend MANAGE_INTEGRATIONS gate).
+  {
+    href: '/social',
+    label: 'Social inbox',
+    icon: Inbox,
+    group: 'location',
+    roles: ['owner', 'manager'],
   },
   // Organization-level surface — the business as a whole, not any one
   // location. Houses business profile + locations management +
@@ -389,10 +405,17 @@ function NavGroups({
   showIASplit: boolean;
   activeLocationName: string | null;
 }) {
+  // Filter out role-gated top-level links the user can't see (mirrors
+  // backend permission gates — prevents the link from rendering at
+  // all rather than a 403 on click).
+  const visibleLinks = links.filter(
+    (l) => !l.roles || (userRole && l.roles.includes(userRole as never)),
+  );
+
   if (!showIASplit) {
     return (
       <>
-        {links.map((link) => (
+        {visibleLinks.map((link) => (
           <SidebarLink
             key={link.href}
             link={link}
@@ -404,8 +427,8 @@ function NavGroups({
     );
   }
 
-  const locationLinks = links.filter((l) => (l.group ?? 'location') === 'location');
-  const orgLinks = links.filter((l) => l.group === 'organization');
+  const locationLinks = visibleLinks.filter((l) => (l.group ?? 'location') === 'location');
+  const orgLinks = visibleLinks.filter((l) => l.group === 'organization');
 
   return (
     <>

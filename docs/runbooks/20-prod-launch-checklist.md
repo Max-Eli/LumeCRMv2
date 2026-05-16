@@ -42,7 +42,7 @@ work; this list is the sign-off gate.
 - [ ] HSTS header set on all responses, preload OFF (until ready)
 - [ ] No publicly accessible RDS instance
 - [ ] No publicly accessible Fargate task (private subnets only)
-- [ ] Wildcard ACM cert covers `*.lumecrm.com` + apex + `api.`
+- [ ] Wildcard ACM cert covers `*.xn--lumcrm-5ua.com` + apex + `api.`
 
 ## Data
 

@@ -88,13 +88,13 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 ## 4. Phased rollout
 
 ### Phase 0g — Marketing site (Session 1 ✅ completed 2026-05-03)
-*Goal: a separate Next 16 app at `lumecrm.com` (CRM lives at `<tenant>.lumecrm.com`), editorial / luxury treatment, professional enough to win medspa decision-makers comparing against Boulevard / Zenoti / Podium.*
+*Goal: a separate Next 16 app at `xn--lumcrm-5ua.com` (CRM lives at `<tenant>.xn--lumcrm-5ua.com`), editorial / luxury treatment, professional enough to win medspa decision-makers comparing against Boulevard / Zenoti / Podium.*
 
 **Architecture — separate app, mirrored brand**
 - [x] **`marketing/` app at the repo root** — Next 16 + React 19 + Tailwind 4, port `:3001` in dev, sibling to `frontend/` (the CRM). Independent `package.json`, deps, build, deployment.
 - [x] **MP096 fire palette mirrored verbatim** in `marketing/src/app/globals.css` so the brand reads as one continuous experience (cream → black → burgundy editorial accent → fire emphasis).
 - [x] **Brand assets shared** — `favicon.png`, `logosquare.png`, `mainlogo.png` copied to `marketing/public/`. `<BrandMark>` component mirrors the CRM's so any future logo refresh is two file copies.
-- [x] **Production deployment shape documented** in [marketing/README.md](marketing/README.md): apex `lumecrm.com` → marketing app, `*.lumecrm.com` wildcard CNAME → CRM, `api.lumecrm.com` → Django backend. `NEXT_PUBLIC_APP_URL` env var points the "Sign in" CTA at the CRM origin.
+- [x] **Production deployment shape documented** in [marketing/README.md](marketing/README.md): apex `xn--lumcrm-5ua.com` → marketing app, `*.xn--lumcrm-5ua.com` wildcard CNAME → CRM, `api.xn--lumcrm-5ua.com` → Django backend. `NEXT_PUBLIC_APP_URL` env var points the "Sign in" CTA at the CRM origin.
 
 **Editorial luxury design language (no AI-template tropes)**
 - [x] **Custom design utilities** — `.font-display` (Fraunces with `opsz: 144` for hero headlines), `.eyebrow` (small-caps tracked label), `.accent-italic` (italic burgundy phrase inside a serif headline), `.drop-cap` (3-line serif drop cap on opening paragraphs), `.rule` (fine ruled section divider).
@@ -612,7 +612,7 @@ category; Sessions 2 + 3 fill out the catalog and add CSV export.*
 - [x] **`PATCH /api/memberships/{id}/`** — staff role / `is_active` / `is_bookable` / `job_title_id` editable. Gated by `MANAGE_STAFF`. Audit-logged with before/after on each changed field. Create + destroy explicitly disallowed (member additions go through future invite flow; deactivation via `is_active=false` preserves audit trail).
 - [x] **Last-active-owner guardrail** — cannot demote or deactivate the only remaining active owner. Backend enforces via 403; frontend mirrors as a disabled control + tooltip so the destructive button never tempts a click in that state.
 - [x] **16 backend tests** covering tenant read/update + permission gating + slug read-only + cross-tenant blocked + membership PATCH + last-owner guardrail + audit metadata + create/destroy disallowed (41/41 total backend tests passing).
-- [x] **`/settings/business` page** — owner-editable business profile + branding form. Includes a "Your portal: `{slug}`.lumecrm.com" read-only banner so the owner knows what URL to share with their team. Address fields tucked behind an "Add address details" expander (auto-opens if any field is populated). Branding section has an explicit explainer that logo + color show on login + booking page only, not the staff CRM.
+- [x] **`/settings/business` page** — owner-editable business profile + branding form. Includes a "Your portal: `{slug}`.xn--lumcrm-5ua.com" read-only banner so the owner knows what URL to share with their team. Address fields tucked behind an "Add address details" expander (auto-opens if any field is populated). Branding section has an explicit explainer that logo + color show on login + booking page only, not the staff CRM.
 - [x] **`/settings/staff` page** — staff list with inline role Select, bookable toggle, deactivate (with inline confirm), and reactivate. "Show inactive" toggle in the page-header actions slot. Search bar over name + email. Owners get a special chip + role-change is locked out from the inline dropdown (would need a deliberate flow). Last-active-owner guardrail mirrored client-side.
 - [x] **Sidebar Settings entry** — enabled with sub-menu (Business / Staff). Sub-links visible only when on a `/settings` route, indented under the parent with a left rule + accent border on the active child. Each sub-link is role-gated (Business → owner only, Staff → owner + manager) so users only see entries they can actually use.
 
@@ -661,26 +661,35 @@ category; Sessions 2 + 3 fill out the catalog and add CSV export.*
 - [x] **14 backend tests** covering permission gating, list shape, connect-begin placeholder, disconnect lifecycle, tenant isolation. **301/301 total backend tests passing.**
 - [x] **`/org/integrations` page** in Organization sidebar (owner+manager only) — three provider cards with status pill, "what this enables" bullets, Connect button (currently triggers friendly "awaiting Meta App approval" toast), two-click confirm on Disconnect.
 
-**External work — paused on Meta App approval pipeline (paused 2026-05-04)**
+**Session 2 ✅ (completed 2026-05-16): Instagram OAuth + webhook + ingestion**
 
-User started Meta App registration. Status as of pause:
-- ✅ Meta App created with type "Business"
-- ✅ Messenger product added (webhook config skipped — Meta allows it)
-- ⏸ Instagram + WhatsApp products NOT yet added — Meta's UX requires a working webhook URL upfront for these two, which we don't have until production deployment (Phase 0c) or a sustained ngrok tunnel
-- ⏸ Business Verification not yet submitted
-- ⏸ Privacy Policy + Terms URLs not yet on Meta App settings (depend on `/privacy`, `/terms` pages on the marketing site, which are themselves still placeholder routes)
-- ⏸ App Review for `pages_messaging`, `instagram_business_*`, `whatsapp_business_*` scopes — blocked on the above
+Production at `api.xn--lumcrm-5ua.com` unblocked the Meta-callback dependency. ADR 0027 lays out the full design (OAuth chain, encrypted token storage, webhook signature scheme, customer matching, acquisition-source first-touch attribution, social-guest merge, PHI policy for Meta DMs).
 
-**To resume (probably after Phase 0c production deployment):**
-1. Production backend deployed at `https://api.lumecrm.com` so Meta has a real callback URL to point at
-2. Build webhook receiver: `POST /api/integrations/webhooks/meta/` with hub-challenge verification + signed-payload validation
-3. Add Instagram + WhatsApp products to the Meta App with the real callback URL
-4. Submit Business Verification + Privacy Policy / Terms URLs (these depend on `marketing/` legal pages being filled in)
-5. App Review for the messaging scopes (2-6 weeks each)
-6. Wire OAuth flow + token storage with field-level encryption
-7. Build unified inbox UI
+- [x] **Token encryption** via `cryptography.fernet` (`apps/integrations/security.py`) — `Connection.auth_data` is now an opaque TextField blob; `auth_data_dict` / `set_auth_data()` / `clear_auth_data()` are the only call paths. Multi-key rotation supported via `INTEGRATIONS_FERNET_KEYS`. Made good on the v1 promise in the Connection docstring.
+- [x] **Customer model extended** — new `acquisition_source` enum (immutable after create; choices include `instagram` / `online_booking` / `manual` / `zenoti_import` / `walk_in` / `referral` / etc.), `instagram_handle`, `is_social_guest`. Backfill migration set existing rows to `manual` (and `zenoti_import` for rows with `external_source='zenoti'`).
+- [x] **`SocialThread` + `SocialMessage`** models in `apps.integrations` — separate from `apps.messaging.Message` per ADR 0022's anticipated split (different identifier shapes, different status enums, different PHI postures). Idempotency fence on `(tenant, external_message_id)` so duplicate webhook deliveries become no-ops.
+- [x] **Real OAuth flow** end-to-end — `connect/begin` returns the Facebook OAuth authorize URL with a session-bound state token; `meta/oauth/callback/` validates state (CSRF + replay + 10-min TTL), exchanges code → short-lived → long-lived → page access token, picks the IG-linked Page, fetches the IG Business Account ID + username, subscribes the Page to `messages` / `messaging_postbacks` / `message_reads`, encrypts everything into `Connection.auth_data`, flips status to CONNECTED. All steps audit-logged. Provider registry's `oauth_ready` flag now derives from env (`META_APP_ID` + `META_APP_SECRET` + `META_WEBHOOK_VERIFY_TOKEN`).
+- [x] **Webhook receiver** at `/api/integrations/webhooks/meta/` — GET handles the `hub.verify_token` handshake; POST validates `X-Hub-Signature-256` HMAC over the raw body, then parses Messenger Platform payloads. Per ADR 0027 §3 the endpoint NEVER returns 4xx to Meta (signature failure / bad JSON / unknown page all return 200 with `received: false` to prevent retry storms).
+- [x] **Customer matching** — inbound DM from an unknown sender creates a `Customer` row with `is_social_guest=True`, `external_source='instagram'`, `acquisition_source='instagram'`, all marketing opt-ins forced False (social-DM consent is not marketing consent). Subsequent messages from the same sender reuse the existing thread + customer. Echo messages skipped (`is_echo: True`).
+- [x] **Acquisition source wiring on every customer-create path** — public booking sets `online_booking`; staff `/clients/new` keeps the model default `manual`; Zenoti importer (in-progress) will set `zenoti_import`; inbound IG DM sets `instagram`. All immutable after create.
+- [x] **Social-guest merge endpoint** at `POST /api/customers/<source>/merge-into/<target>/` — moves all SocialThreads + SocialMessages to the target customer, copies `acquisition_source` + `instagram_handle` to target IF target is still on the default (preserves earlier first-touch), soft-deletes the guest by flipping status to INACTIVE. Gated by `EDIT_CLIENT_RECORD`. Rejects merging a real customer / merging into another guest / merging into self.
+- [x] **46 new backend tests** covering token encryption round-trip + corruption rejection, Connection accessors, OAuth state generation + one-time-use + expiry + mismatch, `connect/begin` ready + not-ready paths, OAuth callback success + invalid-state + Meta-side error, webhook GET handshake (valid + wrong-token + wrong-mode), webhook POST signature verification (always-200 posture), inbound ingestion + customer matching + idempotency + thread reuse + unknown-page + echo-skip + cross-tenant isolation, merge endpoint happy path + 4 rejection paths + acquisition preservation. **963/963 total backend tests passing.**
+- [x] **ADR 0027** — Meta IG OAuth + webhook + social inbox + acquisition source + merge + PHI policy. Written before code per the post-ADR-0008 discipline.
+- [x] **`apps/integrations/README.md`** + **`docs/runbooks/06-meta-instagram-app-setup.md`** — operator setup walkthrough (create Meta App, add products, configure webhook, generate Fernet key, set env vars, Business Verification, App Review submission). User-facing.
 
-**Why we paused:** Pushing ahead would require either (a) deploying production prematurely just to satisfy Meta's webhook URL requirement, or (b) running an ngrok tunnel for the duration of Meta's 2-6 week review pipeline. Both are wasteful when the underlying webhook receiver code doesn't exist yet. Cleaner to come back when production is deployed and we have all three products' webhook URLs ready in one shot.
+**Session 3 (next): UI + outbound + reports**
+1. **`/social` inbox UI** — thread list with unread counts, thread view with chronological message bubbles, "send reply" composer with the PHI-policy banner.
+2. **Outbound send** — `POST /v22.0/{ig-user-id}/messages` with `recipient.id` + `message.text` via the stored page access token. Enforces Meta's 24-hour reply window server-side by checking `SocialThread.last_inbound_at`.
+3. **Token refresh background job** — daily celery beat task that re-issues page access tokens nearing the 60-day expiry. Without this, tokens silently die on day 60.
+4. **Social-guest merge UI** — button on the customer profile + thread header to link a guest to an existing client record.
+5. **Two acquisition reports** in `apps.reports`: `bookings_by_acquisition_source` (Operations) + `revenue_by_acquisition_source` (Financial, aggregated PHI tier). Answers "is the Meta ad budget producing revenue?"
+
+**External work — NEEDED FROM YOU before tenants can connect in prod:**
+- Create the Meta App, configure products + webhook + redirect URI per `docs/runbooks/06-meta-instagram-app-setup.md`
+- Set `META_APP_ID`, `META_APP_SECRET`, `META_WEBHOOK_VERIFY_TOKEN`, `INTEGRATIONS_FERNET_KEY` in Secrets Manager
+- Submit Meta Business Verification (~2–10 business days first time)
+- Submit App Review for `instagram_business_basic` + `instagram_business_manage_messages` + `pages_show_list` + `pages_manage_metadata` (~1–4 weeks each, usually reviewed as a batch)
+- Switch the Meta App to Live mode once approved
 
 #### 1I. Online booking — hosted page (client-facing)
 *Public-facing booking page per tenant. No login required for customers. URL like `acmespa.lume-crm.com/book` — tenants share it from Instagram bio, email signature, business cards, anywhere. This is the v1 customer-facing booking experience.*
@@ -1245,7 +1254,7 @@ We're building forward through Phase 1 features and **deliberately deferring pol
 
 ### Tenant subdomains + branding application
 
-The CRM is multi-tenant via subdomain (`acmespa.lumecrm.com`); the
+The CRM is multi-tenant via subdomain (`acmespa.xn--lumcrm-5ua.com`); the
 backend already resolves the tenant from the host. Tenant branding
 (logo + primary color) is collected in tenant settings but **only
 applied to client-facing surfaces** — the staff CRM stays on the

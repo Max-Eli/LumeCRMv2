@@ -63,6 +63,13 @@ data "aws_iam_policy_document" "ecs_execution_secrets" {
       # Secrets Manager, never in TF state).
       aws_secretsmanager_secret.twilio_account_sid.arn,
       aws_secretsmanager_secret.twilio_auth_token.arn,
+      # Meta integration credentials. Same pattern as Twilio — the
+      # value is written manually post-`terraform apply` via
+      # `aws secretsmanager put-secret-value`. ADR 0027.
+      aws_secretsmanager_secret.meta_app_id.arn,
+      aws_secretsmanager_secret.meta_app_secret.arn,
+      aws_secretsmanager_secret.meta_webhook_verify_token.arn,
+      aws_secretsmanager_secret.integrations_fernet_key.arn,
     ]
   }
 

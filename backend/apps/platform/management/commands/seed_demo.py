@@ -15,12 +15,12 @@ fit anymore).
 Usage:
 
     # Create or refresh the default demo tenant
-    python manage.py seed_demo --owner-email demo-owner@lumecrm.com \
+    python manage.py seed_demo --owner-email demo-owner@xn--lumcrm-5ua.com \
                                --owner-password '<strong-pw>'
 
     # Customize slug / name (e.g. for a per-prospect sandbox)
     python manage.py seed_demo --slug acme-demo --name "Acme Med Spa Demo" \
-                               --owner-email acme@lumecrm.com \
+                               --owner-email acme@xn--lumcrm-5ua.com \
                                --owner-password '<strong-pw>'
 
     # Wipe and recreate from scratch

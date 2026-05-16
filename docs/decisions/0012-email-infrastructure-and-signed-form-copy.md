@@ -219,7 +219,7 @@ record(
 ### Production lift (Phase 0c)
 
 - AWS account confirmed under BAA.
-- SES domain verification for `lumecrm.com` (and per-tenant
+- SES domain verification for `xn--lumcrm-5ua.com` (and per-tenant
   subdomains for branding).
 - SES SNS topics for bounce + complaint webhooks → Django endpoint
   that flips a customer flag if they bounce hard.

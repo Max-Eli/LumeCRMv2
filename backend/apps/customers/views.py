@@ -18,14 +18,18 @@ the request's tenant comes from `TenantMiddleware`. New rows have their
 tenant set from the same source on create.
 """
 
+from django.db import transaction
 from django.db.models import Q
-from rest_framework import viewsets
-from rest_framework.exceptions import PermissionDenied
+from django.shortcuts import get_object_or_404
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.audit.models import AuditLog
 from apps.audit.services import record
 from apps.tenants.context import get_current_tenant
+from apps.tenants.permissions import P
 
 from .models import Customer
 from .permissions import CustomerPermission
@@ -127,3 +131,110 @@ class CustomerViewSet(viewsets.ModelViewSet):
             metadata={'last_name': instance.last_name},
         )
         instance.delete()
+
+    @action(
+        detail=True,
+        methods=['post'],
+        url_path='merge-into/(?P<target_pk>[^/.]+)',
+    )
+    def merge_into(self, request, pk=None, target_pk=None):
+        """Merge this social-guest customer INTO an existing real
+        customer. ADR 0027 §8b.
+
+        Use case: an inbound IG DM created a placeholder ("Instagram
+        visitor 1a2b3c") that the operator later confirms is in fact
+        Jane Smith, an existing client. Click "Merge into Jane Smith"
+        on the guest row → social messages + instagram_handle move to
+        Jane; the guest row is soft-deleted via status=archived.
+
+        Rules:
+          - Source MUST be `is_social_guest=True` (we don't auto-merge
+            real customers — that's a dedicated dedupe flow).
+          - Target MUST be in the same tenant and NOT itself a guest.
+          - Caller needs EDIT_CLIENT_RECORD.
+          - acquisition_source on the target is preserved if already
+            set to something other than MANUAL; otherwise we copy it
+            from the guest so reports retain the IG attribution.
+        """
+        membership = getattr(request, 'tenant_membership', None)
+        if not request.user.is_superuser:
+            if not membership or not membership.has(P.EDIT_CLIENT_RECORD):
+                raise PermissionDenied(
+                    'Merging client records requires the EDIT_CLIENT_RECORD permission.'
+                )
+
+        source = self.get_object()  # tenant-filtered via get_queryset
+        if not source.is_social_guest:
+            raise ValidationError({
+                'detail': (
+                    'Only social-guest customer records can be merged. '
+                    'Use the deduplication flow for two real-customer rows.'
+                ),
+                'code': 'source_not_guest',
+            })
+
+        target = get_object_or_404(
+            Customer.objects.for_current_tenant(),
+            pk=target_pk,
+        )
+        if target.id == source.id:
+            raise ValidationError({
+                'detail': 'Cannot merge a record into itself.',
+                'code': 'same_customer',
+            })
+        if target.is_social_guest:
+            raise ValidationError({
+                'detail': (
+                    'Cannot merge into another social-guest record. Pick '
+                    'a real customer as the merge target.'
+                ),
+                'code': 'target_is_guest',
+            })
+
+        from apps.integrations.models import SocialThread, SocialMessage
+
+        with transaction.atomic():
+            # Move every thread + message to the target customer.
+            thread_count = SocialThread.objects.filter(
+                tenant=source.tenant, customer=source,
+            ).update(customer=target)
+            message_count = SocialMessage.objects.filter(
+                tenant=source.tenant,
+                thread__customer=target,
+            ).count()  # post-thread-move count, used for audit only
+
+            # Preserve attribution on the target.
+            updates: dict = {}
+            if target.acquisition_source == Customer.AcquisitionSource.MANUAL:
+                updates['acquisition_source'] = source.acquisition_source
+            if not target.instagram_handle and source.instagram_handle:
+                updates['instagram_handle'] = source.instagram_handle
+            if updates:
+                for k, v in updates.items():
+                    setattr(target, k, v)
+                target.save(update_fields=[*updates.keys(), 'updated_at'])
+
+            # Soft-delete the source guest. We flip to INACTIVE
+            # (no ARCHIVED state in v1) and clear `is_social_guest`
+            # so neither the directory nor the social inbox shows
+            # this placeholder row again.
+            source.status = Customer.Status.INACTIVE
+            source.is_social_guest = False
+            source.save(update_fields=['status', 'is_social_guest', 'updated_at'])
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='customer',
+            resource_id=target.id,
+            request=request,
+            metadata={
+                'event': 'social_guest_merged',
+                'source_customer_id': source.id,
+                'threads_moved': thread_count,
+                'messages_attached': message_count,
+                'attribution_inherited': bool(updates),
+            },
+        )
+
+        serializer = self.get_serializer(target)
+        return Response(serializer.data, status=status.HTTP_200_OK)

@@ -18,7 +18,7 @@ Headers added here:
 
   Cross-Origin-Resource-Policy: same-origin
     Prevents other origins from embedding our API responses (e.g. via
-    `<img src="https://api.lumecrm.com/api/customers/1.json">` to leak
+    `<img src="https://api.xn--lumcrm-5ua.com/api/customers/1.json">` to leak
     response sizes through cross-origin timing).
 
   Permissions-Policy

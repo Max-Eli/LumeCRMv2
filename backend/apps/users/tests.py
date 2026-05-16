@@ -67,24 +67,24 @@ class LoginSeparationTests(TestCase):
         """Platform admins posting to /api/auth/login/ get a 401 with
         a structured error code so the frontend can redirect them to
         the platform login page."""
-        _make_platform_admin('platform@lumecrm.com')
+        _make_platform_admin('platform@xn--lumcrm-5ua.com')
         client = APIClient()
         client.get(reverse('auth-csrf'))
         response = client.post(
             reverse('auth-login'),
-            data={'email': 'platform@lumecrm.com', 'password': 'test-password'},
+            data={'email': 'platform@xn--lumcrm-5ua.com', 'password': 'test-password'},
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
         self.assertEqual(response.data.get('code'), 'platform_admin_account')
 
     def test_platform_admin_can_use_platform_login(self):
-        _make_platform_admin('platform@lumecrm.com')
+        _make_platform_admin('platform@xn--lumcrm-5ua.com')
         client = APIClient()
         client.get(reverse('auth-csrf'))
         response = client.post(
             reverse('auth-platform-login'),
-            data={'email': 'platform@lumecrm.com', 'password': 'test-password'},
+            data={'email': 'platform@xn--lumcrm-5ua.com', 'password': 'test-password'},
             format='json',
         )
         self.assertEqual(response.status_code, status.HTTP_200_OK)
@@ -106,7 +106,7 @@ class LoginSeparationTests(TestCase):
         self.assertNotIn('code', response.data)
 
     def test_wrong_password_returns_generic_error_on_both_surfaces(self):
-        _make_platform_admin('p@lumecrm.com')
+        _make_platform_admin('p@xn--lumcrm-5ua.com')
         _make_tenant_user('t@example.com', 'tenant')
         client = APIClient()
         client.get(reverse('auth-csrf'))
@@ -121,13 +121,13 @@ class LoginSeparationTests(TestCase):
         # Wrong password on platform surface
         r2 = client.post(
             reverse('auth-platform-login'),
-            data={'email': 'p@lumecrm.com', 'password': 'wrong'},
+            data={'email': 'p@xn--lumcrm-5ua.com', 'password': 'wrong'},
             format='json',
         )
         self.assertEqual(r2.status_code, status.HTTP_401_UNAUTHORIZED)
 
     def test_me_endpoint_exposes_is_platform_admin(self):
-        admin = _make_platform_admin('p@lumecrm.com')
+        admin = _make_platform_admin('p@xn--lumcrm-5ua.com')
         client = APIClient()
         client.force_login(admin)
         response = client.get(reverse('auth-me'))
@@ -183,8 +183,8 @@ class PlatformAdminAccountTests(TestCase):
     def test_tenant_create_rejects_platform_admin_email(self):
         """The platform-side tenant create endpoint rejects any owner
         email belonging to a platform admin — keeps worlds disjoint."""
-        admin = _make_platform_admin('admin@lumecrm.com')
-        creator = _make_platform_admin('creator@lumecrm.com')
+        admin = _make_platform_admin('admin@xn--lumcrm-5ua.com')
+        creator = _make_platform_admin('creator@xn--lumcrm-5ua.com')
         client = APIClient()
         client.force_login(creator)
         response = client.post(

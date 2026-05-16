@@ -91,7 +91,7 @@ function BusinessForm({ tenant }: { tenant: TenantSettings }) {
     form.reset(defaultValues);
   }, [defaultValues, form]);
 
-  const portalUrl = `${tenant.slug}.lumecrm.com`;
+  const portalUrl = `${tenant.slug}.xn--lumcrm-5ua.com`;
 
   const onSubmit = form.handleSubmit((values) => {
     update.mutate(values, {

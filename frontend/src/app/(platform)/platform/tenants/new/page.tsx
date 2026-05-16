@@ -1,7 +1,7 @@
 /**
  * `/platform/tenants/new` — create a new customer tenant.
  *
- * Single-page form: tenant name, slug (with live "x.lumecrm.com"
+ * Single-page form: tenant name, slug (with live "x.xn--lumcrm-5ua.com"
  * preview), owner email + name, initial status. On submit:
  *   - If owner email is a NEW user → backend provisions one with a
  *     temp password, surfaced exactly once in the success state for
@@ -168,7 +168,7 @@ export default function NewPlatformTenantPage() {
                   required
                 />
                 <span className="text-sm text-muted-foreground font-mono">
-                  .lumecrm.com
+                  .xn--lumcrm-5ua.com
                 </span>
               </div>
               {errors.slug ? (
@@ -283,7 +283,7 @@ function CreatedSuccess({
           {tenant.name} is live.
         </h1>
         <p className="mt-2 text-sm text-muted-foreground font-mono">
-          {tenant.slug}.lumecrm.com
+          {tenant.slug}.xn--lumcrm-5ua.com
         </p>
       </header>
 
@@ -314,7 +314,7 @@ function CreatedSuccess({
             Existing user{' '}
             <span className="font-mono">{tenant.members[0]?.user_email}</span> was
             attached as the owner. They can sign in at{' '}
-            <span className="font-mono">{tenant.slug}.lumecrm.com</span> with
+            <span className="font-mono">{tenant.slug}.xn--lumcrm-5ua.com</span> with
             their existing password.
           </p>
         </div>

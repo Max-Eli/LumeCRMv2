@@ -1,6 +1,6 @@
 # 02 — Domain + Route 53 hosted zone
 
-Goal: the apex domain (e.g. `lumecrm.com`) is registered, the
+Goal: the apex domain (e.g. `xn--lumcrm-5ua.com`) is registered, the
 Route 53 hosted zone exists, and the registrar's NS records point at
 it. Terraform's `dns.tf` reads this zone via data source — without
 this step, `terraform apply` fails.
@@ -31,7 +31,7 @@ GoDaddy). Same end state; one extra step to update NS records.
 
 ```bash
 aws route53 create-hosted-zone \
-  --name lumecrm.com \
+  --name xn--lumcrm-5ua.com \
   --caller-reference "$(date +%s)" \
   --hosted-zone-config Comment="Lume CRM production"
 ```
@@ -66,7 +66,7 @@ ns-012.awsdns-01.co.uk
 ### 5. Wait for propagation
 
 ```bash
-dig NS lumecrm.com +short
+dig NS xn--lumcrm-5ua.com +short
 ```
 
 Should return the four AWS nameservers (in any order). Propagation
@@ -88,7 +88,7 @@ state Terraform can't reason about.
 
 - [ ] Domain is registered
 - [ ] Route 53 hosted zone exists
-- [ ] `dig NS lumecrm.com` returns the AWS nameservers
+- [ ] `dig NS xn--lumcrm-5ua.com` returns the AWS nameservers
 - [ ] Zone ID is saved (you'll need it nowhere else explicitly —
       Terraform's data source resolves by name — but it's the kind
       of thing worth filing)

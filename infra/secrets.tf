@@ -76,3 +76,59 @@ resource "aws_secretsmanager_secret" "twilio_auth_token" {
 
   tags = { Name = "${local.name_prefix}-twilio-auth-token" }
 }
+
+
+# ── Meta (Instagram + Facebook + WhatsApp) credentials ─────────────
+#
+# ADR 0027 wires Instagram Business DM ingestion. Four secrets per
+# environment, all populated post-bootstrap via AWS CLI (see runbook
+# 08-deploy-meta-integration.md):
+#
+#   - meta-app-id              : The Meta App ID from developers.facebook.com
+#   - meta-app-secret          : The Meta App Secret (treat like a password)
+#   - meta-webhook-verify-token: Random string we choose; Meta echoes
+#                                back during webhook handshake
+#   - integrations-fernet-key  : Fernet key for encrypting OAuth tokens
+#                                at rest in the Connection.auth_data column.
+#                                NEVER change without re-encrypting existing
+#                                tokens — ADR 0027 §1.
+#
+# Same pattern as Twilio: Terraform declares the slot; ops populates
+# the value via `put-secret-value`; `lifecycle.ignore_changes` keeps
+# Terraform from churning subsequent values on re-apply.
+
+resource "aws_secretsmanager_secret" "meta_app_id" {
+  name                    = "${local.name_prefix}/meta-app-id"
+  description             = "Meta App ID (developers.facebook.com) for ${var.environment}. ADR 0027."
+  kms_key_id              = aws_kms_key.secrets.arn
+  recovery_window_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-meta-app-id" }
+}
+
+resource "aws_secretsmanager_secret" "meta_app_secret" {
+  name                    = "${local.name_prefix}/meta-app-secret"
+  description             = "Meta App Secret for ${var.environment}. Sensitive — full Meta API access. Used for OAuth + webhook signature HMAC."
+  kms_key_id              = aws_kms_key.secrets.arn
+  recovery_window_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-meta-app-secret" }
+}
+
+resource "aws_secretsmanager_secret" "meta_webhook_verify_token" {
+  name                    = "${local.name_prefix}/meta-webhook-verify-token"
+  description             = "Verify token Meta sends back during the webhook GET handshake. We choose the value; must match what's configured in the Meta App webhook UI."
+  kms_key_id              = aws_kms_key.secrets.arn
+  recovery_window_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-meta-webhook-verify-token" }
+}
+
+resource "aws_secretsmanager_secret" "integrations_fernet_key" {
+  name                    = "${local.name_prefix}/integrations-fernet-key"
+  description             = "Fernet key for encrypting OAuth tokens at rest on Connection.auth_data. Rotate via INTEGRATIONS_FERNET_KEYS multi-key list. ADR 0027 §1."
+  kms_key_id              = aws_kms_key.secrets.arn
+  recovery_window_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-integrations-fernet-key" }
+}

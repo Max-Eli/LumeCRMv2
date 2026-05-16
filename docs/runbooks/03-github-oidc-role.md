@@ -110,9 +110,9 @@ repository secret.
 | Secret name             | Value                                                      |
 | ----------------------- | ---------------------------------------------------------- |
 | `AWS_DEPLOY_ROLE_ARN`   | The ARN from step 4                                        |
-| `NEXT_PUBLIC_API_BASE`  | `https://api.lumecrm.com`                                  |
-| `TF_VAR_domain_name`    | `lumecrm.com`                                              |
-| `TF_VAR_ses_from_address` | `noreply@mail.lumecrm.com`                               |
+| `NEXT_PUBLIC_API_BASE`  | `https://api.xn--lumcrm-5ua.com`                                  |
+| `TF_VAR_domain_name`    | `xn--lumcrm-5ua.com`                                              |
+| `TF_VAR_ses_from_address` | `noreply@mail.xn--lumcrm-5ua.com`                               |
 | `TF_VAR_alarm_email`    | Email that gets paged on CloudWatch alarms                 |
 | `PRIVATE_SUBNETS_JSON`  | JSON list of private subnet IDs (filled in after first apply) |
 | `BACKEND_SG_JSON`       | JSON list with the backend SG ID (filled in after first apply) |

@@ -102,8 +102,58 @@ PROVIDERS: dict[str, ProviderConfig] = {
 
 
 def get_provider(key: str) -> ProviderConfig | None:
-    return PROVIDERS.get(key)
+    """Return a provider with `oauth_ready` derived from env state.
+
+    Each call recomputes `oauth_ready` from settings so deploy-time
+    changes to META_APP_ID / META_APP_SECRET pick up without a code
+    edit. The dataclass is `frozen=True`, so we return a NEW
+    instance with the live flag rather than mutating PROVIDERS.
+    """
+    base = PROVIDERS.get(key)
+    if base is None:
+        return None
+    return ProviderConfig(
+        key=base.key,
+        display_name=base.display_name,
+        family=base.family,
+        short_description=base.short_description,
+        enables=base.enables,
+        scopes=base.scopes,
+        oauth_ready=_is_oauth_ready(base.key),
+    )
 
 
 def all_providers() -> list[ProviderConfig]:
-    return list(PROVIDERS.values())
+    """Return every provider with its live `oauth_ready` flag."""
+    return [get_provider(p.key) for p in PROVIDERS.values()]  # type: ignore[misc]
+
+
+def _is_oauth_ready(provider_key: str) -> bool:
+    """A provider is oauth_ready when BOTH:
+
+      1. The credentials it needs are present in settings, AND
+      2. The OAuth flow is implemented for it.
+
+    (1) alone isn't sufficient — having a Meta App ID lets the IG
+    flow work, but FB Messenger + WhatsApp share the same App while
+    needing their own OAuth + webhook routing that we haven't built
+    yet. Flipping their `oauth_ready` to True because IG credentials
+    exist would surface a Connect button that 501s.
+
+    Session 1 implements meta_instagram only. Sessions 2-3 add FB
+    Messenger + WhatsApp; flip their entries here as each ships.
+    """
+    from django.conf import settings
+
+    _META_CREDENTIALS_PRESENT = bool(
+        getattr(settings, 'META_APP_ID', '')
+        and getattr(settings, 'META_APP_SECRET', '')
+        and getattr(settings, 'META_WEBHOOK_VERIFY_TOKEN', '')
+    )
+
+    if provider_key == 'meta_instagram':
+        return _META_CREDENTIALS_PRESENT
+    # meta_facebook + meta_whatsapp: OAuth flow not yet implemented.
+    if provider_key.startswith('meta_'):
+        return False
+    return False

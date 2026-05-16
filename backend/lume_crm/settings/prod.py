@@ -11,10 +11,10 @@ Required environment variables (set by ECS task def from Secrets
 Manager — see PROJECT_PLAN.md §4 Phase 0c.5 runbook):
 
     SECRET_KEY              Django secret. 50+ random bytes.
-    ALLOWED_HOSTS           Comma-separated (e.g. 'api.lumecrm.com').
+    ALLOWED_HOSTS           Comma-separated (e.g. 'api.xn--lumcrm-5ua.com').
     DATABASE_URL            postgres://user:pw@host:5432/dbname
-    PUBLIC_BASE_URL         https://app.lumecrm.com (no trailing slash)
-    DEFAULT_FROM_EMAIL      'Lumè CRM <noreply@mail.lumecrm.com>'
+    PUBLIC_BASE_URL         https://app.xn--lumcrm-5ua.com (no trailing slash)
+    DEFAULT_FROM_EMAIL      'Lumè CRM <noreply@mail.xn--lumcrm-5ua.com>'
     AWS_REGION              us-east-1 (for SES, S3, Secrets Manager)
     AWS_STORAGE_BUCKET_NAME PHI / media bucket name
     AWS_S3_KMS_KEY_ID       Customer-managed KMS key alias for SSE-KMS
@@ -24,7 +24,7 @@ Optional:
     CSRF_TRUSTED_ORIGINS    Comma-separated (defaults to ALLOWED_HOSTS
                             with https:// prefix; override only for
                             the multi-domain case).
-    SESSION_COOKIE_DOMAIN   `.lumecrm.com` if cookies need to span
+    SESSION_COOKIE_DOMAIN   `.xn--lumcrm-5ua.com` if cookies need to span
                             subdomains (the wildcard tenant pattern).
 """
 
@@ -47,8 +47,8 @@ DEBUG = False
 #
 # ALLOWED_HOSTS comes from env (no defaults — explicit allowlist).
 # CSRF needs `https://` URLs for the trusted origins; we let the env
-# control this so multi-domain rollouts (api.lumecrm.com plus the
-# wildcard *.lumecrm.com tenant pattern) are configurable without
+# control this so multi-domain rollouts (api.xn--lumcrm-5ua.com plus the
+# wildcard *.xn--lumcrm-5ua.com tenant pattern) are configurable without
 # code changes.
 
 CSRF_TRUSTED_ORIGINS = env.list(
@@ -63,10 +63,10 @@ CORS_ALLOWED_ORIGINS = env.list(
 )
 # Wildcard subdomain match for the per-tenant URLs. CORS by regex so
 # every spa subdomain works without a redeploy when we onboard one.
-# Pattern intentionally matches *.lumecrm.com only (production apex).
+# Pattern intentionally matches *.xn--lumcrm-5ua.com only (production apex).
 CORS_ALLOWED_ORIGIN_REGEXES = env.list(
     'CORS_ALLOWED_ORIGIN_REGEXES',
-    default=[r'^https://[a-z0-9-]+\.lumecrm\.com$'],
+    default=[r'^https://[a-z0-9-]+\.xn--lumcrm-5ua\.com$'],
 )
 
 # ── ALB / proxy hardening ───────────────────────────────────────────

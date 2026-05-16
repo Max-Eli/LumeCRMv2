@@ -10,9 +10,9 @@ Two middlewares live here. Both must be installed (in this order) in
      membership for, the session is force-logged-out and the request
      continues as anonymous. Subdomain-as-tenant-boundary is the load-
      bearing isolation guarantee — without this kill-the-session step,
-     a staff user on `acme.lumecrm.com` could navigate to
-     `evil.lumecrm.com` and have their session silently carry over
-     because the cookie is scoped to `.lumecrm.com` (necessary for the
+     a staff user on `acme.xn--lumcrm-5ua.com` could navigate to
+     `evil.xn--lumcrm-5ua.com` and have their session silently carry over
+     because the cookie is scoped to `.xn--lumcrm-5ua.com` (necessary for the
      subdomain-routing UX to work at all). Platform admins
      (`is_superuser` or `is_platform_admin`) are intentionally exempt —
      they can hop tenants for support reasons.

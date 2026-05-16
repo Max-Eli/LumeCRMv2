@@ -10,6 +10,7 @@ from __future__ import annotations
 from django.contrib.auth import get_user_model
 from django.test import TestCase
 from django.urls import reverse
+from django.utils import timezone
 from rest_framework import status
 from rest_framework.test import APIClient
 
@@ -211,8 +212,10 @@ class IntegrationDisconnectTests(TestCase):
             status=Connection.Status.CONNECTED,
             external_id='1234567890',
             external_name='Acme Med Spa',
-            auth_data={'access_token': 'fake-token'},
         )
+        # ADR 0027 — auth_data is encrypted; set via helper, not direct.
+        self.connection.set_auth_data({'access_token': 'fake-token'})
+        self.connection.save(update_fields=['auth_data'])
         self.client_ = _client_for(self.owner)
 
     def test_disconnect_clears_auth_and_externals(self):
@@ -223,7 +226,9 @@ class IntegrationDisconnectTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.connection.refresh_from_db()
         self.assertEqual(self.connection.status, Connection.Status.DISCONNECTED)
-        self.assertEqual(self.connection.auth_data, {})
+        # Encrypted blob cleared to empty string; decrypt yields {}.
+        self.assertEqual(self.connection.auth_data, '')
+        self.assertEqual(self.connection.auth_data_dict, {})
         self.assertEqual(self.connection.external_id, '')
         self.assertEqual(self.connection.external_name, '')
         self.assertIsNotNone(self.connection.disconnected_at)
@@ -286,3 +291,1033 @@ class IntegrationTenantIsolationTests(TestCase):
             HTTP_X_TENANT_SLUG=tenant_a.slug,
         )
         self.assertEqual(disc_resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+# ── Token encryption helper (ADR 0027 §1) ───────────────────────────
+
+
+from . import security as _security  # noqa: E402
+
+
+class TokenEncryptionTests(TestCase):
+    def test_round_trip_dict(self):
+        token = {'access_token': 'abc.def.ghi', 'page_id': '123', 'scopes': ['a', 'b']}
+        ciphertext = _security.encrypt_auth_data(token)
+        # The blob must NOT contain the plaintext token anywhere.
+        self.assertNotIn('abc.def.ghi', ciphertext)
+        self.assertNotIn('access_token', ciphertext)
+        self.assertEqual(_security.decrypt_auth_data(ciphertext), token)
+
+    def test_empty_input_round_trips(self):
+        self.assertEqual(_security.decrypt_auth_data(''), {})
+        self.assertEqual(_security.decrypt_auth_data('   '), {})
+        empty_cipher = _security.encrypt_auth_data({})
+        self.assertEqual(_security.decrypt_auth_data(empty_cipher), {})
+
+    def test_corrupt_ciphertext_raises(self):
+        with self.assertRaises(_security.EncryptionError):
+            _security.decrypt_auth_data('not-a-valid-fernet-token')
+
+    def test_connection_model_accessors(self):
+        from apps.tenants.services import create_tenant_with_defaults
+        owner = User.objects.create_user(email='enc-owner@test.local', password='test')
+        tenant = create_tenant_with_defaults(
+            name='Enc', slug='enctest', owner_user=owner,
+            status=Tenant.Status.ACTIVE,
+        )
+        conn = Connection.objects.create(
+            tenant=tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+        )
+        # Empty by default.
+        self.assertEqual(conn.auth_data_dict, {})
+
+        conn.set_auth_data({'access_token': 'secret-token-value'})
+        conn.save(update_fields=['auth_data'])
+        # The raw column is opaque ciphertext, not the plaintext.
+        self.assertNotIn('secret-token-value', conn.auth_data)
+        # Accessor decrypts.
+        self.assertEqual(
+            conn.auth_data_dict['access_token'], 'secret-token-value',
+        )
+
+        # Clear wipes the blob.
+        conn.clear_auth_data()
+        conn.save(update_fields=['auth_data'])
+        conn.refresh_from_db()
+        self.assertEqual(conn.auth_data, '')
+        self.assertEqual(conn.auth_data_dict, {})
+
+
+# ── OAuth flow (ADR 0027 §2) ────────────────────────────────────────
+
+
+from unittest.mock import patch  # noqa: E402
+
+from django.test import override_settings  # noqa: E402
+
+from . import meta as _meta  # noqa: E402
+
+
+@override_settings(
+    META_APP_ID='test-app-id',
+    META_APP_SECRET='test-app-secret',
+    META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
+    META_OAUTH_REDIRECT_URI='https://api.xn--lumcrm-5ua.test/api/integrations/meta/oauth/callback/',
+)
+class OAuthConnectBeginTests(TestCase):
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('oauthbegin')
+        self.client_ = _client_for(self.owner)
+
+    def test_oauth_ready_returns_authorize_url(self):
+        url = reverse('integrations-connect-begin', args=['meta_instagram'])
+        response = self.client_.post(url, HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('authorize_url', response.data)
+        self.assertIn('state', response.data)
+        # State is stored on the session.
+        session = self.client_.session
+        self.assertEqual(session.get('meta_oauth_state'), response.data['state'])
+        self.assertEqual(session.get('meta_oauth_provider'), 'meta_instagram')
+        # Authorize URL carries the right query params.
+        self.assertIn('client_id=test-app-id', response.data['authorize_url'])
+        self.assertIn(
+            'instagram_business_manage_messages',
+            response.data['authorize_url'],
+        )
+        self.assertIn(f'state={response.data["state"]}', response.data['authorize_url'])
+        # Connection row created in CONNECTING state.
+        connection = Connection.objects.get(
+            tenant=self.tenant, provider='meta_instagram',
+        )
+        self.assertEqual(connection.status, Connection.Status.CONNECTING)
+
+
+@override_settings(META_APP_ID='', META_APP_SECRET='', META_WEBHOOK_VERIFY_TOKEN='')
+class OAuthConnectBeginNotReadyTests(TestCase):
+    """When env credentials aren't set, the endpoint still returns 501
+    with code='oauth_not_ready' (matches the pre-ADR-0027 behavior)."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('oauthnotready')
+        self.client_ = _client_for(self.owner)
+
+    def test_not_ready_returns_501(self):
+        url = reverse('integrations-connect-begin', args=['meta_instagram'])
+        response = self.client_.post(url, HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.assertEqual(response.status_code, status.HTTP_501_NOT_IMPLEMENTED)
+        self.assertEqual(response.data['code'], 'oauth_not_ready')
+
+
+class OAuthStateTokenTests(TestCase):
+    """Direct unit coverage of state generation + consumption helpers."""
+
+    def test_state_is_random_per_call(self):
+        a = _meta.generate_state_token()
+        b = _meta.generate_state_token()
+        self.assertNotEqual(a, b)
+        # 32 bytes url-safe base64 ~= 43 chars.
+        self.assertGreaterEqual(len(a), 40)
+
+    def test_consume_rejects_missing_state(self):
+        from django.test import RequestFactory
+        from django.contrib.sessions.backends.db import SessionStore
+
+        request = RequestFactory().get('/cb')
+        request.session = SessionStore()
+        with self.assertRaises(_meta.MetaOAuthError):
+            _meta.consume_state_from_session(request, 'some-state')
+
+    def test_consume_rejects_mismatched_state(self):
+        from django.test import RequestFactory
+        from django.contrib.sessions.backends.db import SessionStore
+
+        request = RequestFactory().get('/cb')
+        request.session = SessionStore()
+        _meta.store_state_in_session(
+            request, 'real-state',
+            tenant_id=1, provider='meta_instagram',
+        )
+        with self.assertRaises(_meta.MetaOAuthError):
+            _meta.consume_state_from_session(request, 'wrong-state')
+
+    def test_consume_one_time_use(self):
+        """Same state can't be replayed (clears on first consume)."""
+        from django.test import RequestFactory
+        from django.contrib.sessions.backends.db import SessionStore
+
+        request = RequestFactory().get('/cb')
+        request.session = SessionStore()
+        _meta.store_state_in_session(
+            request, 'reuse-state',
+            tenant_id=1, provider='meta_instagram',
+        )
+        binding = _meta.consume_state_from_session(request, 'reuse-state')
+        self.assertEqual(binding['tenant_id'], 1)
+        # Second consume must fail.
+        with self.assertRaises(_meta.MetaOAuthError):
+            _meta.consume_state_from_session(request, 'reuse-state')
+
+    def test_consume_rejects_expired_state(self):
+        from django.test import RequestFactory
+        from django.contrib.sessions.backends.db import SessionStore
+
+        request = RequestFactory().get('/cb')
+        request.session = SessionStore()
+        _meta.store_state_in_session(
+            request, 'old-state',
+            tenant_id=1, provider='meta_instagram',
+        )
+        # Forge an old timestamp.
+        request.session['meta_oauth_issued_at'] = 0
+        request.session.modified = True
+        with self.assertRaises(_meta.MetaOAuthError):
+            _meta.consume_state_from_session(request, 'old-state')
+
+
+@override_settings(
+    META_APP_ID='test-app-id',
+    META_APP_SECRET='test-app-secret',
+    META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
+    META_OAUTH_REDIRECT_URI='http://localhost:8000/api/integrations/meta/oauth/callback/',
+    PUBLIC_BASE_URL='http://localhost:3000',
+)
+class OAuthCallbackTests(TestCase):
+    """End-to-end exercise of the callback view with Meta calls mocked."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('cbtest')
+        self.client_ = _client_for(self.owner)
+        # Kick off OAuth so session has the state + connection row exists.
+        begin = self.client_.post(
+            reverse('integrations-connect-begin', args=['meta_instagram']),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.state = begin.data['state']
+
+    def _mock_token_chain(self, *args, **kwargs):
+        """Return appropriate stub JSON for each Graph API URL."""
+        class _Resp:
+            def __init__(self, body):
+                self.status_code = 200
+                self._body = body
+                self.text = ''
+            def json(self):
+                return self._body
+
+        url = args[0]
+        if 'oauth/access_token' in url:
+            return _Resp({'access_token': 'long-or-short-token', 'token_type': 'bearer'})
+        if 'me/accounts' in url:
+            return _Resp({
+                'data': [{
+                    'id': 'page-id-123',
+                    'name': 'Acme Med Spa',
+                    'access_token': 'page-access-token-xyz',
+                    'instagram_business_account': {'id': 'ig-bus-id-456'},
+                }],
+            })
+        if '/ig-bus-id-456' in url and 'username' in kwargs.get('params', {}).get('fields', ''):
+            return _Resp({'username': 'acmemedspa'})
+        if 'me/permissions' in url:
+            return _Resp({'data': [
+                {'permission': 'instagram_business_manage_messages', 'status': 'granted'},
+                {'permission': 'pages_show_list', 'status': 'granted'},
+            ]})
+        return _Resp({})
+
+    def test_successful_callback_persists_encrypted_tokens(self):
+        with patch('apps.integrations.meta.requests.get', side_effect=self._mock_token_chain), \
+             patch('apps.integrations.meta.requests.post', return_value=type('R', (), {
+                 'status_code': 200,
+                 'text': '',
+                 'json': lambda self: {'success': True},
+             })()):
+            response = self.client_.get(
+                reverse('integrations-meta-oauth-callback')
+                + f'?code=test-code&state={self.state}'
+            )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('connected=instagram', response['Location'])
+
+        connection = Connection.objects.get(
+            tenant=self.tenant, provider='meta_instagram',
+        )
+        self.assertEqual(connection.status, Connection.Status.CONNECTED)
+        self.assertEqual(connection.external_id, 'page-id-123')
+        self.assertIn('acmemedspa', connection.external_name)
+        # Decrypts back to what we stored.
+        payload = connection.auth_data_dict
+        self.assertEqual(payload['page_id'], 'page-id-123')
+        self.assertEqual(payload['page_access_token'], 'page-access-token-xyz')
+        self.assertEqual(payload['instagram_business_account_id'], 'ig-bus-id-456')
+        self.assertEqual(payload['instagram_username'], 'acmemedspa')
+        # Tokens NEVER stored in plaintext (sanity).
+        self.assertNotIn('page-access-token-xyz', connection.auth_data)
+
+    def test_invalid_state_redirects_with_error(self):
+        response = self.client_.get(
+            reverse('integrations-meta-oauth-callback')
+            + '?code=test-code&state=wrong-state'
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('integration_error=invalid_state', response['Location'])
+
+    def test_meta_returns_error_redirects(self):
+        response = self.client_.get(
+            reverse('integrations-meta-oauth-callback')
+            + '?error=access_denied&state=' + self.state
+        )
+        self.assertEqual(response.status_code, 302)
+        self.assertIn('integration_error=consent_cancelled', response['Location'])
+
+
+# ── Webhook (ADR 0027 §3-4) ─────────────────────────────────────────
+
+
+import json as _json  # noqa: E402
+
+from apps.customers.models import Customer  # noqa: E402
+
+from .models import SocialMessage, SocialThread  # noqa: E402
+
+
+@override_settings(
+    META_APP_ID='test-app-id',
+    META_APP_SECRET='test-app-secret',
+    META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
+)
+class MetaWebhookHandshakeTests(TestCase):
+    def setUp(self):
+        self.url = reverse('integrations-webhook-meta')
+
+    def test_valid_token_echoes_challenge(self):
+        client = APIClient()
+        response = client.get(
+            self.url,
+            {'hub.mode': 'subscribe',
+             'hub.verify_token': 'test-verify-token',
+             'hub.challenge': 'random-challenge-789'},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.content.decode(), 'random-challenge-789')
+
+    def test_wrong_token_returns_403(self):
+        client = APIClient()
+        response = client.get(
+            self.url,
+            {'hub.mode': 'subscribe',
+             'hub.verify_token': 'WRONG',
+             'hub.challenge': 'x'},
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_wrong_mode_returns_403(self):
+        client = APIClient()
+        response = client.get(
+            self.url,
+            {'hub.mode': 'unsubscribe',
+             'hub.verify_token': 'test-verify-token',
+             'hub.challenge': 'x'},
+        )
+        self.assertEqual(response.status_code, 403)
+
+
+@override_settings(
+    META_APP_ID='test-app-id',
+    META_APP_SECRET='test-app-secret',
+    META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
+    META_TEST_MODE=True,  # bypass signature for ingestion tests
+)
+class MetaWebhookIngestionTests(TestCase):
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('ingtest')
+        self.connection = Connection.objects.create(
+            tenant=self.tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-id-999',
+            external_name='Acme Med Spa (@acmemedspa)',
+        )
+        self.url = reverse('integrations-webhook-meta')
+
+    def _payload(self, *, page_id='page-id-999', sender_id='psid-1', mid='m-1', text='hi'):
+        return {
+            'object': 'instagram',
+            'entry': [{
+                'id': page_id,
+                'time': 1700000000000,
+                'messaging': [{
+                    'sender': {'id': sender_id},
+                    'recipient': {'id': page_id},
+                    'timestamp': 1700000000000,
+                    'message': {'mid': mid, 'text': text},
+                }],
+            }],
+        }
+
+    def test_inbound_message_creates_customer_and_thread(self):
+        client = APIClient()
+        response = client.post(
+            self.url,
+            data=_json.dumps(self._payload()),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['messages_created'], 1)
+
+        # Social-guest customer created.
+        customer = Customer.objects.get(
+            tenant=self.tenant,
+            external_source='instagram',
+            external_id='psid-1',
+        )
+        self.assertTrue(customer.is_social_guest)
+        self.assertEqual(
+            customer.acquisition_source,
+            Customer.AcquisitionSource.INSTAGRAM,
+        )
+        self.assertFalse(customer.email_marketing_opt_in)
+        self.assertFalse(customer.sms_marketing_opt_in)
+
+        # Thread + message rows.
+        thread = SocialThread.objects.get(tenant=self.tenant, customer=customer)
+        self.assertEqual(thread.provider, 'instagram')
+        self.assertIsNone(thread.read_at)  # unread
+
+        message = SocialMessage.objects.get(tenant=self.tenant, thread=thread)
+        self.assertEqual(message.direction, SocialMessage.Direction.INBOUND)
+        self.assertEqual(message.body, 'hi')
+        self.assertEqual(message.external_message_id, 'm-1')
+
+    def test_duplicate_mid_is_idempotent(self):
+        client = APIClient()
+        client.post(
+            self.url,
+            data=_json.dumps(self._payload()),
+            content_type='application/json',
+        )
+        # Replay the exact same payload.
+        response = client.post(
+            self.url,
+            data=_json.dumps(self._payload()),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['messages_created'], 0)
+        self.assertEqual(response.data['messages_duplicate'], 1)
+        # Still only one row.
+        self.assertEqual(
+            SocialMessage.objects.filter(tenant=self.tenant).count(),
+            1,
+        )
+
+    def test_second_message_in_existing_thread_reuses_customer(self):
+        client = APIClient()
+        client.post(
+            self.url,
+            data=_json.dumps(self._payload(mid='m-1', text='first')),
+            content_type='application/json',
+        )
+        client.post(
+            self.url,
+            data=_json.dumps(self._payload(mid='m-2', text='second')),
+            content_type='application/json',
+        )
+        # Single customer + thread; two messages.
+        self.assertEqual(
+            Customer.objects.filter(
+                tenant=self.tenant, external_source='instagram',
+            ).count(),
+            1,
+        )
+        self.assertEqual(
+            SocialThread.objects.filter(tenant=self.tenant).count(), 1,
+        )
+        self.assertEqual(
+            SocialMessage.objects.filter(tenant=self.tenant).count(), 2,
+        )
+
+    def test_unknown_page_id_does_not_crash(self):
+        client = APIClient()
+        response = client.post(
+            self.url,
+            data=_json.dumps(self._payload(page_id='unknown-page')),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['pages_unmatched'], 1)
+        # No customers / threads / messages created.
+        self.assertEqual(
+            Customer.objects.filter(
+                tenant=self.tenant, external_source='instagram',
+            ).count(),
+            0,
+        )
+
+    def test_echo_message_is_skipped(self):
+        """Outbound echoes (`is_echo: True`) must not double-count."""
+        payload = self._payload()
+        payload['entry'][0]['messaging'][0]['message']['is_echo'] = True
+        client = APIClient()
+        response = client.post(
+            self.url,
+            data=_json.dumps(payload),
+            content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['messages_created'], 0)
+
+    def test_cross_tenant_isolation(self):
+        """A second tenant has its own Connection; webhooks for tenant A's
+        page MUST NOT create rows under tenant B."""
+        tenant_b, _ = _make_tenant_with_owner('ingtest-b')
+        Connection.objects.create(
+            tenant=tenant_b,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-id-OTHER',
+        )
+        client = APIClient()
+        client.post(
+            self.url,
+            data=_json.dumps(self._payload(page_id='page-id-999')),
+            content_type='application/json',
+        )
+        # tenant_b sees nothing.
+        self.assertEqual(
+            Customer.objects.filter(
+                tenant=tenant_b, external_source='instagram',
+            ).count(),
+            0,
+        )
+        self.assertEqual(
+            SocialMessage.objects.filter(tenant=tenant_b).count(), 0,
+        )
+
+
+@override_settings(
+    META_APP_ID='test-app-id',
+    META_APP_SECRET='test-app-secret-shh',
+    META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
+    META_TEST_MODE=False,  # exercise real signature checks
+)
+class MetaWebhookSignatureTests(TestCase):
+    """When META_TEST_MODE is OFF, the signature gate must enforce."""
+
+    def setUp(self):
+        self.url = reverse('integrations-webhook-meta')
+
+    def _good_signature(self, body: bytes) -> str:
+        import hashlib, hmac
+        return 'sha256=' + hmac.new(
+            b'test-app-secret-shh', body, hashlib.sha256,
+        ).hexdigest()
+
+    def test_valid_signature_accepted(self):
+        body = _json.dumps({'entry': []}).encode()
+        client = APIClient()
+        response = client.post(
+            self.url,
+            data=body,
+            content_type='application/json',
+            HTTP_X_HUB_SIGNATURE_256=self._good_signature(body),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.data['received'])
+
+    def test_invalid_signature_returns_200_with_received_false(self):
+        body = _json.dumps({'entry': []}).encode()
+        client = APIClient()
+        response = client.post(
+            self.url,
+            data=body,
+            content_type='application/json',
+            HTTP_X_HUB_SIGNATURE_256='sha256=deadbeef',
+        )
+        # 200, NOT 4xx — ADR 0027 §3.
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data['received'])
+        self.assertEqual(response.data['reason'], 'invalid_signature')
+
+    def test_missing_signature_returns_200_with_received_false(self):
+        body = _json.dumps({'entry': []}).encode()
+        client = APIClient()
+        response = client.post(
+            self.url, data=body, content_type='application/json',
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertFalse(response.data['received'])
+
+
+# ── Social-guest merge endpoint (ADR 0027 §8b) ──────────────────────
+
+
+class SocialGuestMergeTests(TestCase):
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('mergetest')
+        self.client_ = _client_for(self.owner)
+        self.connection = Connection.objects.create(
+            tenant=self.tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-merge-1',
+        )
+        self.guest = Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Instagram visitor abc123',
+            last_name='',
+            acquisition_source=Customer.AcquisitionSource.INSTAGRAM,
+            external_source='instagram',
+            external_id='psid-abc',
+            is_social_guest=True,
+            instagram_handle='maria.beauty',
+        )
+        self.real = Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Maria',
+            last_name='Lopez',
+            email='maria@example.com',
+            phone='+15551234567',
+        )
+        self.thread = SocialThread.objects.create(
+            tenant=self.tenant,
+            provider='instagram',
+            connection=self.connection,
+            customer=self.guest,
+            external_thread_id='psid-abc',
+            last_message_at='2026-05-15T10:00:00Z',
+        )
+        SocialMessage.objects.create(
+            tenant=self.tenant,
+            thread=self.thread,
+            direction='inbound',
+            body='hi',
+            external_message_id='mid-1',
+        )
+
+    def test_merge_moves_thread_and_preserves_acquisition(self):
+        url = reverse(
+            'customer-merge-into',
+            args=[self.guest.id, self.real.id],
+        )
+        response = self.client_.post(url, HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.assertEqual(response.status_code, 200)
+
+        self.thread.refresh_from_db()
+        self.assertEqual(self.thread.customer_id, self.real.id)
+
+        self.real.refresh_from_db()
+        self.assertEqual(
+            self.real.acquisition_source,
+            Customer.AcquisitionSource.INSTAGRAM,
+        )
+        self.assertEqual(self.real.instagram_handle, 'maria.beauty')
+
+        self.guest.refresh_from_db()
+        self.assertEqual(self.guest.status, Customer.Status.INACTIVE)
+        self.assertFalse(self.guest.is_social_guest)
+
+    def test_merge_real_customer_into_real_is_rejected(self):
+        # Both are real (not guests).
+        other_real = Customer.objects.create(
+            tenant=self.tenant, first_name='Other', last_name='Person',
+        )
+        url = reverse(
+            'customer-merge-into', args=[other_real.id, self.real.id],
+        )
+        response = self.client_.post(url, HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 'source_not_guest')
+
+    def test_merge_into_self_rejected(self):
+        # Set up a single guest pointing at itself.
+        url = reverse(
+            'customer-merge-into', args=[self.guest.id, self.guest.id],
+        )
+        response = self.client_.post(url, HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.assertIn(response.status_code, (400, 404))
+
+    def test_merge_into_another_guest_rejected(self):
+        other_guest = Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Instagram visitor xyz',
+            is_social_guest=True,
+            acquisition_source=Customer.AcquisitionSource.INSTAGRAM,
+        )
+        url = reverse(
+            'customer-merge-into', args=[self.guest.id, other_guest.id],
+        )
+        response = self.client_.post(url, HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertEqual(response.data['code'], 'target_is_guest')
+
+    def test_merge_preserves_existing_acquisition_on_target(self):
+        """If the real customer already has a non-MANUAL acquisition
+        source (e.g. zenoti_import), the merge keeps it — the IG
+        attribution is informational only."""
+        self.real.acquisition_source = Customer.AcquisitionSource.ZENOTI_IMPORT
+        self.real.save(update_fields=['acquisition_source'])
+        url = reverse(
+            'customer-merge-into', args=[self.guest.id, self.real.id],
+        )
+        self.client_.post(url, HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.real.refresh_from_db()
+        # Stayed zenoti_import.
+        self.assertEqual(
+            self.real.acquisition_source,
+            Customer.AcquisitionSource.ZENOTI_IMPORT,
+        )
+
+
+# ── Public booking sets acquisition_source = online_booking ─────────
+
+
+class BookingAcquisitionSourceTests(TestCase):
+    """Sanity check: customers created via the public booking page
+    carry the right first-touch attribution."""
+
+    def test_booking_create_sets_online_booking(self):
+        from apps.booking.services import find_or_create_customer
+        tenant, _ = _make_tenant_with_owner('bookatt')
+        customer, created = find_or_create_customer(
+            tenant=tenant,
+            first_name='Jane',
+            last_name='Doe',
+            email='jane@example.com',
+            phone='+15550001111',
+        )
+        self.assertTrue(created)
+        self.assertEqual(
+            customer.acquisition_source,
+            Customer.AcquisitionSource.ONLINE_BOOKING,
+        )
+
+
+# ── Data Deletion Callback (Meta Platform Terms) ────────────────────
+
+
+@override_settings(
+    META_APP_ID='test-app-id',
+    META_APP_SECRET='test-app-secret',
+    META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
+    META_TEST_MODE=True,  # skip signature verification in tests
+    PUBLIC_BASE_URL='https://api.xn--lumcrm-5ua.test',
+)
+class MetaDataDeletionTests(TestCase):
+    """Meta sends a `signed_request` POST when a user removes the app.
+    We verify, revoke their connections, persist an audit row, return
+    a confirmation URL the user can hit to verify processing."""
+
+    def _signed_request_for(self, user_id: str) -> str:
+        """Build a signed_request payload — in TEST_MODE the signature
+        is not verified, so we use a placeholder."""
+        import base64
+        import json as _json
+        payload = {
+            'user_id': user_id,
+            'algorithm': 'HMAC-SHA256',
+            'issued_at': 1234567890,
+        }
+        payload_b64 = base64.urlsafe_b64encode(
+            _json.dumps(payload).encode('utf-8')
+        ).rstrip(b'=').decode('ascii')
+        return f'sig.{payload_b64}'
+
+    def test_clears_tokens_for_authorising_user(self):
+        tenant, _ = _make_tenant_with_owner('deletion-clear')
+        conn = Connection.objects.create(
+            tenant=tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-123',
+            external_name='Acme Spa IG',
+        )
+        conn.set_auth_data({
+            'page_id': 'page-123',
+            'page_access_token': 'PAT-xyz',
+            'fb_user_id': 'fb-user-42',
+        })
+        conn.save()
+
+        response = APIClient().post(
+            reverse('integrations-meta-data-deletion'),
+            data={'signed_request': self._signed_request_for('fb-user-42')},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('confirmation_code', response.data)
+        self.assertIn('url', response.data)
+
+        conn.refresh_from_db()
+        self.assertEqual(conn.status, Connection.Status.DISCONNECTED)
+        self.assertEqual(conn.auth_data, '')
+
+    def test_audit_row_persisted(self):
+        tenant, _ = _make_tenant_with_owner('deletion-audit')
+        conn = Connection.objects.create(
+            tenant=tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-555',
+        )
+        conn.set_auth_data({'fb_user_id': 'fb-user-99'})
+        conn.save()
+
+        response = APIClient().post(
+            reverse('integrations-meta-data-deletion'),
+            data={'signed_request': self._signed_request_for('fb-user-99')},
+        )
+        from apps.integrations.models import DataDeletionRequest
+        row = DataDeletionRequest.objects.get(
+            confirmation_code=response.data['confirmation_code'],
+        )
+        self.assertEqual(row.status, DataDeletionRequest.Status.PROCESSED)
+        self.assertEqual(row.external_user_id, 'fb-user-99')
+        self.assertEqual(row.affected_connection_ids, [conn.pk])
+        self.assertEqual(row.affected_page_ids, ['page-555'])
+
+    def test_unmatched_user_still_returns_confirmation(self):
+        """A user can remove the app before completing OAuth. We still
+        respond with a valid confirmation so Meta doesn't spin."""
+        response = APIClient().post(
+            reverse('integrations-meta-data-deletion'),
+            data={'signed_request': self._signed_request_for('no-match')},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertIn('confirmation_code', response.data)
+
+    def test_missing_signed_request_returns_400(self):
+        response = APIClient().post(
+            reverse('integrations-meta-data-deletion'),
+            data={},
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_status_endpoint_returns_processed_row(self):
+        tenant, _ = _make_tenant_with_owner('deletion-status')
+        conn = Connection.objects.create(
+            tenant=tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-777',
+        )
+        conn.set_auth_data({'fb_user_id': 'fb-user-77'})
+        conn.save()
+        post_response = APIClient().post(
+            reverse('integrations-meta-data-deletion'),
+            data={'signed_request': self._signed_request_for('fb-user-77')},
+        )
+        code = post_response.data['confirmation_code']
+        get_response = APIClient().get(
+            reverse('integrations-meta-data-deletion-status', args=[code]),
+        )
+        self.assertEqual(get_response.status_code, 200)
+        self.assertEqual(get_response.data['status'], 'processed')
+        self.assertEqual(get_response.data['integrations_revoked'], 1)
+
+    def test_status_endpoint_unknown_code_404(self):
+        response = APIClient().get(
+            reverse('integrations-meta-data-deletion-status', args=['nope']),
+        )
+        self.assertEqual(response.status_code, 404)
+
+
+# ── Social inbox API ────────────────────────────────────────────────
+
+
+def _make_thread_with_message(*, tenant, connection, customer, body='hi'):
+    from apps.integrations.models import SocialMessage, SocialThread
+    now = timezone.now()
+    thread = SocialThread.objects.create(
+        tenant=tenant,
+        provider=SocialThread.Provider.INSTAGRAM,
+        connection=connection,
+        customer=customer,
+        external_thread_id='psid-' + str(customer.pk),
+        external_username='@' + customer.first_name.lower(),
+        last_message_at=now,
+        last_inbound_at=now,
+    )
+    msg = SocialMessage.objects.create(
+        tenant=tenant,
+        thread=thread,
+        direction=SocialMessage.Direction.INBOUND,
+        body=body,
+        external_message_id='mid-' + str(thread.pk),
+        status=SocialMessage.Status.RECEIVED,
+        received_at=now,
+    )
+    return thread, msg
+
+
+class SocialThreadListTests(TestCase):
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('socinbox')
+        self.client_ = _client_for(self.owner)
+        self.conn = Connection.objects.create(
+            tenant=self.tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-x',
+        )
+        self.customer = Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Maria',
+            last_name='Beauty',
+            instagram_handle='maria.beauty',
+            is_social_guest=True,
+            acquisition_source=Customer.AcquisitionSource.INSTAGRAM,
+        )
+        self.thread, _ = _make_thread_with_message(
+            tenant=self.tenant,
+            connection=self.conn,
+            customer=self.customer,
+            body='hey do you have any openings tomorrow?',
+        )
+
+    def test_list_returns_threads(self):
+        response = self.client_.get(
+            reverse('social-thread-list'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 1)
+        row = response.data['threads'][0]
+        self.assertEqual(row['provider'], 'instagram')
+        self.assertTrue(row['is_unread'])
+        self.assertEqual(row['customer']['full_name'], 'Maria Beauty')
+        self.assertEqual(
+            row['customer']['acquisition_source'], 'instagram',
+        )
+
+    def test_list_no_body_in_summary(self):
+        """The list endpoint must NOT carry message bodies — PHI stays
+        on the detail endpoint where access is audit-logged."""
+        response = self.client_.get(
+            reverse('social-thread-list'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        row = response.data['threads'][0]
+        self.assertNotIn('body', row)
+        self.assertNotIn('messages', row)
+
+    def test_unread_filter(self):
+        # Mark as read, then ?unread=1 should return zero.
+        self.thread.read_at = timezone.now()
+        self.thread.save()
+        response = self.client_.get(
+            reverse('social-thread-list') + '?unread=1',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.data['count'], 0)
+
+    def test_tenant_isolation(self):
+        # Another tenant's owner cannot see this tenant's threads.
+        other_tenant, other_owner = _make_tenant_with_owner('other-socinbox')
+        response = _client_for(other_owner).get(
+            reverse('social-thread-list'),
+            HTTP_X_TENANT_SLUG=other_tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['count'], 0)
+
+    def test_front_desk_forbidden(self):
+        """Front-desk role lacks MANAGE_INTEGRATIONS — gets 403."""
+        fd = _make_user('fd@test.local')
+        _make_membership(
+            user=fd, tenant=self.tenant,
+            role=TenantMembership.Role.FRONT_DESK,
+        )
+        response = _client_for(fd).get(
+            reverse('social-thread-list'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 403)
+
+
+class SocialThreadDetailTests(TestCase):
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('socdetail')
+        self.client_ = _client_for(self.owner)
+        self.conn = Connection.objects.create(
+            tenant=self.tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-x',
+        )
+        self.customer = Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Sam',
+            last_name='Lee',
+            acquisition_source=Customer.AcquisitionSource.INSTAGRAM,
+        )
+        self.thread, self.msg = _make_thread_with_message(
+            tenant=self.tenant,
+            connection=self.conn,
+            customer=self.customer,
+            body='hi! what services do you offer?',
+        )
+
+    def test_detail_returns_messages(self):
+        response = self.client_.get(
+            reverse('social-thread-detail', args=[self.thread.pk]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['thread']['id'], self.thread.pk)
+        self.assertEqual(len(response.data['messages']), 1)
+        self.assertEqual(
+            response.data['messages'][0]['body'],
+            'hi! what services do you offer?',
+        )
+
+    def test_detail_writes_audit_log(self):
+        before = AuditLog.objects.filter(
+            resource_type='social_thread', action=AuditLog.Action.READ,
+        ).count()
+        self.client_.get(
+            reverse('social-thread-detail', args=[self.thread.pk]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        after = AuditLog.objects.filter(
+            resource_type='social_thread', action=AuditLog.Action.READ,
+        ).count()
+        self.assertEqual(after, before + 1)
+        entry = AuditLog.objects.filter(
+            resource_type='social_thread',
+        ).latest('timestamp')
+        # PHI safety — audit metadata must NOT include the message body.
+        self.assertNotIn('body', entry.metadata)
+        self.assertEqual(entry.metadata['event'], 'thread_read')
+        self.assertEqual(entry.metadata['message_count'], 1)
+
+    def test_cross_tenant_404(self):
+        other_tenant, other_owner = _make_tenant_with_owner('other-socdetail')
+        response = _client_for(other_owner).get(
+            reverse('social-thread-detail', args=[self.thread.pk]),
+            HTTP_X_TENANT_SLUG=other_tenant.slug,
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_mark_read_stamps_read_at(self):
+        self.assertIsNone(self.thread.read_at)
+        response = self.client_.post(
+            reverse('social-thread-mark-read', args=[self.thread.pk]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        self.thread.refresh_from_db()
+        self.assertIsNotNone(self.thread.read_at)
+
+    def test_mark_read_idempotent(self):
+        already_read_at = timezone.now() - timezone.timedelta(hours=1)
+        self.thread.read_at = already_read_at
+        self.thread.save()
+        self.client_.post(
+            reverse('social-thread-mark-read', args=[self.thread.pk]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.thread.refresh_from_db()
+        # Should NOT have re-stamped.
+        self.assertEqual(self.thread.read_at, already_read_at)

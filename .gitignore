@@ -63,3 +63,12 @@ yarn-error.log*
 # Screenshots / scratch files at the repo root
 Screenshot*.png
 Screenshot*.jpg
+
+# CSV / data exports at the repo root. Vendor migrations (Zenoti,
+# Vagaro, etc.) drop guest lists + appointment exports here for the
+# importer to read; these contain real customer PII and PHI and MUST
+# NEVER land in git history. Excluded across the repo, not just root,
+# because a misplaced export anywhere is the same incident.
+*.csv
+*.xlsx
+*.xls

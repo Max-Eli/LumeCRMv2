@@ -126,7 +126,7 @@ export default function PlatformDashboardPage() {
                     <div className="min-w-0">
                       <p className="text-sm font-medium text-foreground truncate">{t.name}</p>
                       <p className="text-xs text-muted-foreground truncate">
-                        {t.slug}.lumecrm.com · {t.owner_email ?? '—'}
+                        {t.slug}.xn--lumcrm-5ua.com · {t.owner_email ?? '—'}
                       </p>
                     </div>
                     <StatusPill status={t.status} />

@@ -1,17 +1,17 @@
 # 04 — SES domain verification
 
-Goal: SES can send email from `noreply@mail.lumecrm.com` (or whatever
+Goal: SES can send email from `noreply@mail.xn--lumcrm-5ua.com` (or whatever
 sending subdomain you choose). Domain is DKIM-signed, SPF-passing,
 DMARC-monitored. Without these three, mail lands in spam — which for
 a HIPAA app means signed-form links never reach the patient.
 
 ## Why a subdomain (not the apex)
 
-Sending from `noreply@lumecrm.com` works, but a poor-reputation
+Sending from `noreply@xn--lumcrm-5ua.com` works, but a poor-reputation
 sending event (a customer marks one of your emails as spam) burns
 the apex domain's reputation including its non-SES uses (Google
 Workspace, marketing site contact form). Putting send traffic on a
-subdomain (`mail.lumecrm.com`) isolates the blast radius.
+subdomain (`mail.xn--lumcrm-5ua.com`) isolates the blast radius.
 
 ## Steps
 
@@ -19,7 +19,7 @@ subdomain (`mail.lumecrm.com`) isolates the blast radius.
 
 ```bash
 aws ses verify-domain-identity \
-  --domain mail.lumecrm.com \
+  --domain mail.xn--lumcrm-5ua.com \
   --region us-east-1
 ```
 
@@ -31,7 +31,7 @@ The output gives you a `VerificationToken`. Add it as a TXT record:
 
 ```bash
 ZONE_ID=$(aws route53 list-hosted-zones-by-name \
-  --dns-name lumecrm.com \
+  --dns-name xn--lumcrm-5ua.com \
   --query 'HostedZones[0].Id' --output text)
 
 cat > ses-verify.json <<EOF
@@ -39,7 +39,7 @@ cat > ses-verify.json <<EOF
   "Changes": [{
     "Action": "UPSERT",
     "ResourceRecordSet": {
-      "Name": "_amazonses.mail.lumecrm.com",
+      "Name": "_amazonses.mail.xn--lumcrm-5ua.com",
       "Type": "TXT",
       "TTL": 600,
       "ResourceRecords": [{"Value": "\"VERIFICATION_TOKEN_FROM_ABOVE\""}]
@@ -57,7 +57,7 @@ Wait ~5 minutes. Confirm:
 
 ```bash
 aws ses get-identity-verification-attributes \
-  --identities mail.lumecrm.com
+  --identities mail.xn--lumcrm-5ua.com
 ```
 
 Status should be `Success`.
@@ -66,23 +66,23 @@ Status should be `Success`.
 
 ```bash
 aws ses verify-domain-dkim \
-  --domain mail.lumecrm.com \
+  --domain mail.xn--lumcrm-5ua.com \
   --region us-east-1
 ```
 
 Three CNAME tokens. Add each as a Route 53 CNAME record:
 
 ```
-TOKEN1._domainkey.mail.lumecrm.com → TOKEN1.dkim.amazonses.com
-TOKEN2._domainkey.mail.lumecrm.com → TOKEN2.dkim.amazonses.com
-TOKEN3._domainkey.mail.lumecrm.com → TOKEN3.dkim.amazonses.com
+TOKEN1._domainkey.mail.xn--lumcrm-5ua.com → TOKEN1.dkim.amazonses.com
+TOKEN2._domainkey.mail.xn--lumcrm-5ua.com → TOKEN2.dkim.amazonses.com
+TOKEN3._domainkey.mail.xn--lumcrm-5ua.com → TOKEN3.dkim.amazonses.com
 ```
 
 Then:
 
 ```bash
 aws ses set-identity-dkim-enabled \
-  --identity mail.lumecrm.com \
+  --identity mail.xn--lumcrm-5ua.com \
   --dkim-enabled
 ```
 
@@ -90,7 +90,7 @@ Confirm via:
 
 ```bash
 aws ses get-identity-dkim-attributes \
-  --identities mail.lumecrm.com
+  --identities mail.xn--lumcrm-5ua.com
 ```
 
 `DkimVerificationStatus` should be `Success`.
@@ -101,7 +101,7 @@ Allow Amazon SES servers to send on behalf of this domain. Without
 this, recipient mail servers can mark messages as "from someone who
 doesn't authorize Amazon".
 
-Route 53 → mail.lumecrm.com → TXT record:
+Route 53 → mail.xn--lumcrm-5ua.com → TXT record:
 
 ```
 v=spf1 include:amazonses.com -all
@@ -110,13 +110,13 @@ v=spf1 include:amazonses.com -all
 The `-all` (hard fail) is correct because we ONLY send through SES
 on this subdomain.
 
-### 4. DMARC — TXT record at `_dmarc.mail.lumecrm.com`
+### 4. DMARC — TXT record at `_dmarc.mail.xn--lumcrm-5ua.com`
 
 Start in `quarantine` mode with rua/ruf reporting. After ~30 days
 of clean reports, move to `reject`.
 
 ```
-v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@mail.lumecrm.com; ruf=mailto:dmarc-reports@mail.lumecrm.com; pct=100; aspf=s; adkim=s
+v=DMARC1; p=quarantine; rua=mailto:dmarc-reports@mail.xn--lumcrm-5ua.com; ruf=mailto:dmarc-reports@mail.xn--lumcrm-5ua.com; pct=100; aspf=s; adkim=s
 ```
 
 (You can use a 3rd-party DMARC reporter like Postmark or
@@ -142,7 +142,7 @@ verified-email-only mode.
 ### 6. Verify the FROM address
 
 If `ses_from_address` in `terraform.tfvars` is the literal email
-(`noreply@mail.lumecrm.com`), it's automatically allowed once the
+(`noreply@mail.xn--lumcrm-5ua.com`), it's automatically allowed once the
 domain is verified. Different specific addresses on the same domain
 also work — the IAM policy on the backend task role matches the
 `ses:FromAddress` condition.
@@ -156,7 +156,7 @@ follow-up. Until then, watch the SES Account dashboard's
 
 ## Done when
 
-- [ ] `_amazonses.mail.lumecrm.com` TXT record exists, SES status `Success`
+- [ ] `_amazonses.mail.xn--lumcrm-5ua.com` TXT record exists, SES status `Success`
 - [ ] Three DKIM CNAMEs published, DKIM status `Success`
 - [ ] SPF TXT record published
 - [ ] DMARC TXT record published

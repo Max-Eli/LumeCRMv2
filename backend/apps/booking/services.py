@@ -79,6 +79,10 @@ def find_or_create_customer(
         last_name=last_name.strip(),
         email=email_norm,
         phone=phone_norm,
+        # ADR 0027 §8a — first-touch attribution for "where did this
+        # customer come from?" reporting. Public booking page is the
+        # online_booking source.
+        acquisition_source=Customer.AcquisitionSource.ONLINE_BOOKING,
     )
     return customer, True
 

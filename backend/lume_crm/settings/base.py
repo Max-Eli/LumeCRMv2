@@ -74,6 +74,7 @@ INSTALLED_APPS = [
     'apps.commissions',
     'apps.messaging',
     'apps.portal',
+    'apps.imports',
 ]
 
 AUTH_USER_MODEL = 'users.User'
@@ -262,4 +263,56 @@ TWILIO_TEST_MODE = env.bool('TWILIO_TEST_MODE', default=False)
 PUBLIC_BASE_URL = env(
     'PUBLIC_BASE_URL',
     default='http://localhost:3000',
+)
+
+# ── Meta (Instagram + Facebook + WhatsApp) ─────────────────────────
+#
+# ADR 0027 wires Instagram Business DM ingestion. When all three of
+# META_APP_ID / META_APP_SECRET / META_WEBHOOK_VERIFY_TOKEN are set,
+# the integrations app flips the Instagram provider's `oauth_ready`
+# flag to True and the OAuth flow lights up. Absent any of them, the
+# Connect button surfaces the "awaiting approval" copy instead of
+# attempting OAuth — safe to deploy without credentials.
+#
+# META_APP_ID / META_APP_SECRET come from the Meta App dashboard at
+# developers.facebook.com once the App is created (see runbook).
+#
+# META_WEBHOOK_VERIFY_TOKEN is a random string WE choose — Meta echoes
+# it back on the GET handshake so we know the subscription was
+# configured through our dashboard, not via probing.
+#
+# META_OAUTH_REDIRECT_URI is the absolute URL Meta sends users back to
+# after consent. MUST match what's registered in the Meta App's
+# Facebook Login settings. Dev: localhost via the Next.js proxy; prod:
+# `https://api.xn--lumcrm-5ua.com/api/integrations/meta/oauth/callback/`
+# (xn--lumcrm-5ua.com is the IDN punycode form of lumècrm.com — the
+# canonical ASCII representation Meta's dashboard expects).
+#
+# META_TEST_MODE flips signature verification off for unit tests
+# (mirrors TWILIO_TEST_MODE).
+META_APP_ID = env('META_APP_ID', default='')
+META_APP_SECRET = env('META_APP_SECRET', default='')
+META_WEBHOOK_VERIFY_TOKEN = env('META_WEBHOOK_VERIFY_TOKEN', default='')
+META_OAUTH_REDIRECT_URI = env(
+    'META_OAUTH_REDIRECT_URI',
+    default='http://localhost:8000/api/integrations/meta/oauth/callback/',
+)
+META_TEST_MODE = env.bool('META_TEST_MODE', default=False)
+
+# ── Integration token encryption ────────────────────────────────────
+#
+# Field-level encryption for OAuth tokens stored on Connection rows.
+# Generate with:
+#   python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+#
+# Dev: a deterministic key in .env is fine (dev encrypts no real tokens).
+# Prod: rotate from Secrets Manager. Multi-key rotation supported via
+# INTEGRATIONS_FERNET_KEYS (a comma-separated list overrides the singular).
+INTEGRATIONS_FERNET_KEY = env(
+    'INTEGRATIONS_FERNET_KEY',
+    default='',  # ImproperlyConfigured at first use if blank in prod
+)
+INTEGRATIONS_FERNET_KEYS = env.list(
+    'INTEGRATIONS_FERNET_KEYS',
+    default=[],
 )
