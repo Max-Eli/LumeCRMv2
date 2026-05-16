@@ -194,3 +194,95 @@ class Service(TenantedModel):
                     raise RuntimeError('Could not generate a unique service code after 50 attempts.')
             self.code = candidate
         super().save(*args, **kwargs)
+
+
+class ServiceProtocol(TenantedModel):
+    """The clinical protocol the spa follows for a service.
+
+    Distinct from `Service.description` (the customer-facing
+    marketing copy seen on the booking page). This is the
+    PROVIDER-facing document that captures pre-treatment prep,
+    intra-treatment steps, post-treatment care, and free-form
+    notes.
+
+    One-to-one with Service for v1. If a service ever needs
+    multiple variants (e.g. "HydraFacial — Sensitive Skin"),
+    Phase 4 polish can shift to one-to-many; callers consume
+    the latest active row.
+
+    PHI posture: protocols are NOT PHI — they're the spa's
+    procedural reference. The instances filled out per
+    appointment (`TreatmentRecord`) are PHI.
+    """
+
+    service = models.OneToOneField(
+        Service,
+        on_delete=models.CASCADE,
+        related_name='protocol',
+        help_text=(
+            'The catalog service this protocol applies to. CASCADE — '
+            'if the service is deleted, the protocol goes with it. '
+            'Soft-delete (is_active=False) keeps both intact.'
+        ),
+    )
+
+    # Three structured fields matching the standard medspa
+    # workflow. Free-form text in v1 — markdown rendering /
+    # numbered steps are a future UI polish.
+    pre_treatment = models.TextField(
+        blank=True, default='',
+        help_text=(
+            'Pre-treatment checks: contraindications, allergies, '
+            'skin assessment, consent confirmation, photos.'
+        ),
+    )
+    intra_treatment = models.TextField(
+        blank=True, default='',
+        help_text=(
+            'The procedure itself. Numbered steps, equipment '
+            'settings, technique notes.'
+        ),
+    )
+    post_treatment = models.TextField(
+        blank=True, default='',
+        help_text=(
+            'Immediate post-care + take-home guidance for the '
+            'customer. Sun avoidance, retinoid pause, side-effect '
+            'expectations.'
+        ),
+    )
+    notes = models.TextField(
+        blank=True, default='',
+        help_text=(
+            'Free-form internal notes — lot tracking conventions, '
+            'vendor preferences, exclusion criteria.'
+        ),
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    updated_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.SET_NULL,
+        null=True, blank=True,
+        related_name='+',
+        help_text='The User who last saved this protocol.',
+    )
+
+    class Meta:
+        ordering = ['service__name']
+
+    def __str__(self):
+        return f'Protocol — {self.service.name}'
+
+    @property
+    def is_empty(self) -> bool:
+        """True when none of the four sections have content. Lets
+        the UI surface 'no protocol yet' without rendering empty
+        section headers."""
+        return not any([
+            self.pre_treatment.strip(),
+            self.intra_treatment.strip(),
+            self.post_treatment.strip(),
+            self.notes.strip(),
+        ])

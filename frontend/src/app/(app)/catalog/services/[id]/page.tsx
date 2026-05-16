@@ -18,6 +18,7 @@ import {
   Calendar,
   CalendarClock,
   Check,
+  ClipboardCheck,
   ClipboardCopy,
   DollarSign,
   FileText,
@@ -59,12 +60,15 @@ import {
 } from '@/lib/services';
 import { cn } from '@/lib/utils';
 
+import { ProtocolTab } from './_tabs/protocol-tab';
+
 // ── Tab definitions ──────────────────────────────────────────────────────
 
 type TabDef = { id: string; label: string; comingPhase?: string };
 
 const TABS: readonly TabDef[] = [
   { id: 'general', label: 'General' },
+  { id: 'protocol', label: 'Protocol' },
   { id: 'locations', label: 'Locations', comingPhase: 'Phase 4E · Multi-location' },
   { id: 'inventory', label: 'Inventory', comingPhase: 'Phase 4C · Inventory' },
   { id: 'commissions', label: 'Commissions', comingPhase: 'Phase 2F · Commissions' },
@@ -73,6 +77,7 @@ const TABS: readonly TabDef[] = [
 
 const TAB_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
   general: Settings2,
+  protocol: ClipboardCheck,
   locations: MapPin,
   inventory: Box,
   commissions: Receipt,
@@ -131,6 +136,8 @@ export default function ServiceDetailPage({ params }: { params: Promise<{ id: st
       <div className="max-w-7xl px-10 mt-8 pb-10">
         {activeTab.id === 'general' ? (
           <GeneralTab service={service} />
+        ) : activeTab.id === 'protocol' ? (
+          <ProtocolTab serviceId={service.id} />
         ) : (
           <ComingSoonTab tab={activeTab} />
         )}

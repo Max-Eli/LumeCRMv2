@@ -10,7 +10,7 @@ from rest_framework import serializers
 from apps.tenants.models import JobTitle
 from apps.tenants.views import JobTitleSerializer
 
-from .models import Service, ServiceCategory
+from .models import Service, ServiceCategory, ServiceProtocol
 
 
 class ServiceCategorySerializer(serializers.ModelSerializer):
@@ -82,3 +82,36 @@ class ServiceSerializer(serializers.ModelSerializer):
             'updated_at',
         ]
         read_only_fields = ['id', 'category', 'price_dollars', 'created_at', 'updated_at']
+
+
+class ServiceProtocolSerializer(serializers.ModelSerializer):
+    """Read/write shape for a service's clinical protocol.
+
+    `tenant` is set by the view from request context; `service` is
+    derived from the URL. Neither is writable from the client.
+    `updated_by_email` is a read-only display field — operators see
+    "Last edited by …" without us exposing the User object."""
+
+    updated_by_email = serializers.EmailField(
+        source='updated_by.email', read_only=True, allow_null=True,
+    )
+    is_empty = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        model = ServiceProtocol
+        fields = [
+            'id',
+            'service',
+            'pre_treatment',
+            'intra_treatment',
+            'post_treatment',
+            'notes',
+            'is_empty',
+            'updated_by_email',
+            'created_at',
+            'updated_at',
+        ]
+        read_only_fields = [
+            'id', 'service', 'is_empty',
+            'updated_by_email', 'created_at', 'updated_at',
+        ]

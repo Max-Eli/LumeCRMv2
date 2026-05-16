@@ -15,17 +15,22 @@ list call (not per individual service in the result, which would flood the log).
 """
 
 from django.db.models import Q
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.exceptions import PermissionDenied
 from rest_framework.response import Response
+from rest_framework.views import APIView
 
 from apps.audit.models import AuditLog
 from apps.audit.services import record
 from apps.tenants.context import get_current_tenant
 
-from .models import Service, ServiceCategory
+from .models import Service, ServiceCategory, ServiceProtocol
 from .permissions import ServicePermission
-from .serializers import ServiceCategorySerializer, ServiceSerializer
+from .serializers import (
+    ServiceCategorySerializer,
+    ServiceProtocolSerializer,
+    ServiceSerializer,
+)
 
 
 class ServiceCategoryViewSet(viewsets.ModelViewSet):
@@ -128,3 +133,95 @@ class ServiceViewSet(viewsets.ModelViewSet):
             metadata={'name': instance.name},
         )
         instance.delete()
+
+
+class ServiceProtocolView(APIView):
+    """`/api/services/<service_id>/protocol/` — GET + PUT the
+    clinical protocol document for a service.
+
+    Singleton resource per service. The first PUT creates the row
+    (we don't require an explicit POST); subsequent PUTs replace
+    fields. GET returns a sensible empty-shaped payload when no
+    protocol has been authored yet so the UI can render the editor
+    with blank sections instead of 404-ing.
+
+    Permissions mirror the catalog `ServicePermission`: read for
+    any authenticated tenant member (providers need protocols at
+    treatment time), write for `MANAGE_SERVICES`.
+    """
+
+    permission_classes = [ServicePermission]
+
+    def _get_service(self, service_id: int) -> Service:
+        try:
+            return Service.objects.for_current_tenant().get(pk=service_id)
+        except Service.DoesNotExist:
+            raise PermissionDenied('Service not found in this tenant.')
+
+    def get(self, request, service_id: int):
+        service = self._get_service(service_id)
+        # Build a non-persistent empty protocol for the response shape
+        # when none exists yet — saves the frontend from juggling
+        # 404-vs-empty as two distinct render paths.
+        protocol = getattr(service, 'protocol', None)
+        if protocol is None:
+            empty = ServiceProtocol(
+                tenant=service.tenant,
+                service=service,
+            )
+            record(
+                action=AuditLog.Action.READ,
+                resource_type='service_protocol',
+                resource_id=service.id,
+                request=request,
+                metadata={'state': 'empty'},
+            )
+            return Response(ServiceProtocolSerializer(empty).data)
+
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='service_protocol',
+            resource_id=protocol.id,
+            request=request,
+        )
+        return Response(ServiceProtocolSerializer(protocol).data)
+
+    def put(self, request, service_id: int):
+        # Treat PUT as upsert — if a protocol doesn't exist yet, this
+        # creates it; if it does, this replaces the writeable fields.
+        # PATCH semantics fall through to the same code path (replace
+        # only the fields present in the payload).
+        service = self._get_service(service_id)
+        instance = getattr(service, 'protocol', None)
+        was_new = instance is None
+        if instance is None:
+            instance = ServiceProtocol(tenant=service.tenant, service=service)
+
+        ser = ServiceProtocolSerializer(instance, data=request.data, partial=True)
+        ser.is_valid(raise_exception=True)
+        # Manual save so we can stamp `updated_by` from the request.
+        for field in ('pre_treatment', 'intra_treatment', 'post_treatment', 'notes'):
+            if field in ser.validated_data:
+                setattr(instance, field, ser.validated_data[field])
+        instance.updated_by = request.user if request.user.is_authenticated else None
+        instance.save()
+
+        record(
+            action=AuditLog.Action.CREATE if was_new else AuditLog.Action.UPDATE,
+            resource_type='service_protocol',
+            resource_id=instance.id,
+            request=request,
+            metadata={
+                'service_id': service.id,
+                'fields_changed': sorted(ser.validated_data.keys()),
+            },
+        )
+        return Response(
+            ServiceProtocolSerializer(instance).data,
+            status=status.HTTP_201_CREATED if was_new else status.HTTP_200_OK,
+        )
+
+    # PATCH delegates to PUT — both replace fields present in the
+    # body, leaving the rest untouched. Symmetry simplifies the
+    # frontend client.
+    patch = put

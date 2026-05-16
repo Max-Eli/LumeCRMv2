@@ -192,3 +192,58 @@ export function useUpdateService(id: number) {
     },
   });
 }
+
+// ── ServiceProtocol — clinical protocol per service ────────────────
+
+
+export interface ServiceProtocol {
+  id: number | null;
+  service: number | null;
+  pre_treatment: string;
+  intra_treatment: string;
+  post_treatment: string;
+  notes: string;
+  is_empty: boolean;
+  updated_by_email: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface UpdateServiceProtocolInput {
+  pre_treatment?: string;
+  intra_treatment?: string;
+  post_treatment?: string;
+  notes?: string;
+}
+
+function protocolKey(serviceId: number) {
+  return [...serviceKey(serviceId), 'protocol'] as const;
+}
+
+/** Fetch the clinical protocol document for a service. Backend
+ *  returns an empty-shape payload when no protocol has been
+ *  authored yet — `is_empty=true` lets the UI show a "create the
+ *  first protocol" prompt instead of a confusing 404. */
+export function useServiceProtocol(serviceId: number | undefined) {
+  return useQuery<ServiceProtocol>({
+    queryKey: serviceId ? protocolKey(serviceId) : ['services', 'protocol', 'disabled'],
+    queryFn: () =>
+      api.get<ServiceProtocol>(`/api/services/${serviceId}/protocol/`),
+    enabled: typeof serviceId === 'number' && serviceId > 0,
+  });
+}
+
+/** PUT the protocol — first write creates, subsequent writes
+ *  upsert. Partial bodies are honoured (PATCH semantics on the
+ *  backend), so the form can persist whatever the operator
+ *  changed without re-sending the full payload. */
+export function useUpdateServiceProtocol(serviceId: number) {
+  const qc = useQueryClient();
+  return useMutation<ServiceProtocol, Error, UpdateServiceProtocolInput>({
+    mutationFn: (input) =>
+      api.put<ServiceProtocol>(`/api/services/${serviceId}/protocol/`, input),
+    onSuccess: (fresh) => {
+      qc.setQueryData(protocolKey(serviceId), fresh);
+    },
+  });
+}
