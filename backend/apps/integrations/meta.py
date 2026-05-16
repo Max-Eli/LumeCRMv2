@@ -271,16 +271,25 @@ def exchange_code_for_connection(code: str) -> TokenExchangeResult:
         expires_in = 3600  # 1 hour — the documented short-token TTL
         token_kind = 'short-lived (fallback)'
 
-    # /me confirms the user_id and gives us the username for display.
-    profile = _ig_fetch_me(access_token)
-    ig_username = profile.get('username', '')
-    # Belt-and-braces: prefer /me's user_id over the short-token
-    # response in case Meta's response shapes drift independently.
-    ig_user_id = str(
-        profile.get('user_id')
-        or profile.get('id')
-        or ig_user_id
-    )
+    # Profile fetch is best-effort. The short-token response already
+    # gave us the user_id; the username is purely display polish. If
+    # the profile call fails, we proceed with a placeholder name and
+    # log so we can debug Meta's response shape.
+    ig_username = ''
+    try:
+        profile = _ig_fetch_me(access_token, ig_user_id=ig_user_id)
+        ig_username = profile.get('username', '')
+        # Belt-and-braces: prefer profile's user_id if present.
+        ig_user_id = str(
+            profile.get('user_id')
+            or profile.get('id')
+            or ig_user_id
+        )
+    except MetaOAuthError as e:
+        logger.warning(
+            'integrations.meta.profile_fetch_failed_proceeding',
+            extra={'error': str(e)[:300], 'ig_user_id': ig_user_id},
+        )
 
     granted = _ig_fetch_granted_permissions(access_token)
     expires_at = int(time.time()) + (expires_in or 60 * 24 * 3600)
@@ -288,6 +297,7 @@ def exchange_code_for_connection(code: str) -> TokenExchangeResult:
         'integrations.meta.connection_tokens_ready',
         extra={
             'ig_user_id': ig_user_id,
+            'ig_username': ig_username,
             'token_kind': token_kind,
             'expires_at': expires_at,
         },
@@ -363,8 +373,15 @@ def _ig_exchange_short_for_long_token(short_token: str) -> tuple[str, int | None
     return token, expires_in
 
 
-def _ig_fetch_me(access_token: str) -> dict:
-    """GET graph.instagram.com/v22.0/me — profile info (id, username, name)."""
+def _ig_fetch_me(access_token: str, *, ig_user_id: str = '') -> dict:
+    """Fetch the IG profile (id, username, name).
+
+    Tries `/me` first; if Meta rejects it (the IG Login flow has been
+    returning "Unsupported method: get" on /me as of 2026-05), falls
+    back to `/{ig_user_id}` which is the explicit-ID form documented
+    for Instagram API with Instagram Login. Caller passes the
+    user_id from the short-token exchange.
+    """
     response = requests.get(
         f'{IG_GRAPH_BASE}/me',
         params={
@@ -373,6 +390,26 @@ def _ig_fetch_me(access_token: str) -> dict:
         },
         timeout=15,
     )
+    if response.status_code == 200:
+        return _expect_json(response, step='ig profile fetch (me)')
+
+    # /me failed — fall back to /{user_id} explicit-ID form
+    if ig_user_id:
+        logger.info(
+            'integrations.meta.profile_me_failed_trying_explicit_id',
+            extra={
+                'me_status': response.status_code,
+                'me_body': response.text[:300],
+            },
+        )
+        response = requests.get(
+            f'{IG_GRAPH_BASE}/{ig_user_id}',
+            params={
+                'access_token': access_token,
+                'fields': 'user_id,username,name',
+            },
+            timeout=15,
+        )
     return _expect_json(response, step='ig profile fetch')
 
 
@@ -438,6 +475,19 @@ def _expect_json(response: requests.Response, *, step: str) -> dict:
 
     if response.status_code >= 400:
         meta_err = body.get('error', body)
+        # Log the FULL Meta error response (incl. type / code /
+        # fbtrace_id) so we can debug "Unsupported method" and
+        # similar generic-sounding errors. Tokens are NOT in the
+        # response so this is safe to log.
+        logger.warning(
+            'integrations.meta.api_error',
+            extra={
+                'step': step,
+                'status': response.status_code,
+                'meta_error': meta_err,
+                'request_url': response.url,
+            },
+        )
         raise MetaOAuthError(
             f'{step} failed ({response.status_code}): '
             f'{meta_err.get("message", meta_err)}'
