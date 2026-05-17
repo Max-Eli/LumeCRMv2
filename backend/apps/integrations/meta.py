@@ -532,7 +532,7 @@ def _ig_fetch_granted_permissions(access_token: str) -> list[str]:
 
 
 def subscribe_ig_user_to_webhooks(*, ig_user_id: str, access_token: str) -> None:
-    """POST /{ig-user-id}/subscribed_apps — enable webhook delivery.
+    """POST /v22.0/{ig-user-id}/subscribed_apps — enable webhook delivery.
 
     Without this, Meta won't deliver inbound DMs even with valid
     OAuth + tokens. Subscription persists until the operator
@@ -542,12 +542,19 @@ def subscribe_ig_user_to_webhooks(*, ig_user_id: str, access_token: str) -> None
     defaulted to "all enabled fields"; the live API rejects with
     "The parameter subscribed_fields is required" (2026-05).
 
+    URL needs the `/v22.0/` version prefix — unlike `/me` and
+    `/{ig_user_id}` (profile fetches) which Meta documented as
+    unversioned and reject the prefix with "Unsupported method".
+    This specific endpoint's docs show the prefix in their curl
+    example, and POSTs without it 400 with "Unsupported method:
+    post". Verified 2026-05-17.
+
     We subscribe to `messages` (inbound DMs) and `messaging_postbacks`
     (button clicks for any future quick-reply UI). Adding fields
     later only requires the operator to disconnect + reconnect.
     """
     response = requests.post(
-        f'{IG_GRAPH_BASE}/{ig_user_id}/subscribed_apps',
+        f'https://graph.instagram.com/{GRAPH_API_VERSION}/{ig_user_id}/subscribed_apps',
         params={
             'access_token': access_token,
             'subscribed_fields': 'messages,messaging_postbacks',
@@ -636,7 +643,7 @@ def unsubscribe_ig_user_from_webhooks(*, ig_user_id: str, access_token: str) -> 
     even if this call fails.
     """
     response = requests.delete(
-        f'{IG_GRAPH_BASE}/{ig_user_id}/subscribed_apps',
+        f'https://graph.instagram.com/{GRAPH_API_VERSION}/{ig_user_id}/subscribed_apps',
         params={'access_token': access_token},
         timeout=15,
     )
@@ -710,8 +717,13 @@ def send_instagram_dm(
     success. Raises MetaOAuthError on rejection so the caller can
     surface the error message to the operator.
     """
+    # `/messages` is an "action" endpoint like `/subscribed_apps` —
+    # the version prefix is required here (Meta rejects un-versioned
+    # POSTs to this path with "Unsupported method"). Profile-fetch
+    # GETs on /me + /{user_id} stay unversioned per the verified-
+    # empirically pattern.
     response = requests.post(
-        f'{IG_GRAPH_BASE}/{ig_user_id}/messages',
+        f'https://graph.instagram.com/{GRAPH_API_VERSION}/{ig_user_id}/messages',
         params={'access_token': access_token},
         json={
             'recipient': {'id': recipient_psid},
