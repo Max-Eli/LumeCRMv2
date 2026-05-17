@@ -628,6 +628,53 @@ def fetch_conversation_messages(
     return msgs_envelope.get('data', [])
 
 
+def list_conversations_with_participants(
+    *, ig_user_id: str, access_token: str,
+) -> list[dict]:
+    """GET /{ig-user-id}/conversations?fields=participants — bulk profile data.
+
+    The per-user profile endpoint (`fetch_ig_user_profile`) fails with
+    "user not found" or "user consent required" for any conversation
+    OUTSIDE the 24-hour messaging window — which is most of an inbox's
+    backlog. The `/conversations` endpoint with `participants` expansion
+    works regardless of window state and returns `{id, name, username}`
+    for every participant in every conversation in ONE call (vs one per
+    thread), so it's both more permissive and cheaper.
+
+    Returns the raw conversations list. Each entry:
+
+        {
+          "id": "<CONVERSATION_ID>",
+          "participants": {"data": [
+            {"id": "<BUSINESS_PSID>", "name": "...", "username": "..."},
+            {"id": "<CUSTOMER_PSID>", "name": "Maria", "username": "maria.beauty"}
+          ]}
+        }
+
+    Caller iterates participants, filters out our own business PSID
+    (== ig_user_id), and uses the remainder to populate SocialThread
+    rows keyed by `external_thread_id == participant.id`.
+
+    Profile pic URLs are NOT available via this endpoint — Meta only
+    surfaces those from the per-user `?fields=profile_pic` call which
+    requires the messaging window. The avatar component falls back to
+    initials when the URL is empty; once a user sends a fresh DM the
+    webhook path picks up the fresh profile pic.
+    """
+    response = requests.get(
+        f'{IG_GRAPH_BASE}/{ig_user_id}/conversations',
+        params={
+            'access_token': access_token,
+            'platform': 'instagram',
+            'fields': 'participants',
+            'limit': BACKFILL_MAX_CONVERSATIONS,
+        },
+        timeout=20,
+    )
+    payload = _expect_json(response, step='ig list conversations w/ participants')
+    return payload.get('data', [])
+
+
 def fetch_ig_user_profile(
     *, ig_scoped_id: str, page_access_token: str,
 ) -> dict:

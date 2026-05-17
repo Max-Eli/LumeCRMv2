@@ -1,33 +1,39 @@
-"""Refresh IG profile (name + username + profile pic) on existing threads.
+"""Refresh IG name + @handle (+ profile pic when available) on existing threads.
 
-When the IG profile feature shipped, every existing SocialThread had
-empty profile fields (no display name, no profile pic). Webhook
-deliveries on new messages refresh those threads naturally — but
-quiet threads (no recent inbound) stay empty until a customer messages
-again.
+Two paths:
 
-This command populates them in one pass. Also useful when:
+  - **Bulk via `/conversations?fields=participants`** (default, used by
+    the no-arg invocation). This works regardless of the messaging
+    window state — Meta returns participant `{id, name, username}`
+    for every conversation in one call. Profile pic is NOT available
+    here (Meta only surfaces it via the per-user profile endpoint
+    which requires the messaging window).
 
-  - Meta's profile-pic signing keys rotate (URLs ~weekly) and a
-    handful of threads have stale URLs the operator wants refreshed
-    immediately.
-  - Operator-triggered "refresh this customer's IG identity" via a
-    future per-row UI button.
+  - **Per-thread via `fetch_ig_user_profile`** (--per-thread). This
+    catches profile_pic for threads inside the 24-hour messaging
+    window. The webhook path also runs this on every new inbound
+    so threads stay current naturally.
 
-Idempotent — re-running is a no-op for fresh threads (the
-IG_PROFILE_REFRESH_AFTER_DAYS cooldown skips them).
+The bulk path is the right tool for the launch backfill (when a
+fresh deploy needs to populate empty thread profiles); the per-thread
+path is the right tool for "refresh THIS thread's avatar now."
+
+When the customer carries the placeholder "Instagram visitor XXXXXX"
+first_name (i.e. the row was created before the IG profile fetch
+shipped), the command also updates the Customer row with the IG
+display name + handle. Otherwise it leaves the customer alone so an
+operator's manual edits aren't overwritten.
 
 Usage:
 
-    # Refresh every CONNECTED IG thread (the common case after a
-    # one-time backfill).
+    # Default: bulk path, all connected tenants, every thread.
     python manage.py refresh_ig_profiles
+
+    # Per-thread fallback (gets profile pic for in-window threads).
+    python manage.py refresh_ig_profiles --per-thread
 
     # Single tenant.
     python manage.py refresh_ig_profiles --tenant=acmespa
-
-    # Force refresh even if the cached profile is still fresh.
-    python manage.py refresh_ig_profiles --force
 
     # See what would happen.
     python manage.py refresh_ig_profiles --dry-run
@@ -35,85 +41,262 @@ Usage:
 
 from __future__ import annotations
 
+import logging
+
 from django.core.management.base import BaseCommand
 from django.utils import timezone
 
 from apps.integrations.meta import (
     IG_PROFILE_REFRESH_AFTER_DAYS,
+    MetaOAuthError,
     _fetch_ig_profile_best_effort,
+    list_conversations_with_participants,
 )
 from apps.integrations.models import Connection, SocialThread
 
+logger = logging.getLogger(__name__)
+
+# When the customer's first_name starts with this prefix, the row
+# was auto-created from a webhook before we had IG profile data.
+# Safe to overwrite with the real IG display name.
+_PLACEHOLDER_FIRST_NAME_PREFIX = 'Instagram visitor '
+
 
 class Command(BaseCommand):
-    help = 'Refresh IG name + @handle + profile picture on existing social threads.'
+    help = 'Refresh IG name + @handle (+ profile pic via --per-thread) on existing social threads.'
 
     def add_arguments(self, parser):
         parser.add_argument('--tenant', type=str, default=None)
-        parser.add_argument('--force', action='store_true', help='Refresh even if not stale.')
+        parser.add_argument(
+            '--per-thread', action='store_true',
+            help='Use the per-user profile endpoint (gets profile_pic). Fails outside the 24h messaging window.',
+        )
+        parser.add_argument(
+            '--force', action='store_true',
+            help='Refresh even when the cached profile is still inside the cooldown.',
+        )
         parser.add_argument('--dry-run', action='store_true')
 
     def handle(self, *args, **opts):
-        threads = SocialThread.objects.filter(
-            provider=SocialThread.Provider.INSTAGRAM,
-            connection__status=Connection.Status.CONNECTED,
-        ).select_related('connection')
+        connections = Connection.objects.filter(
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+        )
         if opts.get('tenant'):
-            threads = threads.filter(tenant__slug=opts['tenant'])
+            connections = connections.filter(tenant__slug=opts['tenant'])
 
-        total = threads.count()
+        total = connections.count()
         self.stdout.write(self.style.NOTICE(
-            f'Found {total} candidate thread(s). '
+            f'Found {total} connected IG connection(s). '
+            f'mode={"per-thread" if opts["per_thread"] else "bulk"} '
             f'force={opts["force"]} dry_run={opts["dry_run"]}'
         ))
 
-        skipped_fresh = 0
-        skipped_empty = 0
+        grand_refreshed = 0
+        grand_skipped = 0
+        grand_errors = 0
+
+        for conn in connections:
+            try:
+                payload = conn.auth_data_dict
+            except Exception:
+                self.stdout.write(self.style.ERROR(
+                    f'  conn #{conn.pk}: decrypt failed, skipping'
+                ))
+                grand_errors += 1
+                continue
+
+            access_token = payload.get('access_token', '')
+            ig_user_id = payload.get('ig_user_id', '')
+            if not (access_token and ig_user_id):
+                self.stdout.write(self.style.WARNING(
+                    f'  conn #{conn.pk}: missing credentials, skipping'
+                ))
+                continue
+
+            self.stdout.write(
+                f'  conn #{conn.pk} {conn.tenant.slug} '
+                f'({conn.external_name or conn.external_id})'
+            )
+
+            if opts['per_thread']:
+                r, s, e = self._refresh_per_thread(conn, opts)
+            else:
+                r, s, e = self._refresh_bulk(
+                    conn=conn, ig_user_id=ig_user_id,
+                    access_token=access_token, opts=opts,
+                )
+            grand_refreshed += r
+            grand_skipped += s
+            grand_errors += e
+
+        self.stdout.write('')
+        self.stdout.write(self.style.SUCCESS(
+            f'Done. refreshed={grand_refreshed} '
+            f'skipped={grand_skipped} errors={grand_errors}'
+        ))
+
+    # ── Bulk path (recommended) ─────────────────────────────────────
+
+    def _refresh_bulk(self, *, conn, ig_user_id, access_token, opts):
+        """Use /conversations?fields=participants to populate every thread."""
+        try:
+            conversations = list_conversations_with_participants(
+                ig_user_id=ig_user_id,
+                access_token=access_token,
+            )
+        except MetaOAuthError as e:
+            self.stdout.write(self.style.ERROR(
+                f'    Meta error listing conversations: {e}'
+            ))
+            return 0, 0, 1
+
+        # Build a {participant_psid: {name, username}} map. Skip our own
+        # business PSID; the rest are customers (one per conversation).
+        psid_to_profile = {}
+        for conv in conversations:
+            participants = (conv.get('participants') or {}).get('data') or []
+            for p in participants:
+                p_id = p.get('id', '')
+                if not p_id or p_id == ig_user_id:
+                    continue
+                psid_to_profile[p_id] = {
+                    'name': p.get('name', '') or '',
+                    'username': p.get('username', '') or '',
+                }
+
+        self.stdout.write(
+            f'    Meta returned {len(psid_to_profile)} customer participant(s) '
+            f'across {len(conversations)} conversation(s).'
+        )
+
+        # Match against existing threads on this connection.
+        threads = SocialThread.objects.filter(
+            connection=conn,
+            provider=SocialThread.Provider.INSTAGRAM,
+        ).select_related('customer')
+
         refreshed = 0
+        skipped = 0
         for thread in threads:
-            # Honour the cooldown unless --force.
+            profile = psid_to_profile.get(thread.external_thread_id)
+            if not profile:
+                # Meta didn't return this PSID in the conversations
+                # call — probably stale (test PSID, deleted user).
+                skipped += 1
+                continue
+
+            # Cooldown — unless --force, don't re-fetch fresh rows.
             if not opts['force']:
                 if (
                     thread.external_profile_fetched_at is not None
                     and (timezone.now() - thread.external_profile_fetched_at).days
                     < IG_PROFILE_REFRESH_AFTER_DAYS
                 ):
-                    skipped_fresh += 1
+                    skipped += 1
                     continue
 
             if opts['dry_run']:
                 self.stdout.write(
-                    f'  thread #{thread.pk} would refresh '
-                    f'(currently: name={thread.external_display_name!r} '
-                    f'@={thread.external_username!r} '
-                    f'pic={"yes" if thread.external_profile_pic_url else "no"})'
+                    f'    would set thread #{thread.pk}: '
+                    f'name={profile["name"]!r} '
+                    f'username={profile["username"]!r}'
                 )
                 continue
 
+            self._apply_profile_to_thread(thread, profile, has_profile_pic=False)
+            self._maybe_update_customer_name(thread.customer, profile)
+            refreshed += 1
+
+        return refreshed, skipped, 0
+
+    # ── Per-thread fallback (catches profile_pic) ───────────────────
+
+    def _refresh_per_thread(self, conn, opts):
+        threads = SocialThread.objects.filter(
+            connection=conn,
+            provider=SocialThread.Provider.INSTAGRAM,
+        ).select_related('customer')
+
+        refreshed = 0
+        skipped = 0
+        errors = 0
+        for thread in threads:
+            if not opts['force']:
+                if (
+                    thread.external_profile_fetched_at is not None
+                    and (timezone.now() - thread.external_profile_fetched_at).days
+                    < IG_PROFILE_REFRESH_AFTER_DAYS
+                ):
+                    skipped += 1
+                    continue
+
             profile = _fetch_ig_profile_best_effort(
-                connection=thread.connection,
+                connection=conn,
                 external_thread_id=thread.external_thread_id,
             )
             if not (profile.get('username') or profile.get('name') or profile.get('profile_pic')):
-                skipped_empty += 1
+                # Outside messaging window or other Meta rejection.
+                errors += 1
                 continue
 
-            thread.external_username = profile.get('username', '') or thread.external_username
-            thread.external_display_name = profile.get('name', '') or thread.external_display_name
-            thread.external_profile_pic_url = profile.get('profile_pic', '') or thread.external_profile_pic_url
-            thread.external_profile_fetched_at = timezone.now()
-            thread.save(update_fields=[
-                'external_username',
-                'external_display_name',
-                'external_profile_pic_url',
-                'external_profile_fetched_at',
-                'updated_at',
-            ])
-            refreshed += 1
+            if opts['dry_run']:
+                self.stdout.write(
+                    f'    would set thread #{thread.pk}: {profile!r}'
+                )
+                continue
 
-        self.stdout.write('')
-        self.stdout.write(self.style.SUCCESS(
-            f'Done. refreshed={refreshed} '
-            f'skipped_fresh={skipped_fresh} '
-            f'skipped_empty={skipped_empty}'
-        ))
+            self._apply_profile_to_thread(
+                thread, profile,
+                has_profile_pic=bool(profile.get('profile_pic')),
+            )
+            self._maybe_update_customer_name(thread.customer, profile)
+            refreshed += 1
+        return refreshed, skipped, errors
+
+    # ── Shared writers ──────────────────────────────────────────────
+
+    def _apply_profile_to_thread(self, thread, profile, *, has_profile_pic):
+        thread.external_username = profile.get('username', '') or thread.external_username
+        thread.external_display_name = profile.get('name', '') or thread.external_display_name
+        if has_profile_pic:
+            thread.external_profile_pic_url = profile.get('profile_pic', '') or thread.external_profile_pic_url
+        thread.external_profile_fetched_at = timezone.now()
+        thread.save(update_fields=[
+            'external_username',
+            'external_display_name',
+            'external_profile_pic_url',
+            'external_profile_fetched_at',
+            'updated_at',
+        ])
+
+    def _maybe_update_customer_name(self, customer, profile):
+        """Update Customer.first_name / last_name / instagram_handle when
+        the row still carries the auto-created placeholder.
+
+        Detection: first_name starts with "Instagram visitor ". This
+        means the Customer was created by the webhook before IG profile
+        data was available; safe to overwrite. If the operator has
+        renamed the customer (or merged into a real client record), the
+        prefix won't match and we leave the row alone.
+        """
+        ig_name = (profile.get('name') or '').strip()
+        ig_username = (profile.get('username') or '').strip()
+
+        update_fields = []
+        if (
+            ig_name
+            and customer.first_name.startswith(_PLACEHOLDER_FIRST_NAME_PREFIX)
+        ):
+            first, _, last = ig_name.partition(' ')
+            customer.first_name = first[:60] or 'Instagram'
+            customer.last_name = last[:60]
+            update_fields += ['first_name', 'last_name']
+
+        if ig_username and not customer.instagram_handle:
+            customer.instagram_handle = ig_username[:60]
+            update_fields.append('instagram_handle')
+
+        if update_fields:
+            update_fields.append('updated_at')
+            customer.save(update_fields=update_fields)
