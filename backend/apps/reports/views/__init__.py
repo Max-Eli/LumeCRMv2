@@ -10,6 +10,7 @@ When adding a new report:
 from .financial import (
     ARAgingReport,
     DailyCloseOutReport,
+    RevenueByAcquisitionSourceReport,
     RevenueByLocationReport,
     RevenueByServiceReport,
     SalesByDateRangeReport,
@@ -26,6 +27,7 @@ from .guests import (
 from .operations import (
     AppointmentsByStatusReport,
     BookingLeadTimeReport,
+    BookingsByAcquisitionSourceReport,
     BusiestHoursReport,
     CancellationRateReport,
     NoShowRateReport,
@@ -47,6 +49,7 @@ __all__ = [
     'RevenueByServiceReport',
     'RevenueByLocationReport',
     'TaxCollectedReport',
+    'RevenueByAcquisitionSourceReport',
     # Staff
     'RevenueByProviderReport',
     'ScheduleUtilizationReport',
@@ -67,4 +70,5 @@ __all__ = [
     'BookingLeadTimeReport',
     'ServiceMixReport',
     'BusiestHoursReport',
+    'BookingsByAcquisitionSourceReport',
 ]

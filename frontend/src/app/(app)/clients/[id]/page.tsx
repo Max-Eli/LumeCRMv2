@@ -79,6 +79,7 @@ import {
   useCustomerMarketingHistory,
 } from '@/lib/marketing';
 
+import { SocialGuestMergeBanner } from './_components/social-guest-merge-banner';
 import { AppointmentsTab } from './_tabs/appointments-tab';
 import { GiftCardsTab } from './_tabs/gift-cards-tab';
 import { MembershipsTab } from './_tabs/memberships-tab';
@@ -140,6 +141,8 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
   const { id } = use(params);
   const customerId = Number(id);
   const { data: customer, isLoading, error } = useCustomer(customerId);
+  const me = useCurrentMembership();
+  const canManageMerge = me?.role === 'owner' || me?.role === 'manager';
 
   const searchParams = useSearchParams();
   const requestedTab = searchParams.get('tab') ?? 'overview';
@@ -165,6 +168,12 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
       {/* Back link — scrolls away with content */}
       <div className="px-4 sm:px-8 pt-6 sm:pt-10">
         <PageHeader title="" back={{ href: '/clients', label: 'Back to clients' }} className="mb-0" />
+      </div>
+
+      {/* Social-guest banner — only renders when the row was auto-created
+          from an inbound social DM and hasn't been merged yet. */}
+      <div className="px-4 sm:px-8">
+        <SocialGuestMergeBanner customer={customer} canManage={canManageMerge} />
       </div>
 
       {/*

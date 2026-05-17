@@ -12,6 +12,7 @@ Reports in this module:
   - RevenueByServiceReport     (Session 2)
   - RevenueByLocationReport    (Session 2)
   - TaxCollectedReport         (Session 2)
+  - RevenueByAcquisitionSourceReport  (Session 2B — ADR 0027 §8c)
 """
 
 from collections import OrderedDict
@@ -577,3 +578,81 @@ class TaxCollectedReport(BaseReportView):
     def _current_tenant():
         from apps.tenants.context import get_current_tenant
         return get_current_tenant()
+
+
+# ── Revenue by acquisition source (ADR 0027 §8c) ───────────────────
+
+
+@extend_schema(
+    tags=['Reports — Financial'],
+    parameters=[DATE_FROM_PARAM, DATE_TO_PARAM],
+    description=(
+        'PAID invoice totals grouped by customer.acquisition_source — '
+        'which channel originally brought each customer in. Answers '
+        '"is the Instagram ad budget producing actual revenue?" by '
+        'showing gross + average ticket + customer counts per channel.'
+    ),
+)
+class RevenueByAcquisitionSourceReport(BaseReportView):
+    """Revenue per acquisition channel, ranked highest-first."""
+
+    report_id = 'financial.revenue_by_acquisition_source'
+    category = 'financial'
+    permission = P.VIEW_FINANCIAL_REPORTS
+    title = 'Revenue by acquisition source'
+    description = (
+        'Per-channel gross + average ticket + customer count. Pair with '
+        'the Operations version to see whether each channel converts to '
+        'revenue, not just bookings.'
+    )
+    # PHI tier: aggregated. Per-channel totals never expose any
+    # individual customer — pure aggregate rollup.
+    phi_tier = 'aggregated'
+
+    def run(self, request, *, date_from, date_to):
+        from apps.customers.models import Customer
+
+        per_source = (
+            Invoice.objects
+            .for_current_tenant()
+            .filter(
+                status=Invoice.Status.PAID,
+                closed_at__date__gte=date_from,
+                closed_at__date__lte=date_to,
+            )
+            .values('customer__acquisition_source')
+            .annotate(
+                gross_cents=Sum('total_cents'),
+                invoice_count=Count('id'),
+                customer_count=Count('customer', distinct=True),
+            )
+            .order_by('-gross_cents')
+        )
+
+        source_labels = dict(Customer.AcquisitionSource.choices)
+        rows = []
+        for r in per_source:
+            src = r['customer__acquisition_source'] or 'manual'
+            gross = cents_to_int(r['gross_cents'])
+            invoice_count = int(r['invoice_count'])
+            customer_count = int(r['customer_count'])
+            avg_ticket = gross // invoice_count if invoice_count else 0
+            rows.append({
+                'acquisition_source': src,
+                'acquisition_source_label': source_labels.get(src, src),
+                'gross_cents': gross,
+                'invoice_count': invoice_count,
+                'customer_count': customer_count,
+                'avg_ticket_cents': avg_ticket,
+            })
+
+        gross_total = sum(r['gross_cents'] for r in rows)
+        invoice_total = sum(r['invoice_count'] for r in rows)
+        return {
+            'summary': {
+                'total_gross_cents': gross_total,
+                'total_invoices': invoice_total,
+                'distinct_sources': len(rows),
+            },
+            'rows': rows,
+        }

@@ -47,6 +47,7 @@ const REPORT_HREF: Record<string, string> = {
   'financial.revenue_by_service':   '/reports/financial/revenue-by-service',
   'financial.revenue_by_location':  '/reports/financial/revenue-by-location',
   'financial.tax_collected':        '/reports/financial/tax-collected',
+  'financial.revenue_by_acquisition_source': '/reports/financial/revenue-by-acquisition-source',
   // Staff
   'staff.revenue_by_provider':         '/reports/staff/revenue-by-provider',
   'staff.schedule_utilization':        '/reports/staff/schedule-utilization',
@@ -67,6 +68,7 @@ const REPORT_HREF: Record<string, string> = {
   'operations.booking_lead_time':      '/reports/operations/booking-lead-time',
   'operations.service_mix':            '/reports/operations/service-mix',
   'operations.busiest_hours':          '/reports/operations/busiest-hours',
+  'operations.bookings_by_acquisition_source': '/reports/operations/bookings-by-acquisition-source',
 };
 
 export default function ReportsLibraryPage() {

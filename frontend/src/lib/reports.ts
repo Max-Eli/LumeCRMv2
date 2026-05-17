@@ -767,3 +767,52 @@ export const DATE_PRESETS: DatePreset[] = [
     },
   },
 ];
+
+// Financial · Revenue by acquisition source (ADR 0027 §8c)
+
+export interface RevenueByAcquisitionSourceRow {
+  acquisition_source: string;
+  acquisition_source_label: string;
+  gross_cents: number;
+  invoice_count: number;
+  customer_count: number;
+  avg_ticket_cents: number;
+}
+
+export interface RevenueByAcquisitionSourceSummary {
+  total_gross_cents: number;
+  total_invoices: number;
+  distinct_sources: number;
+}
+
+export function useRevenueByAcquisitionSource(params: DateRangeParams = {}) {
+  return useReportRun<RevenueByAcquisitionSourceSummary, RevenueByAcquisitionSourceRow>(
+    '/api/reports/financial/revenue-by-acquisition-source/',
+    params,
+  );
+}
+
+// Operations · Bookings by acquisition source (ADR 0027 §8c)
+
+export interface BookingsByAcquisitionSourceRow {
+  acquisition_source: string;
+  acquisition_source_label: string;
+  appointment_count: number;
+  completed_count: number;
+  cancelled_count: number;
+  no_show_count: number;
+  cancellation_rate_pct: number;
+  no_show_rate_pct: number;
+}
+
+export interface BookingsByAcquisitionSourceSummary {
+  total_appointments: number;
+  distinct_sources: number;
+}
+
+export function useBookingsByAcquisitionSource(params: DateRangeParams = {}) {
+  return useReportRun<BookingsByAcquisitionSourceSummary, BookingsByAcquisitionSourceRow>(
+    '/api/reports/operations/bookings-by-acquisition-source/',
+    params,
+  );
+}

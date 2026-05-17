@@ -13,6 +13,20 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { api } from './api';
 
+/** Acquisition source — first-touch attribution per customer. ADR 0027 §8a.
+ *  Immutable after create; powers the acquisition reports. */
+export type CustomerAcquisitionSource =
+  | 'instagram'
+  | 'facebook'
+  | 'whatsapp'
+  | 'online_booking'
+  | 'walk_in'
+  | 'referral'
+  | 'zenoti_import'
+  | 'vagaro_import'
+  | 'manual'
+  | 'other';
+
 /** Minimal customer record returned by the list endpoint. No medical PHI. */
 export interface CustomerListItem {
   id: number;
@@ -25,6 +39,12 @@ export interface CustomerListItem {
   status: 'active' | 'inactive' | 'blocked';
   tags: CustomerTag[];
   created_at: string;
+  /** Social DM provenance — true means the row was auto-created from an
+   *  inbound social DM (Instagram, etc.) and hasn't been merged into a
+   *  real client record yet. ADR 0027 §6. */
+  is_social_guest?: boolean;
+  instagram_handle?: string;
+  acquisition_source?: CustomerAcquisitionSource;
 }
 
 /** Full customer record. Includes medical PHI — show only to authorized roles. */
@@ -181,6 +201,38 @@ export function useUpdateCustomer(id: number) {
     onSuccess: (updated) => {
       qc.setQueryData(customerKey(updated.id), updated);
       qc.invalidateQueries({ queryKey: CUSTOMERS_KEY });
+    },
+  });
+}
+
+/**
+ * Merge a social-guest customer into an existing real customer. The source
+ * (a row with `is_social_guest=true`) gets soft-deleted; the target inherits
+ * the source's social-thread history + acquisition_source (only if the
+ * target doesn't already have those fields populated).
+ *
+ * Backend endpoint: POST /api/customers/{source_id}/merge-into/{target_id}/
+ * Gated to owner+manager via MANAGE_CLIENT_RECORDS. ADR 0027 §8b.
+ *
+ * On success we invalidate both customers + the social-threads list so the
+ * inbox refreshes the renamed thread.
+ */
+export function useMergeIntoCustomer(sourceId: number) {
+  const qc = useQueryClient();
+  return useMutation<CustomerDetail, Error, { targetId: number }>({
+    mutationFn: ({ targetId }) =>
+      api.post<CustomerDetail>(
+        `/api/customers/${sourceId}/merge-into/${targetId}/`,
+        {},
+      ),
+    onSuccess: (mergedTarget) => {
+      qc.invalidateQueries({ queryKey: CUSTOMERS_KEY });
+      qc.invalidateQueries({ queryKey: customerKey(sourceId) });
+      qc.setQueryData(customerKey(mergedTarget.id), mergedTarget);
+      // Social inbox queries also need a refresh since thread customer
+      // links got rewired.
+      qc.invalidateQueries({ queryKey: ['social-threads'] });
+      qc.invalidateQueries({ queryKey: ['social-thread'] });
     },
   });
 }

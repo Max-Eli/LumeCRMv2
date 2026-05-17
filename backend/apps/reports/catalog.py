@@ -25,6 +25,7 @@ from .views import (
     ARAgingReport,
     BirthdayListReport,
     BookingLeadTimeReport,
+    BookingsByAcquisitionSourceReport,
     BusiestHoursReport,
     CancellationRateReport,
     DailyCloseOutReport,
@@ -35,6 +36,7 @@ from .views import (
     NoShowRateByProviderReport,
     NoShowRateReport,
     RepeatRateByProviderReport,
+    RevenueByAcquisitionSourceReport,
     RevenueByLocationReport,
     RevenueByProviderReport,
     RevenueByServiceReport,
@@ -59,6 +61,8 @@ REPORT_CATALOG: list[tuple[str, str, str, list[tuple[type, str]]]] = [
             (RevenueByLocationReport,   '/api/reports/financial/revenue-by-location/'),
             (TaxCollectedReport,        '/api/reports/financial/tax-collected/'),
             (ARAgingReport,             '/api/reports/financial/ar-aging/'),
+            (RevenueByAcquisitionSourceReport,
+                '/api/reports/financial/revenue-by-acquisition-source/'),
         ],
     ),
     (
@@ -97,6 +101,8 @@ REPORT_CATALOG: list[tuple[str, str, str, list[tuple[type, str]]]] = [
             (BookingLeadTimeReport,      '/api/reports/operations/booking-lead-time/'),
             (ServiceMixReport,           '/api/reports/operations/service-mix/'),
             (BusiestHoursReport,         '/api/reports/operations/busiest-hours/'),
+            (BookingsByAcquisitionSourceReport,
+                '/api/reports/operations/bookings-by-acquisition-source/'),
         ],
     ),
     (

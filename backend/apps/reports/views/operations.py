@@ -12,6 +12,7 @@ Reports in this module:
   - BookingLeadTimeReport          (Session 2)
   - ServiceMixReport               (Session 2)
   - BusiestHoursReport             (Session 2)
+  - BookingsByAcquisitionSourceReport  (Session 2B — ADR 0027 §8c)
 """
 
 import datetime as dt
@@ -454,6 +455,91 @@ class BusiestHoursReport(BaseReportView):
                 'grid': grid,
                 'per_hour': per_hour,
                 'per_weekday': per_weekday,
+            },
+            'rows': rows,
+        }
+
+
+# ── Bookings by acquisition source (ADR 0027 §8c) ──────────────────
+
+
+@extend_schema(
+    tags=['Reports — Operations'],
+    parameters=[DATE_FROM_PARAM, DATE_TO_PARAM],
+    description=(
+        'Appointment counts grouped by customer.acquisition_source — '
+        'the channel each client originally came from (Instagram DM, '
+        'online booking page, referral, walk-in, etc.). Drives the '
+        '"is our IG ad spend producing bookings?" decision. Filter '
+        'window is Appointment.start_time.'
+    ),
+)
+class BookingsByAcquisitionSourceReport(BaseReportView):
+    """Bookings broken down by where the customer originally came from."""
+
+    report_id = 'operations.bookings_by_acquisition_source'
+    category = 'operations'
+    permission = P.VIEW_OPERATIONS_REPORTS
+    title = 'Bookings by acquisition source'
+    description = (
+        "Which channels (IG DMs, online booking, referrals, walk-ins) "
+        'are driving appointments. Pair with the Revenue version to '
+        'see whether each channel actually converts to spend.'
+    )
+    phi_tier = 'none'
+
+    def run(self, request, *, date_from, date_to):
+        from apps.customers.models import Customer
+
+        per_source = (
+            Appointment.objects
+            .for_current_tenant()
+            .filter(
+                start_time__date__gte=date_from,
+                start_time__date__lte=date_to,
+            )
+            .values('customer__acquisition_source')
+            .annotate(
+                appointment_count=Count('id'),
+                completed_count=Count(
+                    'id',
+                    filter=Q(status=Appointment.Status.COMPLETED),
+                ),
+                cancelled_count=Count(
+                    'id',
+                    filter=Q(status=Appointment.Status.CANCELLED),
+                ),
+                no_show_count=Count(
+                    'id',
+                    filter=Q(status=Appointment.Status.NO_SHOW),
+                ),
+            )
+        )
+
+        source_labels = dict(Customer.AcquisitionSource.choices)
+        rows = []
+        for row in per_source:
+            src = row['customer__acquisition_source'] or 'manual'
+            total = int(row['appointment_count'])
+            cancelled = int(row['cancelled_count'])
+            no_show = int(row['no_show_count'])
+            rows.append({
+                'acquisition_source': src,
+                'acquisition_source_label': source_labels.get(src, src),
+                'appointment_count': total,
+                'completed_count': int(row['completed_count']),
+                'cancelled_count': cancelled,
+                'no_show_count': no_show,
+                'cancellation_rate_pct': round(cancelled / total * 100, 1) if total else 0.0,
+                'no_show_rate_pct': round(no_show / total * 100, 1) if total else 0.0,
+            })
+        rows.sort(key=lambda r: -r['appointment_count'])
+
+        total_appts = sum(r['appointment_count'] for r in rows)
+        return {
+            'summary': {
+                'total_appointments': total_appts,
+                'distinct_sources': len(rows),
             },
             'rows': rows,
         }

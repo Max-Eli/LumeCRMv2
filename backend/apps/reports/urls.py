@@ -20,6 +20,7 @@ from .views import (
     ARAgingReport,
     BirthdayListReport,
     BookingLeadTimeReport,
+    BookingsByAcquisitionSourceReport,
     BusiestHoursReport,
     CancellationRateReport,
     DailyCloseOutReport,
@@ -30,6 +31,7 @@ from .views import (
     NoShowRateByProviderReport,
     NoShowRateReport,
     RepeatRateByProviderReport,
+    RevenueByAcquisitionSourceReport,
     RevenueByLocationReport,
     RevenueByProviderReport,
     RevenueByServiceReport,
@@ -57,6 +59,9 @@ urlpatterns = [
          name='reports-financial-revenue-by-location'),
     path('reports/financial/tax-collected/', TaxCollectedReport.as_view(),
          name='reports-financial-tax-collected'),
+    path('reports/financial/revenue-by-acquisition-source/',
+         RevenueByAcquisitionSourceReport.as_view(),
+         name='reports-financial-revenue-by-acquisition-source'),
 
     # Staff
     path('reports/staff/revenue-by-provider/', RevenueByProviderReport.as_view(),
@@ -97,4 +102,7 @@ urlpatterns = [
          name='reports-operations-service-mix'),
     path('reports/operations/busiest-hours/', BusiestHoursReport.as_view(),
          name='reports-operations-busiest-hours'),
+    path('reports/operations/bookings-by-acquisition-source/',
+         BookingsByAcquisitionSourceReport.as_view(),
+         name='reports-operations-bookings-by-acquisition-source'),
 ]

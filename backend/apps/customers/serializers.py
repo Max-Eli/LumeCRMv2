@@ -65,6 +65,13 @@ class CustomerListSerializer(serializers.ModelSerializer):
             'status',
             'tags',
             'created_at',
+            # ADR 0027 §6 — surfaced on the list so the merge-target
+            # search can filter out social-guest rows (you can't merge
+            # a guest into another guest) and so the customer-list UI
+            # can flag unmerged guests visually if/when that lands.
+            'is_social_guest',
+            'instagram_handle',
+            'acquisition_source',
         ]
         read_only_fields = fields
 
