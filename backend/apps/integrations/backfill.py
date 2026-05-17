@@ -188,6 +188,19 @@ def _ingest_conversation_messages(
             external_thread_id=other_party,
         )
 
+        # Capture profile data from the message's `from` expansion when
+        # it's a customer-sent message. Meta's per-user profile endpoint
+        # requires the 24-hour messaging window AND Advanced Access;
+        # the message-context expansion (`from{username,name,profile_pic}`)
+        # is more permissive (works in Standard Access for any message
+        # in any conversation the business has had). For threads that
+        # existed before the IG profile feature shipped, this is the
+        # only working path to populate name + handle until the user
+        # sends a fresh message.
+        if not is_outbound:
+            from_obj = msg.get('from') or {}
+            _apply_message_context_profile(thread=thread, customer=customer, from_obj=from_obj)
+
         try:
             with transaction.atomic():
                 SocialMessage.objects.create(
@@ -236,6 +249,61 @@ def _ingest_conversation_messages(
                 thread.read_at = None
                 update_fields += ['last_inbound_at', 'read_at']
         thread.save(update_fields=update_fields)
+
+
+def _apply_message_context_profile(*, thread, customer, from_obj: dict) -> None:
+    """Populate thread + customer profile fields from message-context data.
+
+    Meta's `from{id,username,name,profile_pic}` expansion on a message
+    works in Standard Access — unlike the per-user profile endpoint
+    which requires Advanced Access + the 24h messaging window. This
+    is the only working path to populate IG identity for historical
+    threads until App Review approval lands.
+
+    Idempotent + non-destructive:
+      - Thread fields are only set when Meta returned non-empty values.
+      - Customer first/last name + instagram_handle are only updated
+        when the customer still carries the "Instagram visitor XXXXXX"
+        placeholder (i.e. the row was auto-created from a webhook
+        before profile data was available). Operator-edited customers
+        are left alone.
+    """
+    from_username = (from_obj.get('username') or '').strip()
+    from_name = (from_obj.get('name') or '').strip()
+    from_pic = (from_obj.get('profile_pic') or '').strip()
+
+    if not (from_username or from_name or from_pic):
+        return
+
+    thread_update_fields = []
+    if from_username and from_username != thread.external_username:
+        thread.external_username = from_username[:128]
+        thread_update_fields.append('external_username')
+    if from_name and from_name != thread.external_display_name:
+        thread.external_display_name = from_name[:200]
+        thread_update_fields.append('external_display_name')
+    if from_pic and from_pic != thread.external_profile_pic_url:
+        thread.external_profile_pic_url = from_pic[:2048]
+        thread_update_fields.append('external_profile_pic_url')
+
+    if thread_update_fields:
+        thread.external_profile_fetched_at = timezone.now()
+        thread_update_fields += ['external_profile_fetched_at', 'updated_at']
+        thread.save(update_fields=thread_update_fields)
+
+    # Promote the customer name when it's still the placeholder.
+    customer_update_fields = []
+    if from_name and customer.first_name.startswith('Instagram visitor '):
+        first, _, last = from_name.partition(' ')
+        customer.first_name = first[:60] or 'Instagram'
+        customer.last_name = last[:60]
+        customer_update_fields += ['first_name', 'last_name']
+    if from_username and not customer.instagram_handle:
+        customer.instagram_handle = from_username[:60]
+        customer_update_fields.append('instagram_handle')
+    if customer_update_fields:
+        customer_update_fields.append('updated_at')
+        customer.save(update_fields=customer_update_fields)
 
 
 def _parse_iso(s: str | None) -> _dt.datetime:

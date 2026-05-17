@@ -607,9 +607,21 @@ def fetch_conversation_messages(
 ) -> list[dict]:
     """GET /{conversation-id}?fields=messages{...} — fetch a conversation's messages.
 
-    Returns the message list — sender + recipient IDs + body + created_time.
+    Returns the message list — sender + recipient IDs + body + created_time
+    + (when Meta allows) sender username/name/profile_pic via message-
+    context expansion.
+
     Meta paginates inside the messages field; we take the first page
     only (most recent N messages) to keep backfill bounded.
+
+    Profile-expansion strategy: the `from` field expansion `{id,
+    username,name,profile_pic}` is more permissive than the standalone
+    profile endpoint (the latter requires the 24-hour messaging window
+    AND Advanced Access; the former works in Standard Access for
+    messages in any conversation the business has). Callers can rely
+    on `from.username` being populated whenever Meta has it; `name` +
+    `profile_pic` are populated when Meta has them and our app has the
+    relevant scope.
     """
     response = requests.get(
         f'{IG_GRAPH_BASE}/{conversation_id}',
@@ -618,7 +630,7 @@ def fetch_conversation_messages(
             'fields': (
                 'messages.limit('
                 + str(BACKFILL_MAX_MESSAGES_PER_CONVERSATION)
-                + '){id,created_time,from,to,message}'
+                + '){id,created_time,from{id,username,name,profile_pic},to,message}'
             ),
         },
         timeout=20,

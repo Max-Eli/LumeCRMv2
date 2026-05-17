@@ -1,22 +1,24 @@
 """Refresh IG name + @handle (+ profile pic when available) on existing threads.
 
-Two paths:
+Three paths, ordered by what works in Meta's permission model:
 
-  - **Bulk via `/conversations?fields=participants`** (default, used by
-    the no-arg invocation). This works regardless of the messaging
-    window state — Meta returns participant `{id, name, username}`
-    for every conversation in one call. Profile pic is NOT available
-    here (Meta only surfaces it via the per-user profile endpoint
-    which requires the messaging window).
+  - **Via messages (default, --via-messages)** — re-runs the backfill
+    against the connection, which now extracts `from{username,name,
+    profile_pic}` from each message's expansion. This works in
+    Standard Access for any conversation the business has had, so
+    it's the only reliable path until App Review approval lands.
 
-  - **Per-thread via `fetch_ig_user_profile`** (--per-thread). This
-    catches profile_pic for threads inside the 24-hour messaging
-    window. The webhook path also runs this on every new inbound
-    so threads stay current naturally.
+  - **Bulk via /conversations participants (--bulk)** — works
+    regardless of messaging-window state but REQUIRES Advanced Access
+    on `instagram_business_manage_messages`. Returns 403 "Insufficient
+    permissions" otherwise. Use post-App-Review for a faster single-
+    call refresh.
 
-The bulk path is the right tool for the launch backfill (when a
-fresh deploy needs to populate empty thread profiles); the per-thread
-path is the right tool for "refresh THIS thread's avatar now."
+  - **Per-thread via /{psid} profile endpoint (--per-thread)** —
+    catches profile_pic for threads INSIDE the 24-hour messaging
+    window. Returns "user not found" / "consent required" outside
+    the window. Webhook path runs this on every new inbound so
+    in-window threads stay current naturally.
 
 When the customer carries the placeholder "Instagram visitor XXXXXX"
 first_name (i.e. the row was created before the IG profile fetch
@@ -26,10 +28,13 @@ operator's manual edits aren't overwritten.
 
 Usage:
 
-    # Default: bulk path, all connected tenants, every thread.
+    # Default: via messages — the path that works pre-App-Review.
     python manage.py refresh_ig_profiles
 
-    # Per-thread fallback (gets profile pic for in-window threads).
+    # Bulk via participants (requires Advanced Access).
+    python manage.py refresh_ig_profiles --bulk
+
+    # Per-thread profile fetch (gets profile pic for in-window threads).
     python manage.py refresh_ig_profiles --per-thread
 
     # Single tenant.
@@ -67,9 +72,19 @@ class Command(BaseCommand):
 
     def add_arguments(self, parser):
         parser.add_argument('--tenant', type=str, default=None)
+        # Mode selection. Mutually-exclusive in spirit; the dispatch
+        # below picks the most-specific flag (per-thread > bulk > messages).
+        parser.add_argument(
+            '--bulk', action='store_true',
+            help='Use /conversations?fields=participants (requires Advanced Access).',
+        )
         parser.add_argument(
             '--per-thread', action='store_true',
-            help='Use the per-user profile endpoint (gets profile_pic). Fails outside the 24h messaging window.',
+            help='Use the per-user profile endpoint (gets profile_pic, in-window threads only).',
+        )
+        parser.add_argument(
+            '--via-messages', action='store_true',
+            help='[default] Re-run backfill to extract profile data from message context. Works in Standard Access.',
         )
         parser.add_argument(
             '--force', action='store_true',
@@ -85,11 +100,19 @@ class Command(BaseCommand):
         if opts.get('tenant'):
             connections = connections.filter(tenant__slug=opts['tenant'])
 
+        # Default mode is via-messages — it's the only path that works
+        # in Standard Access (pre-App-Review). --bulk and --per-thread
+        # are explicit opt-ins for post-App-Review use.
+        mode = (
+            'per-thread' if opts['per_thread']
+            else 'bulk' if opts['bulk']
+            else 'via-messages'
+        )
+
         total = connections.count()
         self.stdout.write(self.style.NOTICE(
             f'Found {total} connected IG connection(s). '
-            f'mode={"per-thread" if opts["per_thread"] else "bulk"} '
-            f'force={opts["force"]} dry_run={opts["dry_run"]}'
+            f'mode={mode} force={opts["force"]} dry_run={opts["dry_run"]}'
         ))
 
         grand_refreshed = 0
@@ -121,10 +144,14 @@ class Command(BaseCommand):
 
             if opts['per_thread']:
                 r, s, e = self._refresh_per_thread(conn, opts)
-            else:
+            elif opts['bulk']:
                 r, s, e = self._refresh_bulk(
                     conn=conn, ig_user_id=ig_user_id,
                     access_token=access_token, opts=opts,
+                )
+            else:
+                r, s, e = self._refresh_via_messages(
+                    conn=conn, opts=opts,
                 )
             grand_refreshed += r
             grand_skipped += s
@@ -136,7 +163,44 @@ class Command(BaseCommand):
             f'skipped={grand_skipped} errors={grand_errors}'
         ))
 
-    # ── Bulk path (recommended) ─────────────────────────────────────
+    # ── Via-messages path (works in Standard Access) ────────────────
+
+    def _refresh_via_messages(self, *, conn, opts):
+        """Re-run backfill — its per-message processing now extracts
+        profile data from `from{username,name,profile_pic}` and applies
+        it to the thread + customer. Counts are derived from the diff
+        in threads with populated profiles before vs after."""
+        from apps.integrations import backfill as _backfill
+
+        with_profile_before = SocialThread.objects.filter(
+            connection=conn,
+            provider=SocialThread.Provider.INSTAGRAM,
+        ).exclude(external_username='').count()
+
+        if opts['dry_run']:
+            self.stdout.write(
+                f'    [dry-run] would invoke backfill_connection to '
+                f'extract from{{...}} expansions on each message'
+            )
+            return 0, 0, 0
+
+        result = _backfill.backfill_connection(conn)
+        self.stdout.write(
+            f'    backfill: examined={result.conversations_examined} '
+            f'created={result.messages_created} '
+            f'dup={result.messages_duplicate} '
+            f'api_errors={result.api_errors}'
+        )
+
+        with_profile_after = SocialThread.objects.filter(
+            connection=conn,
+            provider=SocialThread.Provider.INSTAGRAM,
+        ).exclude(external_username='').count()
+
+        refreshed = max(0, with_profile_after - with_profile_before)
+        return refreshed, 0, result.api_errors
+
+    # ── Bulk path (requires Advanced Access) ────────────────────────
 
     def _refresh_bulk(self, *, conn, ig_user_id, access_token, opts):
         """Use /conversations?fields=participants to populate every thread."""
