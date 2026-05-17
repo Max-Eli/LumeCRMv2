@@ -313,7 +313,11 @@ def merge_files(per_file_results: list[list[MappedPackage]]) -> tuple[list[Mappe
 def _clean(value: str | None) -> str:
     if not value:
         return ''
-    return re.sub(r'\s+', ' ', str(value)).strip()
+    # Zenoti emits HTML entities in service names (`&amp;` for `&`,
+    # `&#39;` for `'`, etc.) — decode them so service-catalog matching
+    # works. `html.unescape` is a no-op on plain text.
+    import html
+    return html.unescape(re.sub(r'\s+', ' ', str(value)).strip())
 
 
 def _split_guest_name(full: str) -> tuple[str, str]:
