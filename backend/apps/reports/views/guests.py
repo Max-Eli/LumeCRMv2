@@ -284,6 +284,11 @@ class InactiveClientsReport(BaseReportView):
         customers = (
             Customer.objects
             .for_current_tenant()
+            # Social guests (auto-created from inbound IG DMs) are not
+            # real clients — they have no email/phone/legal-name. They
+            # never count as "inactive customers" because they were
+            # never customers to begin with.
+            .filter(is_social_guest=False)
             .only('id', 'first_name', 'last_name', 'preferred_name', 'email', 'phone', 'created_at')
         )
 

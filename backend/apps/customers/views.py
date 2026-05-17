@@ -42,11 +42,33 @@ class CustomerViewSet(viewsets.ModelViewSet):
     permission_classes = [CustomerPermission]
 
     def get_queryset(self):
-        return (
+        """Tenant-scoped customer queryset.
+
+        Social-guest rows (auto-created when an unknown IG user DMs the
+        spa) are HIDDEN from the list endpoint but visible to detail +
+        action endpoints. Without the hide, operators see polluted
+        client lists full of "Instagram visitor 947238" placeholders
+        that don't have email/phone/legal-name and don't represent
+        actual clients yet.
+
+        Detail (`retrieve`) and custom actions (`merge-into`,
+        `email-history`, etc.) keep the social guests visible so the
+        social-merge flow + admin tooling can still resolve them by ID.
+
+        Opt-in: pass `?include_social_guests=1` on the list endpoint
+        to see them anyway (used by future "linkable IG visitors"
+        operator tools).
+        """
+        qs = (
             Customer.objects
             .for_current_tenant()
             .prefetch_related('tags')
         )
+        if self.action == 'list':
+            include = (self.request.query_params.get('include_social_guests') or '').strip().lower()
+            if include not in ('1', 'true', 'yes', 'on'):
+                qs = qs.filter(is_social_guest=False)
+        return qs
 
     def get_serializer_class(self):
         if self.action == 'list':

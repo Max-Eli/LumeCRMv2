@@ -184,3 +184,82 @@ class CustomerPHIRedactionTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.customer.refresh_from_db()
         self.assertEqual(self.customer.medical_history, 'Updated by owner.')
+
+
+# ── Social-guest visibility ─────────────────────────────────────────
+
+
+class SocialGuestListFilterTests(TestCase):
+    """Auto-created IG-DM Customer rows (is_social_guest=True) must NOT
+    appear in the /api/customers/ list endpoint. Without this filter,
+    every inbound DM from an unknown sender pollutes the operator's
+    client list with "Instagram visitor 947238"-style placeholders
+    that have no email/phone/legal-name and aren't real clients yet.
+
+    Detail + custom actions still resolve social-guest rows so the
+    social-merge flow keeps working.
+    """
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('soclist')
+        cls.real_client = Customer.objects.create(
+            tenant=cls.tenant,
+            first_name='Maria', last_name='Real',
+            email='maria@example.com',
+            phone='555-1111',
+        )
+        cls.social_guest = Customer.objects.create(
+            tenant=cls.tenant,
+            first_name='Instagram visitor 123456',
+            last_name='',
+            is_social_guest=True,
+            acquisition_source=Customer.AcquisitionSource.INSTAGRAM,
+            external_source='instagram',
+            external_id='ig-psid-123456',
+        )
+
+    def setUp(self):
+        self.headers = {'HTTP_X_TENANT_SLUG': self.tenant.slug}
+        self.url = reverse('customer-list')
+
+    def test_list_hides_social_guests_by_default(self):
+        response = _client(self.owner).get(self.url, **self.headers)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
+        ids = {row['id'] for row in rows}
+        self.assertIn(self.real_client.id, ids)
+        self.assertNotIn(
+            self.social_guest.id, ids,
+            'Social-guest rows must not appear in the operator client list',
+        )
+
+    def test_list_search_does_not_surface_social_guests(self):
+        """Even when the query happens to match a social guest's
+        placeholder name, they stay hidden."""
+        response = _client(self.owner).get(
+            self.url, {'q': 'Instagram'}, **self.headers,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
+        ids = {row['id'] for row in rows}
+        self.assertNotIn(self.social_guest.id, ids)
+
+    def test_list_can_opt_in_with_query_param(self):
+        """Future operator tooling can request the unfiltered list."""
+        response = _client(self.owner).get(
+            self.url, {'include_social_guests': '1'}, **self.headers,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        rows = response.data.get('results', response.data) if isinstance(response.data, dict) else response.data
+        ids = {row['id'] for row in rows}
+        self.assertIn(self.social_guest.id, ids)
+
+    def test_detail_endpoint_still_resolves_social_guest(self):
+        """The merge banner on /clients/<social-guest-id> needs the
+        detail view to keep working for social guests."""
+        url = reverse('customer-detail', args=[self.social_guest.id])
+        response = _client(self.owner).get(url, **self.headers)
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['id'], self.social_guest.id)
+        self.assertTrue(response.data['is_social_guest'])
