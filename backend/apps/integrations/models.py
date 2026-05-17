@@ -191,8 +191,13 @@ class SocialThread(TenantedModel):
     )
 
     external_thread_id = models.CharField(
-        max_length=128,
-        help_text="Provider-scoped sender ID (Meta PSID, etc.)",
+        max_length=255,
+        help_text=(
+            "Provider-scoped sender ID. Meta IG conversation IDs run "
+            'long (~100 chars base64-ish); we use 255 to leave headroom '
+            'for the longer-than-documented values Meta returns in '
+            'practice.'
+        ),
     )
     external_username = models.CharField(
         max_length=128,
@@ -314,8 +319,13 @@ class SocialMessage(TenantedModel):
     )
 
     external_message_id = models.CharField(
-        max_length=128,
-        help_text="Provider's per-message ID (Meta `mid`). Used for idempotency.",
+        max_length=255,
+        help_text=(
+            "Provider's per-message ID (Meta `mid`). Used for "
+            'idempotency. Meta IG mids run long (~100-200 chars '
+            'base64-ish); 255 leaves headroom. 128 was too short '
+            'and broke ingestion in prod 2026-05-17.'
+        ),
     )
 
     status = models.CharField(
