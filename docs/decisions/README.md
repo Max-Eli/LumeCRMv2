@@ -61,6 +61,7 @@ Write one when:
 | [0027](0027-meta-instagram-dm-integration.md) | Meta Instagram DM integration | Accepted |
 | [0028](0028-ecs-deploy-contract.md) | ECS deploy contract (Terraform vs CI) | Accepted |
 | [0029](0029-ses-bounce-complaint-suppression.md) | SES bounce + complaint suppression pipeline | Accepted |
+| [0030](0030-zenoti-customer-import.md) | Zenoti customer import | Accepted |
 
 ## Numbering
 
