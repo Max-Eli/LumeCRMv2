@@ -23,12 +23,14 @@ import { Camera, Inbox, RefreshCw } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
 import { ApiError } from '@/lib/api';
+import { InitialsAvatar } from '@/components/initials-avatar';
 import {
   PROVIDER_LABEL,
   PROVIDER_TONE,
   REPLY_WINDOW_HOURS,
   canReply,
   displayHandle,
+  displayName,
   relativeAgo,
   useMarkThreadRead,
   useReplyToThread,
@@ -196,7 +198,7 @@ function ThreadList({
               (selectedId === t.id ? 'bg-accent/10' : '')
             }
           >
-            <ProviderBadge provider={t.provider} />
+            <ThreadAvatar thread={t} />
             <div className="flex-1 min-w-0">
               <div className="flex items-center justify-between gap-2">
                 <span
@@ -205,7 +207,7 @@ function ThreadList({
                     (t.is_unread ? 'font-semibold' : 'font-medium')
                   }
                 >
-                  {displayHandle(t)}
+                  {displayName(t)}
                 </span>
                 <span className="text-[10px] text-muted-foreground shrink-0">
                   {relativeAgo(t.last_message_at)}
@@ -213,9 +215,7 @@ function ThreadList({
               </div>
               <div className="flex items-center gap-1.5 mt-0.5">
                 <span className="text-xs text-muted-foreground truncate">
-                  {t.customer.is_social_guest
-                    ? 'Social guest'
-                    : t.customer.full_name}
+                  {displayHandle(t)} · {PROVIDER_LABEL[t.provider]}
                 </span>
                 {t.is_unread && (
                   <span
@@ -229,6 +229,33 @@ function ThreadList({
         </li>
       ))}
     </ul>
+  );
+}
+
+/** Avatar with the IG profile photo when we have it; tinted initials
+ *  fallback otherwise (Meta's signed URLs rotate, so the fallback path
+ *  is the normal one once a thread sits idle for a few weeks). Small
+ *  provider chip overlays the bottom-right corner so "this is Instagram"
+ *  stays visible at a glance. */
+function ThreadAvatar({ thread }: { thread: SocialThreadSummary }) {
+  return (
+    <div className="relative shrink-0">
+      <InitialsAvatar
+        name={displayName(thread)}
+        src={thread.external_profile_pic_url || undefined}
+        size="default"
+      />
+      <span
+        className={
+          'absolute -bottom-0.5 -right-0.5 inline-flex size-4 items-center justify-center rounded-full ring-2 ring-card ' +
+          PROVIDER_TONE[thread.provider]
+        }
+        title={PROVIDER_LABEL[thread.provider]}
+        aria-label={PROVIDER_LABEL[thread.provider]}
+      >
+        <Camera className="size-2.5" />
+      </span>
+    </div>
   );
 }
 
@@ -280,11 +307,27 @@ function ThreadDetail({
   return (
     <div className="flex flex-col h-full">
       <header className="shrink-0 border-b border-border bg-card px-6 py-4 flex items-center gap-3">
-        <ProviderBadge provider={thread.provider} />
+        <div className="relative shrink-0">
+          <InitialsAvatar
+            name={displayName(thread)}
+            src={thread.external_profile_pic_url || undefined}
+            size="lg"
+          />
+          <span
+            className={
+              'absolute -bottom-0.5 -right-0.5 inline-flex size-5 items-center justify-center rounded-full ring-2 ring-card ' +
+              PROVIDER_TONE[thread.provider]
+            }
+            title={PROVIDER_LABEL[thread.provider]}
+            aria-label={PROVIDER_LABEL[thread.provider]}
+          >
+            <Camera className="size-3" />
+          </span>
+        </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
             <h2 className="text-base font-medium truncate">
-              {displayHandle(thread)}
+              {displayName(thread)}
             </h2>
             {thread.customer.is_social_guest && (
               <span className="inline-flex items-center rounded-md bg-amber-100 px-1.5 py-0.5 text-[10px] font-medium text-amber-900 ring-1 ring-inset ring-amber-200 dark:bg-amber-950/40 dark:text-amber-100 dark:ring-amber-900">
@@ -293,16 +336,22 @@ function ThreadDetail({
             )}
           </div>
           <p className="text-xs text-muted-foreground">
-            {thread.customer.is_social_guest
-              ? 'Not yet linked to a client record'
-              : (
+            {displayHandle(thread)} · {PROVIDER_LABEL[thread.provider]}
+            {thread.customer.is_social_guest ? (
+              <span className="ml-1 opacity-70">
+                — not yet linked to a client record
+              </span>
+            ) : (
+              <>
+                {' · '}
                 <a
                   href={`/clients/${thread.customer.id}`}
                   className="hover:underline"
                 >
                   {thread.customer.full_name}
                 </a>
-              )}
+              </>
+            )}
           </p>
         </div>
       </header>

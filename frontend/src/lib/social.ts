@@ -44,6 +44,13 @@ export interface SocialThreadSummary {
   id: number;
   provider: SocialProvider;
   external_username: string;
+  /** IG real name (e.g. "Maria Lopez"). Empty until the Graph profile
+   *  fetch succeeds; UI falls back to the customer's full_name. */
+  external_display_name: string;
+  /** Meta-hosted signed CDN URL. EPHEMERAL — Meta rotates signing
+   *  keys every ~few weeks, after which the URL 403s. The avatar
+   *  component falls back to initials when this is empty or fails. */
+  external_profile_pic_url: string;
   last_message_at: string;
   last_inbound_at: string | null;
   read_at: string | null;
@@ -171,6 +178,25 @@ export function displayHandle(thread: SocialThreadSummary): string {
   const raw = thread.external_username || thread.customer.instagram_handle || '';
   if (!raw) return thread.customer.full_name;
   return raw.startsWith('@') ? raw : `@${raw}`;
+}
+
+/** Prefer the IG-fetched display name, then the customer name, then the handle.
+ *  This is what shows as the primary heading on inbox rows + thread headers. */
+export function displayName(thread: SocialThreadSummary): string {
+  if (thread.external_display_name) return thread.external_display_name;
+  if (thread.customer.full_name && thread.customer.full_name.trim()) {
+    return thread.customer.full_name;
+  }
+  return displayHandle(thread);
+}
+
+/** Initials for the avatar fallback when there's no profile pic. */
+export function avatarInitials(thread: SocialThreadSummary): string {
+  const name = displayName(thread);
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase();
+  return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
 }
 
 /** "5 min ago" / "2 days ago" — terse relative time for inbox rows. */

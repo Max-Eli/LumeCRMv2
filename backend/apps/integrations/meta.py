@@ -628,6 +628,53 @@ def fetch_conversation_messages(
     return msgs_envelope.get('data', [])
 
 
+def fetch_ig_user_profile(
+    *, ig_scoped_id: str, page_access_token: str,
+) -> dict:
+    """GET /{ig-scoped-id}?fields=name,username,profile_pic — fetch IG profile.
+
+    Returns `{name, username, profile_pic}` for the IG user identified
+    by the PSID (page-scoped user ID) Meta delivers in webhook payloads.
+    Available fields per Meta's Instagram Messaging API:
+
+      - `name`        — the user's display name as it appears in IG
+      - `username`    — the @handle
+      - `profile_pic` — signed CloudFront URL, expires in ~weeks
+
+    Authorisation: the page access token must be the one tied to a
+    business account that has been in a conversation with this user
+    (which is exactly what we hold). The Instagram Messaging API
+    explicitly grants profile access only when a DM relationship
+    exists — privacy-preserving by design.
+
+    Raises MetaOAuthError on Meta-side rejection. Callers should
+    treat profile fetch as best-effort: a failure shouldn't block
+    thread creation or message ingestion. Empty / missing fields
+    are returned as empty strings, never None — the SocialThread
+    fields are CharFields with default=''.
+
+    Notes:
+      - The endpoint path is /{psid} directly, NO version prefix
+        (matches the /me + /{user_id} pattern; unversioned).
+      - Meta sometimes returns 400 for users who blocked the
+        business — caller logs + leaves the existing values intact.
+    """
+    response = requests.get(
+        f'{IG_GRAPH_BASE}/{ig_scoped_id}',
+        params={
+            'access_token': page_access_token,
+            'fields': 'name,username,profile_pic',
+        },
+        timeout=10,
+    )
+    payload = _expect_json(response, step='ig fetch user profile')
+    return {
+        'name': payload.get('name', '') or '',
+        'username': payload.get('username', '') or '',
+        'profile_pic': payload.get('profile_pic', '') or '',
+    }
+
+
 def unsubscribe_ig_user_from_webhooks(*, ig_user_id: str, access_token: str) -> None:
     """DELETE /{ig-user-id}/subscribed_apps — stop webhook delivery.
 
@@ -1053,11 +1100,14 @@ def _resolve_thread_and_customer(
     """Return (SocialThread, Customer) for an inbound message.
 
     - If a SocialThread already exists for this (tenant, provider, sender),
-      reuse it (and its customer).
-    - Else find a Customer whose `instagram_handle` matches the
-      sender's username (Session 2 enriches this lookup; Session 1
-      stays with what the webhook gives us).
-    - Else create a new social-guest Customer + SocialThread together.
+      reuse it (and refresh its IG profile if stale).
+    - Else create a new social-guest Customer + SocialThread, fetching
+      the IG profile (name + @username + profile pic) so the inbox
+      shows the customer's identity instead of an opaque PSID.
+
+    Profile fetching is best-effort: a Meta-side failure logs + leaves
+    the thread on its current profile values. The operator still sees
+    the conversation; they just see initials instead of an avatar.
     """
     from apps.customers.models import Customer
     from .models import SocialThread
@@ -1069,21 +1119,41 @@ def _resolve_thread_and_customer(
     ).select_related('customer').first()
 
     if thread is not None:
+        _maybe_refresh_ig_profile(connection=connection, thread=thread)
         return thread, thread.customer
 
-    # No prior thread → create a social-guest customer + thread.
-    # We do NOT call out to Meta for the username here; that's a
-    # Session 2 enrichment so the webhook path stays synchronous +
-    # cheap. The thread carries `external_username=''` until then.
+    # No prior thread → fetch the IG profile up front so the new
+    # social-guest customer can carry a real name (and the inbox UI
+    # has an avatar to show). The Graph call is synchronous and
+    # adds ~200ms to webhook processing; that's acceptable because
+    # new threads are infrequent (a webhook firing on a NEW sender,
+    # not on every subsequent message in an established thread).
+    profile = _fetch_ig_profile_best_effort(
+        connection=connection,
+        external_thread_id=external_thread_id,
+    )
+
+    # Use the IG display name when we got one; fall back to the
+    # "Instagram visitor <last6>" placeholder so the customer list
+    # still looks coherent if Meta returned nothing.
+    if profile.get('name'):
+        first_name, _, last_name = profile['name'].partition(' ')
+        first_name = first_name[:60] or 'Instagram'
+        last_name = last_name[:60]
+    else:
+        first_name = f'Instagram visitor {external_thread_id[-6:]}'
+        last_name = ''
+
     customer = Customer.objects.create(
         tenant=connection.tenant,
-        first_name=f'Instagram visitor {external_thread_id[-6:]}',
-        last_name='',
+        first_name=first_name,
+        last_name=last_name,
         acquisition_source=Customer.AcquisitionSource.INSTAGRAM,
         external_id=external_thread_id,
         external_source='instagram',
         imported_at=timezone.now(),
         is_social_guest=True,
+        instagram_handle=profile.get('username', '')[:60],
         # Conservative defaults: social-DM-derived customers are NOT
         # opted in to anything until the operator confirms identity.
         email_opt_in=False,
@@ -1092,16 +1162,105 @@ def _resolve_thread_and_customer(
         sms_marketing_opt_in=False,
     )
 
+    fetched_at = timezone.now() if profile.get('username') or profile.get('profile_pic') else None
     thread = SocialThread.objects.create(
         tenant=connection.tenant,
         provider=SocialThread.Provider.INSTAGRAM,
         connection=connection,
         customer=customer,
         external_thread_id=external_thread_id,
-        external_username='',
+        external_username=profile.get('username', ''),
+        external_display_name=profile.get('name', ''),
+        external_profile_pic_url=profile.get('profile_pic', ''),
+        external_profile_fetched_at=fetched_at,
         last_message_at=timezone.now(),
     )
     return thread, customer
+
+
+# Profile pictures from Meta are signed CloudFront URLs that rotate
+# every few weeks. Refreshing inline on every webhook would burn
+# Meta's 200-calls/hour ceiling for no benefit. Refresh only when
+# the cached profile is older than this threshold.
+IG_PROFILE_REFRESH_AFTER_DAYS = 6
+
+
+def _maybe_refresh_ig_profile(*, connection: Connection, thread) -> None:
+    """If the thread's IG profile data is stale, fetch fresh + save.
+
+    Stale = never fetched OR fetched > IG_PROFILE_REFRESH_AFTER_DAYS
+    ago. Refresh failure is silent (logged at INFO); the operator
+    sees the old data until the next successful refresh.
+    """
+    if (
+        thread.external_profile_fetched_at is not None
+        and (timezone.now() - thread.external_profile_fetched_at).days < IG_PROFILE_REFRESH_AFTER_DAYS
+    ):
+        return  # still fresh
+
+    profile = _fetch_ig_profile_best_effort(
+        connection=connection,
+        external_thread_id=thread.external_thread_id,
+    )
+    # Empty profile (Meta returned nothing) — don't blank out what
+    # we already have. Leave the row alone.
+    if not (profile.get('username') or profile.get('name') or profile.get('profile_pic')):
+        return
+
+    thread.external_username = profile.get('username', '') or thread.external_username
+    thread.external_display_name = profile.get('name', '') or thread.external_display_name
+    thread.external_profile_pic_url = profile.get('profile_pic', '') or thread.external_profile_pic_url
+    thread.external_profile_fetched_at = timezone.now()
+    thread.save(update_fields=[
+        'external_username',
+        'external_display_name',
+        'external_profile_pic_url',
+        'external_profile_fetched_at',
+        'updated_at',
+    ])
+
+
+def _fetch_ig_profile_best_effort(
+    *, connection: Connection, external_thread_id: str,
+) -> dict:
+    """Wrapper around fetch_ig_user_profile that swallows errors.
+
+    Returns the profile dict on success; an empty dict on any failure.
+    Callers can safely use `.get(...)` against the result without
+    needing to handle exceptions in the webhook hot path.
+    """
+    try:
+        payload = connection.auth_data_dict
+    except Exception:
+        return {}
+    access_token = payload.get('access_token', '')
+    if not access_token:
+        return {}
+    try:
+        return fetch_ig_user_profile(
+            ig_scoped_id=external_thread_id,
+            page_access_token=access_token,
+        )
+    except MetaOAuthError as e:
+        logger.info(
+            'integrations.meta.profile_fetch_failed',
+            extra={
+                'connection_id': connection.pk,
+                'psid_tail': external_thread_id[-6:],
+                'error': str(e)[:200],
+            },
+        )
+        return {}
+    except Exception as e:  # noqa: BLE001
+        logger.warning(
+            'integrations.meta.profile_fetch_unexpected_error',
+            extra={
+                'connection_id': connection.pk,
+                'psid_tail': external_thread_id[-6:],
+                'error': str(e)[:200],
+            },
+        )
+        return {}
 
 
 # ── Data deletion processing ────────────────────────────────────────

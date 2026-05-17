@@ -205,6 +205,40 @@ class SocialThread(TenantedModel):
         default='',
         help_text='Human-readable @handle if known.',
     )
+    external_display_name = models.CharField(
+        max_length=200,
+        blank=True,
+        default='',
+        help_text=(
+            "Instagram display name (their real name as it appears in "
+            "the IG app). Fetched from Meta's Graph API on thread "
+            'create so the inbox shows "Maria Lopez" rather than the '
+            'opaque PSID.'
+        ),
+    )
+    external_profile_pic_url = models.URLField(
+        max_length=2048,
+        blank=True,
+        default='',
+        help_text=(
+            "Meta-hosted CDN URL for the IG profile photo. SIGNED and "
+            'EPHEMERAL — Meta rotates the signing keys every ~few weeks, '
+            'after which the URL 403s. Refreshed on every new inbound '
+            "message so it stays fresh as long as the conversation is "
+            'active; stale URLs gracefully fall back to initials on the '
+            'frontend.'
+        ),
+    )
+    external_profile_fetched_at = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text=(
+            "When the Graph API profile fetch last succeeded. Used to "
+            'decide whether to re-fetch on next inbound (stale > 6 days '
+            "to balance freshness vs. API call count against Meta's "
+            '200 calls/hour/account ceiling).'
+        ),
+    )
 
     last_message_at = models.DateTimeField(db_index=True)
     last_inbound_at = models.DateTimeField(

@@ -27,13 +27,16 @@ import { useEffect, useMemo, useState } from 'react';
 import { toast } from 'sonner';
 
 import { Button } from '@/components/ui/button';
+import { InitialsAvatar } from '@/components/initials-avatar';
 import { ApiError } from '@/lib/api';
 import { useIntegrations } from '@/lib/integrations';
 import {
+  PROVIDER_LABEL,
   PROVIDER_TONE,
   REPLY_WINDOW_HOURS,
   canReply,
   displayHandle,
+  displayName,
   relativeAgo,
   useMarkThreadRead,
   useReplyToThread,
@@ -157,15 +160,23 @@ function ThreadRow({
         onClick={onOpen}
         className="w-full text-left px-4 py-2.5 hover:bg-muted/40 transition flex items-start gap-2.5"
       >
-        <span
-          className={cn(
-            'inline-flex size-7 items-center justify-center rounded-md ring-1 ring-inset shrink-0',
-            PROVIDER_TONE[thread.provider],
-          )}
-          aria-hidden
-        >
-          <AtSign className="size-3.5" />
-        </span>
+        <div className="relative shrink-0">
+          <InitialsAvatar
+            name={displayName(thread)}
+            src={thread.external_profile_pic_url || undefined}
+            size="sm"
+          />
+          <span
+            className={cn(
+              'absolute -bottom-0.5 -right-0.5 inline-flex size-3.5 items-center justify-center rounded-full ring-2 ring-card',
+              PROVIDER_TONE[thread.provider],
+            )}
+            title={PROVIDER_LABEL[thread.provider]}
+            aria-label={PROVIDER_LABEL[thread.provider]}
+          >
+            <AtSign className="size-2" />
+          </span>
+        </div>
         <div className="flex-1 min-w-0">
           <div className="flex items-center justify-between gap-2">
             <span
@@ -174,7 +185,7 @@ function ThreadRow({
                 thread.is_unread ? 'font-semibold' : 'font-medium',
               )}
             >
-              {displayHandle(thread)}
+              {displayName(thread)}
             </span>
             <span className="text-[10px] text-muted-foreground shrink-0">
               {relativeAgo(thread.last_message_at)}
@@ -182,9 +193,7 @@ function ThreadRow({
           </div>
           <div className="flex items-center gap-1.5 mt-0.5">
             <span className="text-[11px] text-muted-foreground truncate">
-              {thread.customer.is_social_guest
-                ? 'Social guest'
-                : thread.customer.full_name}
+              {displayHandle(thread)} · {PROVIDER_LABEL[thread.provider]}
             </span>
             {thread.is_unread && (
               <span
@@ -284,12 +293,8 @@ function ThreadDetailView({
     <div className="flex flex-col h-full">
       <DetailHeader
         onBack={onBack}
-        title={displayHandle(thread)}
-        subtitle={
-          thread.customer.is_social_guest
-            ? 'Social guest'
-            : thread.customer.full_name
-        }
+        title={displayName(thread)}
+        subtitle={`${displayHandle(thread)} · ${PROVIDER_LABEL[thread.provider]}`}
         threadId={threadId}
       />
 

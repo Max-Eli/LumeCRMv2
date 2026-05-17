@@ -836,6 +836,156 @@ class MetaWebhookIngestionTests(TestCase):
     META_APP_ID='test-app-id',
     META_APP_SECRET='test-app-secret-shh',
     META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
+    META_TEST_MODE=True,  # bypass HMAC signature for ingestion tests
+)
+class MetaInboundProfileFetchTests(TestCase):
+    """First inbound from a new IG sender pulls their name + avatar.
+
+    Verifies the SocialThread carries `external_display_name` +
+    `external_profile_pic_url` so the inbox shows a recognisable
+    identity instead of an opaque PSID. Best-effort: a Meta-side
+    failure must still create the thread + message (just with
+    placeholder name fields).
+    """
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('profilefetch')
+        self.connection = Connection.objects.create(
+            tenant=self.tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-id-999',
+        )
+        self.connection.set_auth_data({
+            'ig_user_id': 'page-id-999',
+            'access_token': 'IGAA-test-token',
+        })
+        self.connection.save()
+        self.url = reverse('integrations-webhook-meta')
+
+    def _payload(self, *, sender_id='psid-new-123', mid='m-new', text='hi'):
+        return {
+            'object': 'instagram',
+            'entry': [{
+                'id': 'page-id-999',
+                'time': 1700000000000,
+                'messaging': [{
+                    'sender': {'id': sender_id},
+                    'recipient': {'id': 'page-id-999'},
+                    'timestamp': 1700000000000,
+                    'message': {'mid': mid, 'text': text},
+                }],
+            }],
+        }
+
+    def test_new_thread_pulls_ig_profile(self):
+        from unittest import mock
+        from apps.integrations.models import SocialThread
+
+        with mock.patch(
+            'apps.integrations.meta.fetch_ig_user_profile',
+            return_value={
+                'name': 'Maria Lopez',
+                'username': 'maria.beauty',
+                'profile_pic': 'https://scontent.cdninstagram.com/abc.jpg?signed=1',
+            },
+        ) as mocked_fetch:
+            client = APIClient()
+            response = client.post(
+                self.url, data=_json.dumps(self._payload()),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        mocked_fetch.assert_called_once()
+
+        thread = SocialThread.objects.get(
+            tenant=self.tenant, external_thread_id='psid-new-123',
+        )
+        self.assertEqual(thread.external_display_name, 'Maria Lopez')
+        self.assertEqual(thread.external_username, 'maria.beauty')
+        self.assertEqual(
+            thread.external_profile_pic_url,
+            'https://scontent.cdninstagram.com/abc.jpg?signed=1',
+        )
+        self.assertIsNotNone(thread.external_profile_fetched_at)
+
+        # Customer carries the IG-derived name (Maria Lopez, not the
+        # opaque "Instagram visitor xxx") so the customer list reads
+        # well too.
+        customer = thread.customer
+        self.assertEqual(customer.first_name, 'Maria')
+        self.assertEqual(customer.last_name, 'Lopez')
+        self.assertEqual(customer.instagram_handle, 'maria.beauty')
+
+    def test_profile_fetch_failure_does_not_block_ingestion(self):
+        """A Meta-side failure must still ingest the message."""
+        from unittest import mock
+        from apps.integrations.meta import MetaOAuthError
+        from apps.integrations.models import SocialMessage, SocialThread
+
+        with mock.patch(
+            'apps.integrations.meta.fetch_ig_user_profile',
+            side_effect=MetaOAuthError('Meta is having a bad day'),
+        ):
+            client = APIClient()
+            response = client.post(
+                self.url, data=_json.dumps(self._payload()),
+                content_type='application/json',
+            )
+
+        self.assertEqual(response.status_code, 200)
+        # Thread + message created with empty profile fields (operator
+        # sees the placeholder name + initials avatar, conversation
+        # still works).
+        thread = SocialThread.objects.get(
+            tenant=self.tenant, external_thread_id='psid-new-123',
+        )
+        self.assertEqual(thread.external_display_name, '')
+        self.assertEqual(thread.external_profile_pic_url, '')
+        self.assertIsNone(thread.external_profile_fetched_at)
+        self.assertEqual(
+            SocialMessage.objects.filter(tenant=self.tenant).count(), 1,
+        )
+
+    def test_second_message_in_fresh_thread_does_not_refetch(self):
+        """Cooldown guard — a thread fetched today doesn't re-call Meta."""
+        from unittest import mock
+        from apps.integrations.models import SocialThread
+
+        # First message → fetch fires.
+        with mock.patch(
+            'apps.integrations.meta.fetch_ig_user_profile',
+            return_value={'name': 'Maria', 'username': 'maria', 'profile_pic': 'https://x/a.jpg'},
+        ) as first_fetch:
+            APIClient().post(
+                self.url, data=_json.dumps(self._payload(mid='m1')),
+                content_type='application/json',
+            )
+        self.assertEqual(first_fetch.call_count, 1)
+
+        # Second message arrives moments later → no refetch (cooldown).
+        with mock.patch(
+            'apps.integrations.meta.fetch_ig_user_profile',
+            return_value={},
+        ) as second_fetch:
+            APIClient().post(
+                self.url, data=_json.dumps(self._payload(mid='m2', text='follow up')),
+                content_type='application/json',
+            )
+        self.assertEqual(second_fetch.call_count, 0)
+
+        # Thread still has Maria's profile from the first fetch.
+        thread = SocialThread.objects.get(
+            tenant=self.tenant, external_thread_id='psid-new-123',
+        )
+        self.assertEqual(thread.external_display_name, 'Maria')
+
+
+@override_settings(
+    META_APP_ID='test-app-id',
+    META_APP_SECRET='test-app-secret-shh',
+    META_WEBHOOK_VERIFY_TOKEN='test-verify-token',
     META_TEST_MODE=False,  # exercise real signature checks
 )
 class MetaWebhookSignatureTests(TestCase):

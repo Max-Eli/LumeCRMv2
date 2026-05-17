@@ -987,12 +987,21 @@ class SocialThreadMarkReadView(APIView):
 
 def _serialise_thread_summary(thread: SocialThread) -> dict:
     """Compact list-row shape. The full body of every message lives
-    on the detail endpoint — the list never carries content."""
+    on the detail endpoint — the list never carries content.
+
+    `external_display_name` + `external_profile_pic_url` let the
+    frontend render the IG user's real name + avatar instead of an
+    opaque PSID. The profile pic URL is Meta-hosted + signed; the
+    frontend renders an initials fallback when it's missing or has
+    expired (Meta rotates the signing keys every ~few weeks).
+    """
     customer = thread.customer
     return {
         'id': thread.id,
         'provider': thread.provider,
         'external_username': thread.external_username,
+        'external_display_name': thread.external_display_name,
+        'external_profile_pic_url': thread.external_profile_pic_url,
         'last_message_at': thread.last_message_at.isoformat(),
         'last_inbound_at': (
             thread.last_inbound_at.isoformat()
