@@ -22,16 +22,22 @@ import { useEffect, useMemo, useState } from 'react';
 import { Camera, Inbox, RefreshCw } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 
+import { ApiError } from '@/lib/api';
 import {
   PROVIDER_LABEL,
   PROVIDER_TONE,
+  REPLY_WINDOW_HOURS,
+  canReply,
   displayHandle,
   relativeAgo,
   useMarkThreadRead,
+  useReplyToThread,
   useSocialThread,
   useSocialThreads,
+  type SocialMessage,
   type SocialThreadSummary,
 } from '@/lib/social';
+import { toast } from 'sonner';
 
 export default function SocialInboxPage() {
   const router = useRouter();
@@ -267,7 +273,7 @@ function DetailSkeleton() {
 function ThreadDetail({
   detail,
 }: {
-  detail: { thread: SocialThreadSummary; messages: ReturnType<typeof useSocialThread>['data'] extends infer T ? T extends { messages: infer M } ? M : never : never };
+  detail: { thread: SocialThreadSummary; messages: SocialMessage[] };
 }) {
   const { thread, messages } = detail;
 
@@ -311,21 +317,121 @@ function ThreadDetail({
         )}
       </div>
 
-      {/* Reply box — placeholder in Session 1 */}
-      <div className="shrink-0 border-t border-border bg-card px-6 py-4">
-        <div className="rounded-md bg-muted/50 border border-dashed border-border p-4 text-sm text-muted-foreground">
-          <p className="font-medium text-foreground mb-1">Reply from Lumè</p>
-          <p>
-            Outbound sending is coming in the next release. For now, reply
-            directly from the Camera app. Inbound messages will continue
-            to flow into this inbox.
-          </p>
-          <p className="mt-2 text-xs">
-            Reminder: Meta&apos;s platform terms prohibit sending PHI through
-            DMs — keep all replies non-clinical.
-          </p>
+      <ReplyComposer thread={thread} />
+    </div>
+  );
+}
+
+// ── Reply composer (ADR 0027 §7) ────────────────────────────────────
+
+const MAX_REPLY_CHARS = 1000;
+
+function ReplyComposer({ thread }: { thread: SocialThreadSummary }) {
+  const [body, setBody] = useState('');
+  const reply = useReplyToThread();
+  const replyAllowed = canReply(thread);
+
+  const remaining = MAX_REPLY_CHARS - body.length;
+  const trimmedBody = body.trim();
+  const canSend =
+    replyAllowed && trimmedBody.length > 0 && remaining >= 0 && !reply.isPending;
+
+  const handleSend = () => {
+    if (!canSend) return;
+    reply.mutate(
+      { threadId: thread.id, body: trimmedBody },
+      {
+        onSuccess: () => {
+          setBody('');
+        },
+        onError: (err) => {
+          if (err instanceof ApiError) {
+            const errBody = err.body as
+              | { detail?: string; code?: string }
+              | null;
+            // Meta returns a more useful error message; surface it
+            // so the operator knows whether to retry or not.
+            toast.error(
+              errBody?.detail ?? 'Could not send. Please try again.',
+            );
+          } else {
+            toast.error('Could not send. Please try again.');
+          }
+        },
+      },
+    );
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
+    // Cmd/Ctrl+Enter to send — matches every other chat app on earth.
+    if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      e.preventDefault();
+      handleSend();
+    }
+  };
+
+  return (
+    <div className="shrink-0 border-t border-border bg-card px-6 py-4">
+      {/* HIPAA / Meta terms reminder. Always visible; do not gate behind
+          a dismissible banner. Per ADR 0027 §7 + §9. */}
+      <p className="text-[10px] text-muted-foreground mb-2 uppercase tracking-wide">
+        Reminder: Meta&apos;s platform terms prohibit sending PHI through DMs —
+        keep replies non-clinical. The full conversation is audit-logged.
+      </p>
+
+      {!replyAllowed ? (
+        <div className="rounded-md bg-amber-50/70 border border-amber-200 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-100">
+          {thread.last_inbound_at ? (
+            <>
+              The {REPLY_WINDOW_HOURS}-hour reply window has expired. Wait
+              for {displayHandle(thread)} to message you again before you
+              can reply. (Instagram&apos;s rule, not ours.)
+            </>
+          ) : (
+            <>
+              This thread has no inbound message yet — Instagram only
+              allows replies after the customer messages first.
+            </>
+          )}
         </div>
-      </div>
+      ) : (
+        <div className="flex items-end gap-2">
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={reply.isPending}
+            placeholder="Reply…"
+            rows={2}
+            className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+          />
+          <button
+            type="button"
+            onClick={handleSend}
+            disabled={!canSend}
+            className="shrink-0 inline-flex items-center justify-center rounded-md bg-accent text-accent-foreground text-sm font-medium px-4 py-2 hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {reply.isPending ? 'Sending…' : 'Send'}
+          </button>
+        </div>
+      )}
+
+      {replyAllowed && (
+        <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted-foreground">
+          <span>Cmd/Ctrl+Enter to send</span>
+          <span
+            className={
+              remaining < 0
+                ? 'text-rose-600'
+                : remaining < 50
+                  ? 'text-amber-600'
+                  : ''
+            }
+          >
+            {remaining} chars left
+          </span>
+        </div>
+      )}
     </div>
   );
 }
@@ -333,17 +439,20 @@ function ThreadDetail({
 function MessageBubble({
   message,
 }: {
-  message: { id: number; direction: string; body: string; media_urls: string[]; created_at: string };
+  message: SocialMessage;
 }) {
   const isOutbound = message.direction === 'outbound';
+  const isFailed = message.status === 'failed';
   return (
     <div className={'flex ' + (isOutbound ? 'justify-end' : 'justify-start')}>
       <div
         className={
           'max-w-[70%] rounded-2xl px-4 py-2.5 ring-1 ring-inset ' +
-          (isOutbound
-            ? 'bg-accent text-accent-foreground ring-accent/40'
-            : 'bg-card text-foreground ring-border')
+          (isFailed
+            ? 'bg-rose-50 text-rose-900 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-100 dark:ring-rose-900'
+            : isOutbound
+              ? 'bg-accent text-accent-foreground ring-accent/40'
+              : 'bg-card text-foreground ring-border')
         }
       >
         {message.body && (
@@ -368,13 +477,37 @@ function MessageBubble({
         )}
         <p
           className={
-            'mt-1 text-[10px] ' +
-            (isOutbound ? 'text-accent-foreground/70' : 'text-muted-foreground')
+            'mt-1 text-[10px] flex items-center gap-1.5 ' +
+            (isFailed
+              ? 'text-rose-700 dark:text-rose-200'
+              : isOutbound
+                ? 'text-accent-foreground/70'
+                : 'text-muted-foreground')
           }
         >
-          {relativeAgo(message.created_at)}
+          <span>{relativeAgo(message.created_at)}</span>
+          {isOutbound && (
+            <span>· {outboundStatusLabel(message.status)}</span>
+          )}
         </p>
       </div>
     </div>
   );
+}
+
+function outboundStatusLabel(status: SocialMessage['status']): string {
+  switch (status) {
+    case 'queued':
+      return 'sending…';
+    case 'sent':
+      return 'sent';
+    case 'delivered':
+      return 'delivered';
+    case 'read':
+      return 'read';
+    case 'failed':
+      return 'failed to send';
+    default:
+      return status;
+  }
 }

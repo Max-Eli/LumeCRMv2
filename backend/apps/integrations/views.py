@@ -190,6 +190,39 @@ class IntegrationDisconnectView(APIView):
 
         previous_status = connection.status
         previous_external_id = connection.external_id
+
+        # Try to unsubscribe the webhook on Meta's side BEFORE wiping
+        # local tokens. Without this, Meta keeps delivering webhook
+        # events we can no longer process (tokens are gone) — every
+        # delivery 200s + logs "no connection found" but Meta's quota
+        # ticks each one. Best-effort: if the call fails (token
+        # expired, network blip, Meta error), proceed with local
+        # disconnect — better to leave a dangling Meta subscription
+        # than block an operator from disconnecting locally.
+        webhook_unsubscribe_status = 'skipped'
+        webhook_unsubscribe_error = ''
+        if connection.provider == Connection.Provider.META_INSTAGRAM:
+            try:
+                payload = connection.auth_data_dict
+                ig_user_id = payload.get('ig_user_id', '')
+                access_token = payload.get('access_token', '')
+                if ig_user_id and access_token:
+                    meta_oauth.unsubscribe_ig_user_from_webhooks(
+                        ig_user_id=ig_user_id,
+                        access_token=access_token,
+                    )
+                    webhook_unsubscribe_status = 'success'
+            except Exception as e:
+                webhook_unsubscribe_status = 'failed'
+                webhook_unsubscribe_error = str(e)[:200]
+                logger.warning(
+                    'integrations.disconnect_webhook_unsubscribe_failed',
+                    extra={
+                        'connection_id': connection.pk,
+                        'error': webhook_unsubscribe_error,
+                    },
+                )
+
         connection.status = Connection.Status.DISCONNECTED
         connection.clear_auth_data()
         connection.external_id = ''
@@ -213,6 +246,8 @@ class IntegrationDisconnectView(APIView):
                 'provider': connection.provider,
                 'previous_status': previous_status,
                 'previous_external_id': previous_external_id,
+                'webhook_unsubscribe_status': webhook_unsubscribe_status,
+                'webhook_unsubscribe_error': webhook_unsubscribe_error or None,
             },
         )
 
@@ -943,3 +978,225 @@ def _serialise_message(msg: SocialMessage) -> dict:
         'received_at': msg.received_at.isoformat() if msg.received_at else None,
         'created_at': msg.created_at.isoformat(),
     }
+
+
+# ── Reply endpoint (outbound send, ADR 0027 §7) ────────────────────
+
+
+# Max body length for an outbound IG DM. Meta's docs say 1000 chars
+# per message; we cap at 1000 server-side to fail fast rather than
+# round-trip to Meta for the rejection.
+MAX_OUTBOUND_BODY_CHARS = 1000
+
+
+class SocialThreadReplyView(APIView):
+    """Send an outbound DM in an existing thread.
+
+    Gates (enforced in order, each returns a specific error code so
+    the frontend can render the right inline message):
+
+      1. Connection still CONNECTED + has a usable token
+      2. Body non-empty + <= 1000 chars
+      3. 24-hour reply window — Meta rejects outbound messages more
+         than 24h after the last inbound message (no Message Tags
+         in v1; ADR 0027 §7)
+
+    HIPAA posture (ADR 0027 §9):
+      - Audit log records the message LENGTH + media count, never
+        the body text
+      - Meta forbids PHI in DMs per their platform terms; the
+        operator is responsible (we surface the reminder in the
+        reply UI)
+      - The body persists in our DB encrypted-at-rest via the RDS
+        KMS key (same posture as every other PHI surface)
+    """
+
+    permission_classes = [SocialPermission]
+
+    def post(self, request, pk: int):
+        tenant = get_current_tenant()
+        try:
+            thread = SocialThread.objects.select_related(
+                'connection',
+            ).get(tenant=tenant, pk=pk)
+        except SocialThread.DoesNotExist:
+            return Response(
+                {'detail': 'Thread not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        body = (request.data.get('body') or '').strip()
+        if not body:
+            return Response(
+                {'detail': 'Message body is required.', 'code': 'body_empty'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if len(body) > MAX_OUTBOUND_BODY_CHARS:
+            return Response(
+                {
+                    'detail': (
+                        f"Message too long ({len(body)} chars). Instagram "
+                        f'caps at {MAX_OUTBOUND_BODY_CHARS} chars per message.'
+                    ),
+                    'code': 'body_too_long',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        connection = thread.connection
+        if connection.status != Connection.Status.CONNECTED:
+            return Response(
+                {
+                    'detail': (
+                        'Instagram is not connected for this tenant. '
+                        'Reconnect from Organization → Integrations.'
+                    ),
+                    'code': 'connection_disconnected',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # 24-hour reply window (Meta enforces; we pre-check for a
+        # clearer error message).
+        if thread.last_inbound_at is None:
+            return Response(
+                {
+                    'detail': (
+                        'Cannot reply yet — this thread has no inbound '
+                        'message to anchor the 24h reply window.'
+                    ),
+                    'code': 'no_inbound_anchor',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        window_age = timezone.now() - thread.last_inbound_at
+        from datetime import timedelta
+        if window_age > timedelta(hours=meta_oauth.META_REPLY_WINDOW_HOURS):
+            return Response(
+                {
+                    'detail': (
+                        f'Cannot reply — it has been more than '
+                        f'{meta_oauth.META_REPLY_WINDOW_HOURS} hours since '
+                        'the last message from this client. Instagram only '
+                        'allows replies within that window. Wait for them '
+                        'to message again first.'
+                    ),
+                    'code': 'reply_window_expired',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        # Create the SocialMessage row up-front in QUEUED state so we
+        # have a stable ID for the audit log + frontend optimistic
+        # update. Status flips to SENT/FAILED based on Meta's response.
+        try:
+            payload = connection.auth_data_dict
+        except Exception as e:
+            return Response(
+                {
+                    'detail': (
+                        'Stored Instagram tokens could not be decrypted. '
+                        'Reconnect from Organization → Integrations.'
+                    ),
+                    'code': 'token_decrypt_failed',
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
+
+        ig_user_id = payload.get('ig_user_id', '')
+        access_token = payload.get('access_token', '')
+        if not (ig_user_id and access_token):
+            return Response(
+                {
+                    'detail': (
+                        'Instagram tokens incomplete. Reconnect from '
+                        'Organization → Integrations.'
+                    ),
+                    'code': 'tokens_incomplete',
+                },
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        from datetime import timedelta  # noqa: F811
+        msg = SocialMessage.objects.create(
+            tenant=tenant,
+            thread=thread,
+            direction=SocialMessage.Direction.OUTBOUND,
+            body=body,
+            external_message_id=f'pending-{uuid_hex()}',
+            status=SocialMessage.Status.QUEUED,
+            sent_by=request.user if request.user.is_authenticated else None,
+        )
+
+        # Hit Meta. On success update the message + thread; on failure
+        # flip to FAILED + raise so the operator sees the error.
+        try:
+            send_response = meta_oauth.send_instagram_dm(
+                ig_user_id=ig_user_id,
+                access_token=access_token,
+                recipient_psid=thread.external_thread_id,
+                body=body,
+            )
+        except meta_oauth.MetaOAuthError as e:
+            msg.status = SocialMessage.Status.FAILED
+            msg.save(update_fields=['status', 'updated_at'])
+            record(
+                action=AuditLog.Action.CREATE,
+                resource_type='social_message',
+                resource_id=msg.pk,
+                request=request,
+                metadata={
+                    'event': 'outbound_send_failed',
+                    'thread_id': thread.pk,
+                    'customer_id': thread.customer_id,
+                    'body_length': len(body),
+                    'error_message': str(e)[:300],
+                },
+            )
+            return Response(
+                {
+                    'detail': str(e),
+                    'code': 'meta_rejected',
+                },
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        # Success — record Meta's message_id, flip status, mark thread
+        # read (replying implies the operator saw it) + bump
+        # last_message_at so the inbox sort surfaces the activity.
+        now = timezone.now()
+        meta_message_id = send_response.get('message_id', '')
+        msg.external_message_id = meta_message_id or msg.external_message_id
+        msg.status = SocialMessage.Status.SENT
+        msg.sent_at = now
+        msg.save(update_fields=[
+            'external_message_id', 'status', 'sent_at', 'updated_at',
+        ])
+        thread.last_message_at = now
+        if thread.read_at is None:
+            thread.read_at = now
+        thread.save(update_fields=['last_message_at', 'read_at', 'updated_at'])
+
+        record(
+            action=AuditLog.Action.CREATE,
+            resource_type='social_message',
+            resource_id=msg.pk,
+            request=request,
+            metadata={
+                'event': 'outbound_sent',
+                'thread_id': thread.pk,
+                'customer_id': thread.customer_id,
+                # HIPAA: log the LENGTH only — body itself may
+                # contain incidental health information per ADR 0027 §9.
+                'body_length': len(body),
+                'meta_message_id': meta_message_id,
+            },
+        )
+
+        return Response(_serialise_message(msg), status=status.HTTP_201_CREATED)
+
+
+def uuid_hex() -> str:
+    """Tiny helper for pending-message external_id placeholders."""
+    import secrets
+    return secrets.token_hex(8)

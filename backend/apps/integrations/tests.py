@@ -1356,3 +1356,305 @@ class SocialThreadDetailTests(TestCase):
         self.thread.refresh_from_db()
         # Should NOT have re-stamped.
         self.assertEqual(self.thread.read_at, already_read_at)
+
+
+# ── Outbound send / reply endpoint (Session 2C, ADR 0027 §7) ────────
+
+
+from unittest.mock import patch as _patch_outbound  # noqa: E402
+
+
+class SocialThreadReplyTests(TestCase):
+    """End-to-end coverage of the reply endpoint with Meta's send call mocked."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('reply')
+        self.client_ = _client_for(self.owner)
+        self.conn = Connection.objects.create(
+            tenant=self.tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-x',
+        )
+        self.conn.set_auth_data({
+            'ig_user_id': '17841',
+            'access_token': 'IGAA-test-token',
+            'ig_username': 'spa',
+        })
+        self.conn.save()
+        self.customer = Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Reply',
+            last_name='Subject',
+            acquisition_source=Customer.AcquisitionSource.INSTAGRAM,
+        )
+        # Anchor the 24h window — a recent inbound message lets us reply.
+        self.thread, self.inbound = _make_thread_with_message(
+            tenant=self.tenant,
+            connection=self.conn,
+            customer=self.customer,
+            body='hi! can you book me in?',
+        )
+
+    def _meta_response(self, body):
+        class _R:
+            status_code = 200
+            text = ''
+            url = 'https://graph.instagram.com/17841/messages'
+            def json(self):
+                return body
+        return _R()
+
+    def test_happy_path_creates_outbound_message(self):
+        with _patch_outbound(
+            'apps.integrations.meta.requests.post',
+            return_value=self._meta_response({
+                'recipient_id': 'psid-1',
+                'message_id': 'mid.outbound_42',
+            }),
+        ):
+            response = self.client_.post(
+                reverse('social-thread-reply', args=[self.thread.pk]),
+                data=_json.dumps({'body': 'Of course! What time works?'}),
+                content_type='application/json',
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['direction'], 'outbound')
+        self.assertEqual(response.data['status'], 'sent')
+
+        msg = SocialMessage.objects.get(pk=response.data['id'])
+        self.assertEqual(msg.external_message_id, 'mid.outbound_42')
+        self.assertEqual(msg.sent_by, self.owner)
+
+        # Thread should be marked read + last_message_at bumped.
+        self.thread.refresh_from_db()
+        self.assertIsNotNone(self.thread.read_at)
+
+    def test_empty_body_rejected(self):
+        response = self.client_.post(
+            reverse('social-thread-reply', args=[self.thread.pk]),
+            data=_json.dumps({'body': '   '}),
+            content_type='application/json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['code'], 'body_empty')
+
+    def test_oversized_body_rejected(self):
+        response = self.client_.post(
+            reverse('social-thread-reply', args=[self.thread.pk]),
+            data=_json.dumps({'body': 'x' * 1001}),
+            content_type='application/json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['code'], 'body_too_long')
+
+    def test_reply_window_expired(self):
+        # Push last_inbound_at >24h into the past — Meta's window has closed.
+        self.thread.last_inbound_at = timezone.now() - timezone.timedelta(hours=25)
+        self.thread.save()
+        response = self.client_.post(
+            reverse('social-thread-reply', args=[self.thread.pk]),
+            data=_json.dumps({'body': 'hi'}),
+            content_type='application/json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['code'], 'reply_window_expired')
+
+    def test_no_inbound_anchor(self):
+        self.thread.last_inbound_at = None
+        self.thread.save()
+        response = self.client_.post(
+            reverse('social-thread-reply', args=[self.thread.pk]),
+            data=_json.dumps({'body': 'hi'}),
+            content_type='application/json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['code'], 'no_inbound_anchor')
+
+    def test_disconnected_connection_rejected(self):
+        self.conn.status = Connection.Status.DISCONNECTED
+        self.conn.save()
+        response = self.client_.post(
+            reverse('social-thread-reply', args=[self.thread.pk]),
+            data=_json.dumps({'body': 'hi'}),
+            content_type='application/json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.data['code'], 'connection_disconnected')
+
+    def test_meta_rejection_marks_message_failed(self):
+        # Mock a 400 response from Meta.
+        class _Err:
+            status_code = 400
+            text = ''
+            url = 'https://graph.instagram.com/17841/messages'
+            def json(self):
+                return {'error': {'message': 'message too short', 'code': 100}}
+        with _patch_outbound(
+            'apps.integrations.meta.requests.post',
+            return_value=_Err(),
+        ):
+            response = self.client_.post(
+                reverse('social-thread-reply', args=[self.thread.pk]),
+                data=_json.dumps({'body': 'hi'}),
+                content_type='application/json',
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+        self.assertEqual(response.status_code, 502)
+        self.assertEqual(response.data['code'], 'meta_rejected')
+
+        # The QUEUED row should have been flipped to FAILED, not deleted.
+        msg = SocialMessage.objects.filter(
+            thread=self.thread,
+            direction=SocialMessage.Direction.OUTBOUND,
+        ).latest('created_at')
+        self.assertEqual(msg.status, SocialMessage.Status.FAILED)
+
+    def test_audit_log_omits_body_text(self):
+        before = AuditLog.objects.filter(
+            resource_type='social_message',
+        ).count()
+        with _patch_outbound(
+            'apps.integrations.meta.requests.post',
+            return_value=self._meta_response({'message_id': 'mid.test'}),
+        ):
+            self.client_.post(
+                reverse('social-thread-reply', args=[self.thread.pk]),
+                data=_json.dumps({'body': 'I have a hereditary condition — see you Thursday!'}),
+                content_type='application/json',
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+        after = AuditLog.objects.filter(resource_type='social_message').count()
+        self.assertEqual(after, before + 1)
+        entry = AuditLog.objects.filter(
+            resource_type='social_message',
+        ).latest('timestamp')
+        # CRITICAL: body text must NEVER appear in audit metadata. We
+        # log length only per ADR 0027 §9.
+        self.assertNotIn('hereditary', _json.dumps(entry.metadata))
+        self.assertIn('body_length', entry.metadata)
+
+    def test_front_desk_forbidden(self):
+        fd = _make_user('reply-fd@test.local')
+        _make_membership(
+            user=fd, tenant=self.tenant,
+            role=TenantMembership.Role.FRONT_DESK,
+        )
+        response = _client_for(fd).post(
+            reverse('social-thread-reply', args=[self.thread.pk]),
+            data=_json.dumps({'body': 'hi'}),
+            content_type='application/json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 403)
+
+
+# ── Token refresh management command (Session 2C) ──────────────────
+
+
+from io import StringIO  # noqa: E402
+
+from django.core.management import call_command  # noqa: E402
+
+
+class RefreshMetaTokensCommandTests(TestCase):
+    def setUp(self):
+        self.tenant, _ = _make_tenant_with_owner('refresh')
+
+    def _make_conn(self, *, expires_at, access_token='IGAA-old'):
+        conn = Connection.objects.create(
+            tenant=self.tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='ig-user-x',
+        )
+        conn.set_auth_data({
+            'ig_user_id': 'ig-user-x',
+            'access_token': access_token,
+            'expires_at': expires_at,
+        })
+        conn.save()
+        return conn
+
+    def test_in_window_refreshes(self):
+        # Token expires in 5 days (well inside 14-day window) +
+        # is at least 24h old (issued 30 days ago).
+        now = int(timezone.now().timestamp())
+        conn = self._make_conn(expires_at=now + 5 * 24 * 3600)
+
+        class _R:
+            status_code = 200
+            text = ''
+            url = 'https://graph.instagram.com/refresh_access_token'
+            def json(self):
+                return {'access_token': 'IGAA-new', 'expires_in': 5184000}
+
+        out = StringIO()
+        with _patch_outbound(
+            'apps.integrations.meta.requests.get',
+            return_value=_R(),
+        ):
+            call_command('refresh_meta_tokens', stdout=out)
+
+        conn.refresh_from_db()
+        payload = conn.auth_data_dict
+        self.assertEqual(payload['access_token'], 'IGAA-new')
+        # New expiry should be ~60 days out from now.
+        self.assertGreater(payload['expires_at'], now + 30 * 24 * 3600)
+        self.assertIn('Refreshed=1', out.getvalue())
+
+    def test_outside_window_skipped(self):
+        # Expires in 60 days — way outside the default 14-day window.
+        now = int(timezone.now().timestamp())
+        conn = self._make_conn(expires_at=now + 60 * 24 * 3600)
+        original_token = conn.auth_data_dict['access_token']
+
+        with _patch_outbound(
+            'apps.integrations.meta.requests.get',
+        ) as mock_get:
+            call_command('refresh_meta_tokens', stdout=StringIO())
+            mock_get.assert_not_called()
+
+        conn.refresh_from_db()
+        self.assertEqual(conn.auth_data_dict['access_token'], original_token)
+
+    def test_permanent_error_flags_connection(self):
+        now = int(timezone.now().timestamp())
+        conn = self._make_conn(expires_at=now + 5 * 24 * 3600)
+
+        class _Err:
+            status_code = 400
+            text = ''
+            url = 'https://graph.instagram.com/refresh_access_token'
+            def json(self):
+                return {
+                    'error': {
+                        'message': 'Session has expired on Wednesday',
+                        'code': 190,
+                    },
+                }
+
+        with _patch_outbound(
+            'apps.integrations.meta.requests.get',
+            return_value=_Err(),
+        ):
+            call_command('refresh_meta_tokens', stdout=StringIO())
+
+        conn.refresh_from_db()
+        self.assertEqual(conn.status, Connection.Status.ERROR)
+        self.assertIn('reconnect', conn.last_error_message.lower())
+
+    def test_dry_run_makes_no_meta_calls(self):
+        now = int(timezone.now().timestamp())
+        self._make_conn(expires_at=now + 5 * 24 * 3600)
+        with _patch_outbound(
+            'apps.integrations.meta.requests.get',
+        ) as mock_get:
+            call_command('refresh_meta_tokens', '--dry-run', stdout=StringIO())
+            mock_get.assert_not_called()

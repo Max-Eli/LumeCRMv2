@@ -562,6 +562,107 @@ def subscribe_ig_user_to_webhooks(*, ig_user_id: str, access_token: str) -> None
         )
 
 
+def unsubscribe_ig_user_from_webhooks(*, ig_user_id: str, access_token: str) -> None:
+    """DELETE /{ig-user-id}/subscribed_apps — stop webhook delivery.
+
+    Mirrors `subscribe_ig_user_to_webhooks` but for the disconnect
+    path. Without this call, Meta keeps delivering webhook events to
+    our endpoint forever (or until the user revokes via Instagram).
+    Each delivery 200s but logs "no matching connection" — wasteful
+    + makes the logs harder to read.
+
+    Raises MetaOAuthError on non-success. Caller should treat as
+    best-effort: a dangling Meta subscription is annoying but not
+    safety-critical, so a disconnect should still proceed locally
+    even if this call fails.
+    """
+    response = requests.delete(
+        f'{IG_GRAPH_BASE}/{ig_user_id}/subscribed_apps',
+        params={'access_token': access_token},
+        timeout=15,
+    )
+    payload = _expect_json(response, step='webhook unsubscribe')
+    if not payload.get('success'):
+        raise MetaOAuthError(
+            f'Failed to unsubscribe IG user {ig_user_id} from messaging '
+            f'webhooks: {payload}'
+        )
+
+
+# ── Outbound DM send (ADR 0027 §7) ─────────────────────────────────
+
+
+# Meta's 24-hour reply window for the standard messaging API. Outbound
+# messages sent more than 24h after the last inbound message are
+# rejected with error code 10 unless tagged. We don't support tags
+# in v1, so we gate at the application layer with a clearer error
+# than what Meta would return.
+META_REPLY_WINDOW_HOURS = 24
+
+
+# ── Long-lived token refresh (60-day cycle) ────────────────────────
+
+
+def refresh_long_lived_token(*, access_token: str) -> tuple[str, int | None]:
+    """Refresh a long-lived IG token before it expires.
+
+    Per Meta docs: GET graph.instagram.com/refresh_access_token with
+    grant_type=ig_refresh_token. Token must be at least 24h old +
+    not yet expired. Refreshed token is valid for 60 days from the
+    refresh time.
+
+    Returns (new_token, expires_in_seconds). Raises MetaOAuthError
+    if Meta rejects (the refresh job catches + logs so one bad row
+    doesn't block the whole sweep).
+    """
+    response = requests.get(
+        'https://graph.instagram.com/refresh_access_token',
+        params={
+            'grant_type': 'ig_refresh_token',
+            'access_token': access_token,
+        },
+        timeout=15,
+    )
+    payload = _expect_json(response, step='ig token refresh')
+    token = payload.get('access_token', '')
+    expires_in = payload.get('expires_in')
+    if not token:
+        raise MetaOAuthError(
+            f'Token refresh returned no access_token: {payload}'
+        )
+    return token, expires_in
+
+
+def send_instagram_dm(
+    *,
+    ig_user_id: str,
+    access_token: str,
+    recipient_psid: str,
+    body: str,
+) -> dict:
+    """POST /{ig-user-id}/messages — send a DM.
+
+    `recipient_psid` is the Page-Scoped User ID Meta sends in webhook
+    payloads as `sender.id`. It's the only identifier valid for
+    outbound — we never receive or use the customer's real IG user
+    ID, by Meta's design.
+
+    Returns Meta's response payload `{recipient_id, message_id}` on
+    success. Raises MetaOAuthError on rejection so the caller can
+    surface the error message to the operator.
+    """
+    response = requests.post(
+        f'{IG_GRAPH_BASE}/{ig_user_id}/messages',
+        params={'access_token': access_token},
+        json={
+            'recipient': {'id': recipient_psid},
+            'message': {'text': body},
+        },
+        timeout=15,
+    )
+    return _expect_json(response, step='ig outbound send')
+
+
 def _extract_access_token(response: requests.Response, *, step: str) -> str:
     payload = _expect_json(response, step=step)
     token = payload.get('access_token')

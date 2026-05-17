@@ -116,6 +116,41 @@ export function useMarkThreadRead() {
   });
 }
 
+/** Send an outbound DM reply in a thread.
+ *
+ *  ADR 0027 §7 — Meta restricts outbound DMs to 24 hours after the
+ *  last inbound message. The backend enforces this and surfaces a
+ *  `reply_window_expired` error code so the UI can render the right
+ *  inline message.
+ */
+export function useReplyToThread() {
+  const qc = useQueryClient();
+  return useMutation<SocialMessage, Error, { threadId: number; body: string }>({
+    mutationFn: ({ threadId, body }) =>
+      api.post(`/api/social/threads/${threadId}/reply/`, { body }),
+    onSuccess: (_msg, vars) => {
+      // Detail query: reload the full thread so the new outbound
+      // message appears with the server-assigned ID + status.
+      qc.invalidateQueries({ queryKey: THREAD_KEY(vars.threadId) });
+      // Inbox list: bump last_message_at + clear unread since
+      // replying implies the operator read the thread.
+      qc.invalidateQueries({ queryKey: ['social-threads'] });
+    },
+  });
+}
+
+/** How many hours after the last inbound message can the operator
+ *  still reply? Mirrors `META_REPLY_WINDOW_HOURS` in the backend. */
+export const REPLY_WINDOW_HOURS = 24;
+
+/** Returns true if it's still inside the 24h reply window per ADR 0027 §7. */
+export function canReply(thread: SocialThreadSummary): boolean {
+  if (!thread.last_inbound_at) return false;
+  const last = new Date(thread.last_inbound_at).getTime();
+  const ageMs = Date.now() - last;
+  return ageMs < REPLY_WINDOW_HOURS * 60 * 60 * 1000;
+}
+
 // ── Display helpers ─────────────────────────────────────────────────
 
 export const PROVIDER_LABEL: Record<SocialProvider, string> = {

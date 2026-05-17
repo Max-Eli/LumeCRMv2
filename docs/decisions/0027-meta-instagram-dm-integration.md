@@ -509,6 +509,84 @@ granted scope, that's a separate column-projection migration.
 - [ ] `apps/integrations/README.md` — operator docs + dev-setup notes
 - [ ] Update `PROJECT_PLAN.md` Phase 1K to "Session 1 shipped"
 
+## Session 2C — outbound send + token refresh + disconnect hardening
+
+Shipped 2026-05-17.
+
+### Outbound DM send
+
+- `POST /api/social/threads/<id>/reply/` (`SocialThreadReplyView`)
+- Validates in order: connection still CONNECTED, body non-empty,
+  body ≤ 1000 chars, 24-hour Meta reply window via
+  `thread.last_inbound_at`. Each failure returns a stable `code`
+  field so the frontend renders the right inline message.
+- Creates `SocialMessage` row in `QUEUED` state up-front for a
+  stable ID, then calls `meta.send_instagram_dm()`. On success:
+  `external_message_id` updated to Meta's `mid`, status flipped to
+  `SENT`, thread `last_message_at` bumped, `read_at` set.
+- On Meta rejection: status flipped to `FAILED` (NOT deleted —
+  failed messages stay visible in the thread so operator can retry
+  with edits), 502 returned with Meta's error message.
+- Permission gate: `SocialPermission` (owner + manager only).
+
+### HIPAA reinforcement
+
+- Audit log records `body_length` and `meta_message_id` only —
+  never the body text itself, even on failure. Regression test
+  asserts a sentinel substring from a sample body does NOT appear
+  in `entry.metadata`.
+- Reply UI shows a persistent (non-dismissible) banner: "Meta's
+  platform terms prohibit sending PHI through DMs — keep replies
+  non-clinical." Operators are the responsible party; we do not
+  auto-redact.
+- The body still stores in our DB encrypted-at-rest via the RDS
+  KMS key (same posture as every other PHI surface). Access to the
+  detail endpoint is already audit-logged via the existing
+  `social_thread.read` event.
+
+### Token refresh (60-day cycle)
+
+- `meta.refresh_long_lived_token()` — `GET graph.instagram.com/refresh_access_token`
+  per Meta docs. Returns new token + extended expiry.
+- `python manage.py refresh_meta_tokens` — daily cron-friendly
+  management command. Selects connections expiring within a 14-day
+  window. On permanent errors (token expired, session revoked)
+  flips the connection to `ERROR` so the operator sees "reconnect
+  required" in the integrations UI. Transient errors are logged
+  and retried on the next sweep.
+- `--dry-run` + `--tenant=<slug>` + `--window-days=N` for
+  ops control.
+- Will be wired to EventBridge → ECS RunTask in the Terraform
+  follow-up (currently must be invoked manually or by a developer's
+  cron).
+
+### Disconnect hardening
+
+- `IntegrationDisconnectView` now calls
+  `meta.unsubscribe_ig_user_from_webhooks()` BEFORE wiping local
+  tokens. Without this, Meta keeps delivering webhook events forever
+  (or until the user revokes via Instagram); each delivery 200s but
+  logs "no matching connection."
+- Best-effort: if the unsubscribe call fails (token expired, network
+  blip), proceed with local disconnect anyway — better to leave a
+  dangling Meta subscription than block an operator from
+  disconnecting.
+- Audit log records `webhook_unsubscribe_status` (`success` /
+  `failed` / `skipped`) so the audit trail captures whether Meta's
+  side actually got cleaned up.
+
+### Tests
+
+13 new tests (75 total in `apps.integrations.tests`):
+
+- `SocialThreadReplyTests` — happy path, empty body, oversized
+  body, 24h window violation, no-inbound-anchor, disconnected
+  connection, Meta rejection → failed status, audit log omits body
+  text, front-desk forbidden.
+- `RefreshMetaTokensCommandTests` — in-window refresh updates token
+  + expires_at, out-of-window skipped (no Meta call), permanent
+  error flags connection ERROR, dry-run makes no Meta calls.
+
 ## References
 
 - [Meta Messenger Platform Webhooks](https://developers.facebook.com/docs/messenger-platform/webhooks)

@@ -23,6 +23,7 @@ from .views import (
     SocialThreadDetailView,
     SocialThreadListView,
     SocialThreadMarkReadView,
+    SocialThreadReplyView,
 )
 
 urlpatterns = [
@@ -87,5 +88,10 @@ urlpatterns = [
         'social/threads/<int:pk>/mark-read/',
         SocialThreadMarkReadView.as_view(),
         name='social-thread-mark-read',
+    ),
+    path(
+        'social/threads/<int:pk>/reply/',
+        SocialThreadReplyView.as_view(),
+        name='social-thread-reply',
     ),
 ]
