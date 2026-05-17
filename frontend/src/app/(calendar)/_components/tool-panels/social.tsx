@@ -75,14 +75,14 @@ function ThreadListView({
   const unread = threads.filter((t) => t.is_unread).length;
 
   // Render order: unread first (so triage starts there), then by
-  // most-recent activity. Caps at 10 — full inbox lives at /social.
+  // most-recent activity. No cap — the panel body scrolls, and the
+  // backend list endpoint already caps at 200 rows (more than any
+  // realistic spa's inbox length).
   const sorted = useMemo(() => {
-    return [...threads]
-      .sort((a, b) => {
-        if (a.is_unread !== b.is_unread) return a.is_unread ? -1 : 1;
-        return new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime();
-      })
-      .slice(0, 10);
+    return [...threads].sort((a, b) => {
+      if (a.is_unread !== b.is_unread) return a.is_unread ? -1 : 1;
+      return new Date(b.last_message_at).getTime() - new Date(a.last_message_at).getTime();
+    });
   }, [threads]);
 
   return (
