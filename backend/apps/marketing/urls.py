@@ -16,6 +16,7 @@ from .views import (
     CustomerMarketingHistoryView,
     MarketingTemplateViewSet,
 )
+from .views_aws_ses import SnsEventReceiverView
 from .views_public import PublicUnsubscribeView, TwilioStatusCallbackView
 
 router = DefaultRouter()
@@ -43,5 +44,12 @@ urlpatterns = [
         'marketing/twilio/status-callback/',
         TwilioStatusCallbackView.as_view(),
         name='marketing-twilio-status-callback',
+    ),
+    # AWS SNS receiver for SES bounce/complaint events. Auth via
+    # X.509 signature on every message. See ADR 0029.
+    path(
+        'aws/ses-events/',
+        SnsEventReceiverView.as_view(),
+        name='aws-ses-events',
     ),
 ]

@@ -48,6 +48,19 @@ Write one when:
 | [0014](0014-public-online-booking.md) | Public online booking | Accepted |
 | [0015](0015-clinical-chart-notes.md) | Clinical chart notes | Accepted |
 | [0016](0016-email-and-sms-marketing.md) | Email + SMS marketing | Accepted |
+| [0017](0017-phi-redaction.md) | PHI redaction in logs and audit metadata | Accepted |
+| [0018](0018-invoice-pdf-rendering.md) | Invoice PDF rendering | Accepted |
+| [0019](0019-staff-invitations.md) | Staff invitations | Accepted |
+| [0020](0020-form-submission-pdfs.md) | Form submission PDFs | Accepted |
+| [0021](0021-appointment-sms.md) | Appointment SMS confirmations + reminders | Accepted |
+| [0022](0022-customer-messaging-inbox.md) | Customer messaging inbox | Accepted |
+| [0023](0023-messaging-polish-templates-review.md) | Messaging polish — templates + review automation | Accepted |
+| [0024](0024-customer-portal-mvp.md) | Customer portal MVP | Accepted |
+| [0025](0025-emr-v2-protocols-and-treatment-records.md) | EMR v2 — protocols + treatment record templates | Accepted |
+| [0026](0026-tenant-isolation-enforcement.md) | Tenant isolation enforcement | Accepted |
+| [0027](0027-meta-instagram-dm-integration.md) | Meta Instagram DM integration | Accepted |
+| [0028](0028-ecs-deploy-contract.md) | ECS deploy contract (Terraform vs CI) | Accepted |
+| [0029](0029-ses-bounce-complaint-suppression.md) | SES bounce + complaint suppression pipeline | Accepted |
 
 ## Numbering
 

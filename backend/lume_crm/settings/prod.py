@@ -194,12 +194,23 @@ STORAGES = {
 #
 # django-ses uses boto3, which picks up credentials from the ECS task
 # IAM role automatically. No API keys in env.
+#
+# EMAIL_BACKEND points at our suppression-checking wrapper around
+# django-ses (ADR 0029). It filters out any recipient on the
+# platform-wide EmailSuppression list BEFORE handing the message to
+# SES, so a bouncing address can't tank our sender reputation.
 
-EMAIL_BACKEND = 'django_ses.SESBackend'
+EMAIL_BACKEND = 'apps.marketing.deliverability.SuppressionCheckingSESBackend'
 AWS_SES_REGION_NAME = env('AWS_SES_REGION', default=env('AWS_REGION', default='us-east-1'))
 AWS_SES_REGION_ENDPOINT = f'email.{AWS_SES_REGION_NAME}.amazonaws.com'
 # Required by base.py — must be the verified-sender address in SES.
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL')
+
+# SES Configuration Set name. django-ses attaches this to every
+# SendEmail call automatically; without it, SES emits no bounce or
+# complaint events to our SNS topic. Provisioned in infra/email.tf
+# as `lume-ses-events`. ADR 0029 §3.
+AWS_SES_CONFIGURATION_SET = env('AWS_SES_CONFIGURATION_SET', default=None)
 
 # ── Logging — JSON to stdout, scrubbed of PHI ───────────────────────
 #

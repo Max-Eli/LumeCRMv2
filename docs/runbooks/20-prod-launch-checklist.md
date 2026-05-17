@@ -92,9 +92,22 @@ work; this list is the sign-off gate.
 - [ ] SES domain verified, DKIM enabled
 - [ ] SPF + DMARC records published
 - [ ] SES out of sandbox (production access approved)
-- [ ] Bounce + complaint SNS topic wired (Phase 0c.6 if not yet)
+- [x] **Bounce + complaint SNS topic wired** — shipped in
+      [ADR 0029](../decisions/0029-ses-bounce-complaint-suppression.md).
+      `infra/email.tf` provisions the SES configuration set, SNS
+      topic, HTTPS subscription to `/api/aws/ses-events/`, and the
+      CloudWatch bounce-rate + complaint-rate alarms. The Django
+      webhook at `apps.marketing.views_aws_ses.SnsEventReceiverView`
+      verifies AWS's X.509 signature on every message and auto-
+      confirms the subscription. Suppression list populates
+      automatically; the `SuppressionCheckingSESBackend` (set as
+      `EMAIL_BACKEND` in `prod.py`) blocks future sends to bounced
+      / complained addresses.
 - [ ] First test email sent to a real inbox: SPF=pass, DKIM=pass,
       DMARC=pass
+- [ ] After `terraform apply`, verify the SNS subscription went
+      from "PendingConfirmation" to "Confirmed" in the AWS console
+      (proof the receiver's auto-confirm worked).
 
 ## Observability
 

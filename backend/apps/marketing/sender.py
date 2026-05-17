@@ -180,6 +180,17 @@ def _dispatch_one(
                 campaign=campaign, customer=customer, channel=channel,
                 reason='no_consent_or_suppressed',
             )
+        # Platform-wide deliverability gate (ADR 0029). The SES backend
+        # ALSO drops suppressed recipients defensively; checking here
+        # lets us write the explicit SUPPRESSED audit row + reason so
+        # the operator sees "we didn't send because that address is on
+        # the platform bounce list" rather than a silent skip.
+        from .deliverability import is_suppressed
+        if is_suppressed(customer.email):
+            return _suppressed_log(
+                campaign=campaign, customer=customer, channel=channel,
+                reason='suppressed_bounce_or_complaint',
+            )
     elif channel == Channel.SMS:
         if (
             not customer.sms_marketing_opt_in

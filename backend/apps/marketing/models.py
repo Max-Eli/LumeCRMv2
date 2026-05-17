@@ -464,3 +464,97 @@ class UnsubscribeToken(TenantedModel):
 
     def __str__(self):
         return f'unsubscribe:{self.channel}:{self.customer.full_name}'
+
+
+# ── Email suppression (platform-wide) ───────────────────────────────
+
+
+class EmailSuppression(models.Model):
+    """Addresses we MUST NOT send email to.
+
+    Platform-wide (no tenant FK) because SES sender reputation is
+    shared across all tenants under `mail.xn--lumcrm-5ua.com`. A
+    permanent bounce on tenant A's send means the address is bad
+    for everyone; a complaint on tenant A means the user marked
+    *Lumè* as spam, and continuing to send from any tenant erodes
+    the shared reputation pool. See [ADR 0029] for the full
+    rationale and the alternative-considered (per-tenant overrides).
+
+    Populated automatically by the SES → SNS webhook receiver
+    (`apps.marketing.views_aws_ses.SnsEventReceiverView`) on:
+
+      - `Bounce` event with `bounceType == 'Permanent'` — every
+        bounced address is added with `reason='bounce_permanent'`.
+        Transient bounces are logged but never recorded here.
+      - `Complaint` event — every complained address is added with
+        `reason='complaint'` regardless of subtype. A complaint is
+        a binding "stop sending to me."
+
+    Plus a manual path (`reason='manual'`) gated by
+    `MANAGE_TENANT_SETTINGS` for the rare operator-initiated case.
+
+    Idempotency: repeat events on the same address bump
+    `last_seen_at` + `event_count`, never create duplicate rows.
+
+    PHI posture: the full email address lives in this table because
+    it IS the lookup key — domain-only suppression would let bad
+    addresses through. Audit-log metadata downstream continues to
+    record `recipient_email_domain` only; this table is the single
+    place a full address is persisted in the deliverability subsystem.
+    """
+
+    class Reason(models.TextChoices):
+        BOUNCE_PERMANENT = 'bounce_permanent', 'Permanent bounce'
+        COMPLAINT = 'complaint', 'Complaint'
+        MANUAL = 'manual', 'Manual'
+
+    email = models.EmailField(
+        max_length=254,
+        unique=True,
+        db_index=True,
+        help_text='Lowercased recipient address. The lookup key.',
+    )
+    reason = models.CharField(
+        max_length=32, choices=Reason.choices, db_index=True,
+    )
+
+    # SES vocab preserved verbatim — "general", "no-email",
+    # "suppressed", "on-account-suppression-list" for bounces;
+    # "abuse", "auth-failure", "fraud", "not-spam", "other", "virus"
+    # for complaints. Empty for manual.
+    bounce_subtype = models.CharField(max_length=64, blank=True, default='')
+    complaint_subtype = models.CharField(max_length=64, blank=True, default='')
+
+    first_seen_at = models.DateTimeField(auto_now_add=True)
+    last_seen_at = models.DateTimeField(auto_now=True)
+    event_count = models.PositiveIntegerField(default=1)
+
+    # SES `mail.messageId` from the FIRST event that suppressed this
+    # address. Lets ops trace "what message did this stem from."
+    ses_message_id = models.CharField(max_length=200, blank=True, default='')
+
+    # Forensic snapshot of the SNS payload. May carry the full
+    # address — see PHI posture in the class docstring.
+    raw_event = models.JSONField(default=dict, blank=True)
+
+    # Manual additions only — null for webhook-driven rows.
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='email_suppressions_created',
+    )
+    notes = models.TextField(
+        blank=True, default='',
+        help_text='Operator notes (manual additions); SES event summary otherwise.',
+    )
+
+    class Meta:
+        ordering = ['-last_seen_at']
+        indexes = [
+            models.Index(fields=['reason', '-last_seen_at']),
+        ]
+
+    def __str__(self):
+        return f'{self.email} ({self.reason})'

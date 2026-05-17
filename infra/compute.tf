@@ -113,6 +113,11 @@ locals {
         { name = "DEFAULT_FROM_EMAIL", value = "Lumè CRM <${var.ses_from_address}>" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "AWS_SES_REGION", value = var.aws_region },
+        # SES Configuration Set — gates the entire bounce/complaint
+        # event pipeline (ADR 0029). django-ses attaches this to
+        # every SendEmail call. Without it, no events publish to
+        # the SNS topic, so the suppression list never populates.
+        { name = "AWS_SES_CONFIGURATION_SET", value = aws_sesv2_configuration_set.events.configuration_set_name },
         { name = "AWS_STORAGE_BUCKET_NAME", value = aws_s3_bucket.media.id },
         { name = "AWS_S3_KMS_KEY_ID", value = aws_kms_key.s3.arn },
         { name = "SESSION_COOKIE_DOMAIN", value = ".${var.domain_name}" },
