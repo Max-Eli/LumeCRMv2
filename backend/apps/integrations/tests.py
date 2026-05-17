@@ -1658,3 +1658,135 @@ class RefreshMetaTokensCommandTests(TestCase):
         ) as mock_get:
             call_command('refresh_meta_tokens', '--dry-run', stdout=StringIO())
             mock_get.assert_not_called()
+
+
+# ── Media archive (Session 2D — copy Meta-hosted media to S3) ──────
+
+
+class MediaArchiveTests(TestCase):
+    """Inbound media gets copied off Meta's CDN before it expires."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('media')
+        self.conn = Connection.objects.create(
+            tenant=self.tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='page-m',
+        )
+        self.customer = Customer.objects.create(
+            tenant=self.tenant,
+            first_name='Photo', last_name='Sender',
+            acquisition_source=Customer.AcquisitionSource.INSTAGRAM,
+        )
+        self.thread, _ = _make_thread_with_message(
+            tenant=self.tenant,
+            connection=self.conn,
+            customer=self.customer,
+        )
+
+    def _make_msg_with_media(self, urls: list[str]) -> SocialMessage:
+        return SocialMessage.objects.create(
+            tenant=self.tenant,
+            thread=self.thread,
+            direction=SocialMessage.Direction.INBOUND,
+            body='see attached',
+            media_urls='\n'.join(urls),
+            external_message_id='mid-media-' + str(self.thread.pk) + str(timezone.now().timestamp()),
+            status=SocialMessage.Status.RECEIVED,
+            received_at=timezone.now(),
+        )
+
+    def test_archive_one_writes_to_default_storage(self):
+        from apps.integrations import media_archive
+
+        msg = self._make_msg_with_media(['https://meta.test/photo.jpg'])
+
+        class _R:
+            status_code = 200
+            content = b'fake-jpeg-bytes'
+            headers = {'Content-Type': 'image/jpeg', 'Content-Length': '15'}
+        with _patch_outbound(
+            'apps.integrations.media_archive.requests.get',
+            return_value=_R(),
+        ):
+            count = media_archive.archive_message_media(msg)
+        self.assertEqual(count, 1)
+
+        msg.refresh_from_db()
+        keys = msg.archived_media_keys.splitlines()
+        self.assertEqual(len(keys), 1)
+        # Storage key includes tenant + thread + message scope so
+        # ops can grep ahead of a takedown / deletion request.
+        self.assertIn(f'social-media/{self.tenant.id}/', keys[0])
+        self.assertIn(f'{msg.pk}', keys[0])
+        self.assertTrue(keys[0].endswith('.jpg') or keys[0].endswith('.jpeg'))
+
+    def test_archive_skips_oversized_file(self):
+        from apps.integrations import media_archive
+
+        msg = self._make_msg_with_media(['https://meta.test/huge.bin'])
+
+        class _R:
+            status_code = 200
+            content = b'x' * (media_archive.MAX_BYTES_PER_FILE + 1)
+            headers = {'Content-Length': str(media_archive.MAX_BYTES_PER_FILE + 1)}
+        with _patch_outbound(
+            'apps.integrations.media_archive.requests.get',
+            return_value=_R(),
+        ):
+            count = media_archive.archive_message_media(msg)
+        self.assertEqual(count, 0)
+
+        msg.refresh_from_db()
+        self.assertEqual(msg.archived_media_keys, '')
+
+    def test_archive_continues_on_partial_failure(self):
+        from apps.integrations import media_archive
+
+        msg = self._make_msg_with_media([
+            'https://meta.test/good.jpg',
+            'https://meta.test/bad.jpg',
+        ])
+
+        class _Good:
+            status_code = 200
+            content = b'ok'
+            headers = {'Content-Type': 'image/jpeg', 'Content-Length': '2'}
+
+        class _Bad:
+            status_code = 404
+            content = b''
+            headers = {}
+
+        responses = [_Good(), _Bad()]
+
+        def _side_effect(url, **kwargs):
+            return responses.pop(0)
+
+        with _patch_outbound(
+            'apps.integrations.media_archive.requests.get',
+            side_effect=_side_effect,
+        ):
+            count = media_archive.archive_message_media(msg)
+        # One succeeded, one failed → 1 archived key written.
+        self.assertEqual(count, 1)
+        msg.refresh_from_db()
+        self.assertEqual(len(msg.archived_media_keys.splitlines()), 1)
+
+    def test_serialise_prefers_archived_keys(self):
+        """When archived_media_keys is set, the serialised payload
+        returns signed URLs from default_storage rather than the
+        expired Meta URLs."""
+        from apps.integrations.views import _resolve_media_urls
+
+        msg = self._make_msg_with_media(['https://meta.test/expired.jpg'])
+        msg.archived_media_keys = 'social-media/1/1/1-0.jpg'
+        msg.save()
+
+        urls = _resolve_media_urls(msg)
+        self.assertEqual(len(urls), 1)
+        # In dev the storage backend is the local filesystem; in
+        # prod default_storage.url() returns an S3 signed URL. Both
+        # should NOT match the expired Meta URL.
+        self.assertNotIn('meta.test', urls[0])

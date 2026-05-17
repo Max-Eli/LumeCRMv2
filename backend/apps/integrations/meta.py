@@ -927,7 +927,7 @@ def _process_messaging_event(
 
     try:
         with transaction.atomic():
-            SocialMessage.objects.create(
+            msg_row = SocialMessage.objects.create(
                 tenant=connection.tenant,
                 thread=thread,
                 direction=SocialMessage.Direction.INBOUND,
@@ -940,6 +940,23 @@ def _process_messaging_event(
     except IntegrityError:
         result.messages_duplicate += 1
         return
+
+    # Archive Meta-hosted media to our S3 before it expires (~24h).
+    # Best-effort: a download/upload failure logs + leaves media_urls
+    # as the fallback. ADR 0027 §6. Synchronous for now — moves to
+    # async worker if media volume becomes a problem.
+    if media_urls:
+        from .media_archive import archive_message_media
+        try:
+            archive_message_media(msg_row)
+        except Exception as e:
+            logger.warning(
+                'integrations.meta.media_archive_failed',
+                extra={
+                    'message_id': msg_row.pk,
+                    'error': str(e)[:300],
+                },
+            )
 
     # Bump thread aggregates.
     thread.last_message_at = received_at

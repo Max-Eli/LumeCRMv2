@@ -297,8 +297,19 @@ class SocialMessage(TenantedModel):
         default='',
         help_text=(
             'Newline-separated provider-hosted URLs for media attachments. '
-            'These expire (Meta retains for ~24h); a future polish '
-            'will copy to our S3 + sign.'
+            'Meta retains these for ~24h then 404s; we copy to our S3 '
+            'at ingest time and prefer `archived_media_keys` below for '
+            'long-term display. Original URLs kept for audit / debugging.'
+        ),
+    )
+    archived_media_keys = models.TextField(
+        blank=True,
+        default='',
+        help_text=(
+            'Newline-separated S3 keys for media we copied off Meta '
+            'before it expired. `_serialise_message` prefers these + '
+            'returns short-lived signed URLs so PHI media survives past '
+            "Meta's 24h retention window. ADR 0027 §6."
         ),
     )
 

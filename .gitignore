@@ -72,3 +72,6 @@ Screenshot*.jpg
 *.csv
 *.xlsx
 *.xls
+
+# Local default_storage scratch from media-archive tests
+backend/social-media/

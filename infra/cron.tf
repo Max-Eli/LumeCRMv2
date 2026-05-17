@@ -225,3 +225,64 @@ resource "aws_scheduler_schedule" "send_review_requests" {
     }
   }
 }
+
+
+# ── Meta long-lived token refresh — daily ──────────────────────────
+#
+# Instagram Login long-lived tokens expire after 60 days. Meta's
+# /refresh_access_token endpoint extends them for another 60 days
+# as long as the token is at least 24h old + not yet expired.
+# Without this cron, every connected tenant silently loses Instagram
+# access on day 60.
+#
+# Runs once a day at 11:30 UTC (off-peak for both us-east-1 ECS
+# capacity and Meta's API). The management command operates on a
+# 14-day expiry window, so missing a few days of runs is recoverable.
+# Permanent refresh failures (token expired, session revoked) flip
+# the Connection to ERROR so the operator sees "reconnect required"
+# in the integrations UI — no silent breakage.
+
+resource "aws_scheduler_schedule" "refresh_meta_tokens" {
+  name = "${local.name_prefix}-refresh-meta-tokens"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  schedule_expression          = "cron(30 11 * * ? *)"
+  schedule_expression_timezone = "UTC"
+  state                        = "ENABLED"
+
+  target {
+    arn      = aws_ecs_cluster.main.arn
+    role_arn = aws_iam_role.scheduler.arn
+
+    ecs_parameters {
+      task_definition_arn = local.backend_task_family_arn
+      task_count          = 1
+      launch_type         = "FARGATE"
+      platform_version    = "LATEST"
+      propagate_tags      = "TASK_DEFINITION"
+
+      network_configuration {
+        subnets          = aws_subnet.private[*].id
+        security_groups  = [aws_security_group.backend.id]
+        assign_public_ip = false
+      }
+    }
+
+    input = jsonencode({
+      containerOverrides = [
+        {
+          name    = "backend"
+          command = ["python", "manage.py", "refresh_meta_tokens"]
+        },
+      ],
+    })
+
+    retry_policy {
+      maximum_event_age_in_seconds = 3600 # 1h — daily, so wider window is fine
+      maximum_retry_attempts       = 3
+    }
+  }
+}

@@ -972,12 +972,26 @@ def _serialise_message(msg: SocialMessage) -> dict:
         'id': msg.id,
         'direction': msg.direction,
         'body': msg.body,
-        'media_urls': [u for u in msg.media_urls.splitlines() if u],
+        'media_urls': _resolve_media_urls(msg),
         'status': msg.status,
         'sent_by_id': msg.sent_by_id,
         'received_at': msg.received_at.isoformat() if msg.received_at else None,
         'created_at': msg.created_at.isoformat(),
     }
+
+
+def _resolve_media_urls(msg: SocialMessage) -> list[str]:
+    """Return signed URLs for archived media when present, otherwise
+    fall back to the original Meta-hosted URLs (which expire in ~24h).
+
+    Order matches `media_urls` so the frontend renders attachments
+    in the order they arrived. ADR 0027 §6.
+    """
+    archived = [k for k in (msg.archived_media_keys or '').splitlines() if k.strip()]
+    if archived:
+        from django.core.files.storage import default_storage
+        return [default_storage.url(k) for k in archived]
+    return [u for u in (msg.media_urls or '').splitlines() if u.strip()]
 
 
 # ── Reply endpoint (outbound send, ADR 0027 §7) ────────────────────
