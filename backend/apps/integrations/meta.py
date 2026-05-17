@@ -538,15 +538,20 @@ def subscribe_ig_user_to_webhooks(*, ig_user_id: str, access_token: str) -> None
     OAuth + tokens. Subscription persists until the operator
     disconnects or revokes access via Instagram.
 
-    Note: subscribes the IG user account directly, not a Facebook
-    Page — the structural difference vs the FB Login flow. Meta
-    interprets the absence of `subscribed_fields` here as 'all
-    enabled fields' for the Instagram product, which is what we want
-    (messages + messaging_postbacks).
+    `subscribed_fields` is REQUIRED — earlier code assumed Meta
+    defaulted to "all enabled fields"; the live API rejects with
+    "The parameter subscribed_fields is required" (2026-05).
+
+    We subscribe to `messages` (inbound DMs) and `messaging_postbacks`
+    (button clicks for any future quick-reply UI). Adding fields
+    later only requires the operator to disconnect + reconnect.
     """
     response = requests.post(
         f'{IG_GRAPH_BASE}/{ig_user_id}/subscribed_apps',
-        params={'access_token': access_token},
+        params={
+            'access_token': access_token,
+            'subscribed_fields': 'messages,messaging_postbacks',
+        },
         timeout=15,
     )
     payload = _expect_json(response, step='webhook subscribe')
