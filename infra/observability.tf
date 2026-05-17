@@ -58,6 +58,38 @@ data "aws_iam_policy_document" "logs_kms" {
     }
   }
 
+  # SES needs to encrypt the messages it publishes into the
+  # KMS-encrypted lume-prod-ses-events SNS topic (bounce + complaint
+  # event destination). Without these grants, SES rejects the
+  # CreateConfigurationSetEventDestination call with "Access denied
+  # to KMS key for SNS topic." ADR 0029.
+  statement {
+    sid    = "AllowSESToPublishToEncryptedSesEventsTopic"
+    effect = "Allow"
+    actions = [
+      "kms:GenerateDataKey*",
+      "kms:Decrypt",
+    ]
+    principals {
+      type        = "Service"
+      identifiers = ["ses.amazonaws.com"]
+    }
+    resources = ["*"]
+    # Restrict the grant to the specific SNS topic — SES can only
+    # use this key when publishing to lume-{env}-ses-events, never
+    # for other purposes.
+    condition {
+      test     = "ArnEquals"
+      variable = "aws:SourceArn"
+      values   = [aws_sns_topic.ses_events.arn]
+    }
+    condition {
+      test     = "StringEquals"
+      variable = "AWS:SourceAccount"
+      values   = [data.aws_caller_identity.current.account_id]
+    }
+  }
+
   # Account-root admin — the standard "leave a backdoor for IAM" line
   # without which a misconfigured key lockout requires AWS support.
   statement {

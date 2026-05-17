@@ -100,7 +100,17 @@ resource "aws_sesv2_configuration_set_event_destination" "sns" {
     }
   }
 
-  depends_on = [aws_sns_topic_policy.ses_events]
+  # Both policies must be in place BEFORE SES tries to publish:
+  #   - aws_sns_topic_policy.ses_events grants SES sns:Publish.
+  #   - aws_kms_key_policy.secrets grants SES kms:GenerateDataKey
+  #     + kms:Decrypt on the topic's KMS key (added in
+  #     observability.tf). Without the KMS grant, the create call
+  #     itself fails with "Access denied to KMS key for SNS topic"
+  #     — which is what bit CI on the first apply attempt.
+  depends_on = [
+    aws_sns_topic_policy.ses_events,
+    aws_kms_key_policy.secrets,
+  ]
 }
 
 # ── HTTPS subscription to the backend webhook ───────────────────────
