@@ -587,6 +587,65 @@ Shipped 2026-05-17.
   + expires_at, out-of-window skipped (no Meta call), permanent
   error flags connection ERROR, dry-run makes no Meta calls.
 
+## Session 2E — DM history backfill (`apps.integrations.backfill`)
+
+Shipped 2026-05-17.
+
+### Problem
+
+Meta's webhook system only forwards messages received AFTER a
+subscription is registered. A spa connecting their existing
+Instagram presence sees an empty `/social` inbox even though they
+have years of DM history in the IG app. This was both bad UX (the
+inbox felt broken on day-one) and a Meta-App-Review concern (a
+reviewer connecting a real test account sees no data).
+
+### Decision
+
+On every successful OAuth connect, we now call Meta's
+`/{ig-user-id}/conversations` + `/{conversation-id}?fields=messages{…}`
+endpoints to seed the inbox with recent history. Implementation
+lives in `apps.integrations.backfill` to keep `meta.py`
+narrowly-focused on the live OAuth + send path.
+
+### Caveats (documented in operator-facing copy)
+
+- Meta only returns **recent activity** — typically the last ~30
+  conversations and ~20 messages per conversation. Older threads
+  are NOT retrievable.
+- Counts against Meta's rate limit (~200 calls/hour/account).
+  Backfilling one connection = 1 + N API calls (N = number of
+  recent conversations).
+- Messages older than Meta's retention window or that have been
+  deleted by either party are not returned at all.
+
+### Idempotency + safety
+
+- The SocialMessage `(tenant, external_message_id)` unique constraint
+  + SocialThread `(tenant, provider, external_thread_id)` constraint
+  make re-running the backfill a no-op for already-imported rows.
+- Backfill in the OAuth callback is **best-effort + try-wrapped**: a
+  failure does NOT block the connect-success redirect, the operator
+  just sees an empty inbox that fills as new messages arrive (and
+  they can run the management command later).
+- Audit log records counts only: `conversations_examined`,
+  `messages_created`, `messages_duplicate`, `api_errors`. No PHI.
+
+### Operator entry points
+
+- **Automatic** — fires inside `MetaOAuthCallbackView` immediately
+  after the per-account subscription succeeds, before the redirect.
+- **Manual** — `python manage.py backfill_meta_conversations` for
+  already-connected tenants. Supports `--tenant=<slug>`,
+  `--connection-id=N`, `--dry-run`.
+
+### Customer-matching reuse
+
+Backfilled messages use the same `_resolve_thread_and_customer` helper
+that live-ingestion uses, so customer-matching semantics stay
+consistent between the two paths. PSIDs returned by `/conversations`
+have the same format as the ones webhook deliveries carry.
+
 ## References
 
 - [Meta Messenger Platform Webhooks](https://developers.facebook.com/docs/messenger-platform/webhooks)

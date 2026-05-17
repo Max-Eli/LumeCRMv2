@@ -385,6 +385,30 @@ class MetaOAuthCallbackView(APIView):
             },
         )
 
+        # Seed the inbox with recent DM history (ADR 0027 §10).
+        # Best-effort: a backfill failure does not block the connect
+        # success — the operator just sees a fresh inbox that will
+        # populate as new messages arrive. They can also trigger
+        # backfill manually later via the management command.
+        try:
+            from . import backfill as _backfill
+            result = _backfill.backfill_connection(connection)
+            record(
+                action=AuditLog.Action.UPDATE,
+                resource_type='integration_connection',
+                resource_id=connection.pk,
+                request=request,
+                metadata={
+                    'event': 'backfill_completed',
+                    **result.to_audit_metadata(),
+                },
+            )
+        except Exception as e:
+            logger.warning(
+                'integrations.meta.backfill_failed_proceeding',
+                extra={'connection_id': connection.pk, 'error': str(e)[:300]},
+            )
+
         return HttpResponse(status=302, headers={
             'Location': self._redirect_url(
                 'connected=instagram', tenant=tenant,

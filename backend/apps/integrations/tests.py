@@ -1790,3 +1790,209 @@ class MediaArchiveTests(TestCase):
         # prod default_storage.url() returns an S3 signed URL. Both
         # should NOT match the expired Meta URL.
         self.assertNotIn('meta.test', urls[0])
+
+
+# ── Backfill (Session 2E — ADR 0027 §10) ───────────────────────────
+
+
+class BackfillTests(TestCase):
+    """Replay-recent-conversations behaviour for fresh connects + manual runs."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('backfill')
+        self.conn = Connection.objects.create(
+            tenant=self.tenant,
+            provider=Connection.Provider.META_INSTAGRAM,
+            status=Connection.Status.CONNECTED,
+            external_id='17841405822304914',  # IG user id
+        )
+        self.conn.set_auth_data({
+            'ig_user_id': '17841405822304914',
+            'access_token': 'IGAA-test',
+            'ig_username': 'spa',
+        })
+        self.conn.save()
+
+    def _resp(self, body, status_code=200):
+        class _R:
+            def __init__(self):
+                self.status_code = status_code
+                self.text = ''
+                self.url = ''
+            def json(self):
+                return body
+        return _R()
+
+    def _mock_get(self, urls_to_bodies):
+        """Return a side_effect that maps each URL substring → body."""
+        def _side_effect(url, **kwargs):
+            for needle, body in urls_to_bodies.items():
+                if needle in url:
+                    return self._resp(body)
+            return self._resp({'data': []})
+        return _side_effect
+
+    def test_creates_threads_and_messages(self):
+        from apps.integrations import backfill
+
+        urls_to_bodies = {
+            '/17841405822304914/conversations': {
+                'data': [
+                    {'id': 'conv-A', 'updated_time': '2026-05-17T12:00:00+0000'},
+                    {'id': 'conv-B', 'updated_time': '2026-05-17T11:00:00+0000'},
+                ],
+            },
+            '/conv-A': {
+                'messages': {
+                    'data': [
+                        {
+                            'id': 'mid.A.1',
+                            'created_time': '2026-05-17T12:00:00+0000',
+                            'from': {'id': 'psid-aaa', 'username': 'maria'},
+                            'to': {'data': [{'id': '17841405822304914'}]},
+                            'message': 'hi! can you book me tuesday?',
+                        },
+                    ],
+                },
+            },
+            '/conv-B': {
+                'messages': {
+                    'data': [
+                        {
+                            'id': 'mid.B.1',
+                            'created_time': '2026-05-17T11:00:00+0000',
+                            'from': {'id': '17841405822304914'},
+                            'to': {'data': [{'id': 'psid-bbb'}]},
+                            'message': 'see you at 2pm thursday',
+                        },
+                    ],
+                },
+            },
+        }
+        with _patch_outbound(
+            'apps.integrations.meta.requests.get',
+            side_effect=self._mock_get(urls_to_bodies),
+        ):
+            result = backfill.backfill_connection(self.conn)
+
+        self.assertEqual(result.conversations_examined, 2)
+        self.assertEqual(result.messages_created, 2)
+        self.assertEqual(result.api_errors, 0)
+
+        # One thread per conversation, keyed by the OTHER party's PSID.
+        threads = SocialThread.objects.filter(tenant=self.tenant).order_by('external_thread_id')
+        self.assertEqual(threads.count(), 2)
+        self.assertEqual(set(threads.values_list('external_thread_id', flat=True)), {'psid-aaa', 'psid-bbb'})
+
+        # Inbound message marked unread; outbound thread doesn't reset read_at.
+        inbound = SocialMessage.objects.get(external_message_id='mid.A.1')
+        self.assertEqual(inbound.direction, SocialMessage.Direction.INBOUND)
+        self.assertEqual(inbound.thread.read_at, None)
+
+        outbound = SocialMessage.objects.get(external_message_id='mid.B.1')
+        self.assertEqual(outbound.direction, SocialMessage.Direction.OUTBOUND)
+
+    def test_idempotent_rerun(self):
+        from apps.integrations import backfill
+
+        urls_to_bodies = {
+            '/17841405822304914/conversations': {
+                'data': [{'id': 'conv-X'}],
+            },
+            '/conv-X': {
+                'messages': {
+                    'data': [
+                        {
+                            'id': 'mid.X.1',
+                            'created_time': '2026-05-17T10:00:00+0000',
+                            'from': {'id': 'psid-xxx'},
+                            'to': {'data': [{'id': '17841405822304914'}]},
+                            'message': 'first',
+                        },
+                    ],
+                },
+            },
+        }
+        with _patch_outbound(
+            'apps.integrations.meta.requests.get',
+            side_effect=self._mock_get(urls_to_bodies),
+        ):
+            first = backfill.backfill_connection(self.conn)
+            second = backfill.backfill_connection(self.conn)
+
+        # First run creates the row.
+        self.assertEqual(first.messages_created, 1)
+        # Second run sees the IntegrityError → counts as duplicate.
+        self.assertEqual(second.messages_created, 0)
+        self.assertEqual(second.messages_duplicate, 1)
+        # No extra rows in the DB.
+        self.assertEqual(SocialMessage.objects.filter(tenant=self.tenant).count(), 1)
+
+    def test_conversation_list_failure_recovers_gracefully(self):
+        from apps.integrations import backfill, meta as meta_oauth
+
+        class _Err:
+            status_code = 400
+            text = ''
+            url = ''
+            def json(self):
+                return {'error': {'message': 'transient', 'code': 100}}
+
+        with _patch_outbound(
+            'apps.integrations.meta.requests.get',
+            return_value=_Err(),
+        ):
+            result = backfill.backfill_connection(self.conn)
+        # We log + bail; no exception thrown to the caller (so OAuth
+        # callback never blows up on a backfill failure).
+        self.assertEqual(result.conversations_examined, 0)
+        self.assertEqual(result.api_errors, 1)
+
+    def test_per_conversation_failure_continues_to_next(self):
+        from apps.integrations import backfill
+
+        # First conversation succeeds, second blows up — we expect
+        # the first to land + the second to be counted as an error
+        # without halting the loop.
+        call_count = {'n': 0}
+
+        def _side(url, **kwargs):
+            call_count['n'] += 1
+            # `/conversations` is the list endpoint; the specific
+            # conv-A / conv-B paths come later (no `/conversations`
+            # suffix on those). `requests.get(url, params=...)` puts
+            # params in kwargs, not in `url`, so we match on path.
+            if url.endswith('/conversations'):
+                return self._resp({'data': [{'id': 'conv-A'}, {'id': 'conv-B'}]})
+            if '/conv-A' in url:
+                return self._resp({
+                    'messages': {
+                        'data': [
+                            {
+                                'id': 'mid.A.1',
+                                'created_time': '2026-05-17T10:00:00+0000',
+                                'from': {'id': 'psid-a'},
+                                'to': {'data': [{'id': '17841405822304914'}]},
+                                'message': 'one',
+                            },
+                        ],
+                    },
+                })
+            if '/conv-B' in url:
+                # Return a Meta error for this conversation.
+                class _R:
+                    status_code = 400
+                    text = ''
+                    url = ''
+                    def json(self):
+                        return {'error': {'message': 'bad', 'code': 100}}
+                return _R()
+            return self._resp({})
+
+        with _patch_outbound(
+            'apps.integrations.meta.requests.get',
+            side_effect=_side,
+        ):
+            result = backfill.backfill_connection(self.conn)
+        self.assertEqual(result.messages_created, 1)
+        self.assertEqual(result.api_errors, 1)

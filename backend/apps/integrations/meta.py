@@ -562,6 +562,65 @@ def subscribe_ig_user_to_webhooks(*, ig_user_id: str, access_token: str) -> None
         )
 
 
+# ── Conversation backfill (ADR 0027 §10) ──────────────────────────
+
+
+# Per Meta's docs the /conversations endpoint paginates with `next`
+# cursors. We cap at MAX_CONVERSATIONS to avoid an unbounded sweep
+# for a spa with thousands of historical threads — first connect
+# should be reasonably fast, polish later if anyone asks for full
+# history.
+BACKFILL_MAX_CONVERSATIONS = 50
+BACKFILL_MAX_MESSAGES_PER_CONVERSATION = 25
+
+
+def list_recent_conversations(
+    *, ig_user_id: str, access_token: str,
+) -> list[dict]:
+    """GET /{ig-user-id}/conversations — list recent conversations.
+
+    Returns a list of conversation summaries with their IDs. Each
+    looks like `{'id': 'aWdfZA...', 'updated_time': '2026-...'}`.
+    """
+    response = requests.get(
+        f'{IG_GRAPH_BASE}/{ig_user_id}/conversations',
+        params={
+            'access_token': access_token,
+            'fields': 'id,updated_time',
+            'limit': BACKFILL_MAX_CONVERSATIONS,
+        },
+        timeout=20,
+    )
+    payload = _expect_json(response, step='ig list conversations')
+    return payload.get('data', [])
+
+
+def fetch_conversation_messages(
+    *, conversation_id: str, access_token: str,
+) -> list[dict]:
+    """GET /{conversation-id}?fields=messages{...} — fetch a conversation's messages.
+
+    Returns the message list — sender + recipient IDs + body + created_time.
+    Meta paginates inside the messages field; we take the first page
+    only (most recent N messages) to keep backfill bounded.
+    """
+    response = requests.get(
+        f'{IG_GRAPH_BASE}/{conversation_id}',
+        params={
+            'access_token': access_token,
+            'fields': (
+                'messages.limit('
+                + str(BACKFILL_MAX_MESSAGES_PER_CONVERSATION)
+                + '){id,created_time,from,to,message}'
+            ),
+        },
+        timeout=20,
+    )
+    payload = _expect_json(response, step='ig fetch messages')
+    msgs_envelope = payload.get('messages') or {}
+    return msgs_envelope.get('data', [])
+
+
 def unsubscribe_ig_user_from_webhooks(*, ig_user_id: str, access_token: str) -> None:
     """DELETE /{ig-user-id}/subscribed_apps — stop webhook delivery.
 
