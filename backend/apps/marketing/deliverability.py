@@ -92,6 +92,72 @@ def _normalise_email(email: str) -> str:
 # ── Django email backend wrapper ────────────────────────────────────
 
 
+def filter_suppressed_recipients(email_messages):
+    """Prune suppressed addresses from every message; return the sendable list.
+
+    Pure function — easy to test in isolation against the real
+    EmailSuppression table without needing to construct an SES
+    backend. The `SuppressionCheckingSESBackend.send_messages`
+    method below delegates here so production + tests exercise
+    identical code.
+
+      - For each `EmailMessage`, `to` / `cc` / `bcc` are pruned of
+        suppressed addresses in place.
+      - If a message has no remaining recipients, it is dropped
+        from the returned list (with an info log carrying
+        domain-only audit metadata — never full addresses).
+      - Partial drops (some recipients suppressed, others not) log
+        + leave the message in the sendable list with the kept
+        recipients.
+
+    Returns the list of messages that should actually be forwarded
+    to SES.
+    """
+    sendable = []
+    for msg in email_messages:
+        original_to = list(msg.to or [])
+        original_cc = list(msg.cc or [])
+        original_bcc = list(msg.bcc or [])
+
+        msg.to = [a for a in original_to if not is_suppressed(a)]
+        msg.cc = [a for a in original_cc if not is_suppressed(a)]
+        msg.bcc = [a for a in original_bcc if not is_suppressed(a)]
+
+        dropped = (
+            (len(original_to) - len(msg.to))
+            + (len(original_cc) - len(msg.cc))
+            + (len(original_bcc) - len(msg.bcc))
+        )
+
+        if not (msg.to or msg.cc or msg.bcc):
+            logger.info(
+                'email.suppressed.all_recipients',
+                extra={
+                    'subject_length': len(msg.subject or ''),
+                    'dropped_count': dropped,
+                    # Domain-only audit metadata — never full addresses.
+                    'recipient_domains': sorted({
+                        a.split('@')[-1].lower()
+                        for a in (original_to + original_cc + original_bcc)
+                        if '@' in a
+                    }),
+                },
+            )
+            continue
+
+        if dropped:
+            logger.info(
+                'email.suppressed.partial',
+                extra={
+                    'dropped_count': dropped,
+                    'remaining_count': len(msg.to) + len(msg.cc) + len(msg.bcc),
+                },
+            )
+
+        sendable.append(msg)
+    return sendable
+
+
 class SuppressionCheckingSESBackend(SESBackend):
     """Drop suppressed recipients before forwarding to SES.
 
@@ -109,62 +175,13 @@ class SuppressionCheckingSESBackend(SESBackend):
          `is_suppressed()` up-front so it can write a
          `MarketingSendLog.SUPPRESSED` audit row.
 
-    Behaviour:
-
-      - For each `EmailMessage`, `to` / `cc` / `bcc` are pruned of
-        suppressed addresses.
-      - If all recipients are suppressed, the message is silently
-        dropped (with an info log carrying domain-only audit
-        metadata — never the full address).
-      - Otherwise the (now-pruned) message is forwarded to the
-        underlying SESBackend exactly as before.
+    The filtering itself lives in `filter_suppressed_recipients`
+    so tests can exercise it without instantiating an SES backend
+    (django-ses is a prod-only dependency).
     """
 
     def send_messages(self, email_messages):
-        sendable = []
-        for msg in email_messages:
-            original_to = list(msg.to or [])
-            original_cc = list(msg.cc or [])
-            original_bcc = list(msg.bcc or [])
-
-            msg.to = [a for a in original_to if not is_suppressed(a)]
-            msg.cc = [a for a in original_cc if not is_suppressed(a)]
-            msg.bcc = [a for a in original_bcc if not is_suppressed(a)]
-
-            dropped = (
-                (len(original_to) - len(msg.to))
-                + (len(original_cc) - len(msg.cc))
-                + (len(original_bcc) - len(msg.bcc))
-            )
-
-            if not (msg.to or msg.cc or msg.bcc):
-                # Every recipient was suppressed — nothing to send.
-                logger.info(
-                    'email.suppressed.all_recipients',
-                    extra={
-                        'subject_length': len(msg.subject or ''),
-                        'dropped_count': dropped,
-                        # Domain-only audit metadata — never full addresses.
-                        'recipient_domains': sorted({
-                            a.split('@')[-1].lower()
-                            for a in (original_to + original_cc + original_bcc)
-                            if '@' in a
-                        }),
-                    },
-                )
-                continue
-
-            if dropped:
-                logger.info(
-                    'email.suppressed.partial',
-                    extra={
-                        'dropped_count': dropped,
-                        'remaining_count': len(msg.to) + len(msg.cc) + len(msg.bcc),
-                    },
-                )
-
-            sendable.append(msg)
-
+        sendable = filter_suppressed_recipients(email_messages)
         if not sendable:
             return 0
         return super().send_messages(sendable)

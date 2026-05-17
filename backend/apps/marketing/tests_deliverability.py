@@ -32,8 +32,8 @@ from django.urls import reverse
 from rest_framework.test import APIClient
 
 from .deliverability import (
-    SuppressionCheckingSESBackend,
     _normalise_email,
+    filter_suppressed_recipients,
     is_suppressed,
     record_bounce,
     record_complaint,
@@ -140,55 +140,17 @@ class RecordComplaintTests(TestCase):
         self.assertEqual(row.complaint_subtype, 'abuse')
 
 
-# ── SuppressionCheckingSESBackend ───────────────────────────────────
+# ── filter_suppressed_recipients (the production filtering logic) ───
+#
+# We test the pure function directly. The SuppressionCheckingSESBackend
+# wrapper around it is just `filter_suppressed_recipients(messages)`
+# + a `super().send_messages(sendable)` call — django-ses isn't
+# installed in dev, so exercising the wrapper end-to-end would need
+# the whole SES SDK mocked. Instead we verify the only piece of code
+# we wrote (the filter) against the real EmailSuppression table.
 
 
-class _StubSESBackend:
-    """Minimal stand-in that records what would have gone to SES."""
-
-    def __init__(self, *args, **kwargs):
-        self.sent = []
-
-    def send_messages(self, email_messages):
-        self.sent.extend(email_messages)
-        return len(email_messages)
-
-    def open(self):  # django mail backend protocol
-        return True
-
-    def close(self):
-        pass
-
-
-class _TestBackend(SuppressionCheckingSESBackend):
-    """Test subclass that swaps the SESBackend send for a recorder.
-
-    Django's mail backend `__init__` chain is fragile to call against
-    a non-configured SES (no AWS creds). Overriding the super-class
-    `send_messages` keeps the test focused on the filtering behaviour.
-    """
-
-    def __init__(self, *args, **kwargs):  # noqa: D401
-        # Skip django_ses' init (it tries to construct a boto client).
-        self._recorder = _StubSESBackend()
-
-    def send_messages(self, email_messages):
-        sendable = []
-        for msg in email_messages:
-            original_to = list(msg.to or [])
-            original_cc = list(msg.cc or [])
-            original_bcc = list(msg.bcc or [])
-            msg.to = [a for a in original_to if not is_suppressed(a)]
-            msg.cc = [a for a in original_cc if not is_suppressed(a)]
-            msg.bcc = [a for a in original_bcc if not is_suppressed(a)]
-            if msg.to or msg.cc or msg.bcc:
-                sendable.append(msg)
-        if not sendable:
-            return 0
-        return self._recorder.send_messages(sendable)
-
-
-class SuppressionBackendTests(TestCase):
+class FilterSuppressedRecipientsTests(TestCase):
     def setUp(self):
         EmailSuppression.objects.create(
             email='blocked@example.com',
@@ -196,39 +158,48 @@ class SuppressionBackendTests(TestCase):
         )
 
     def test_passes_clean_recipient_through(self):
-        backend = _TestBackend()
         msg = EmailMultiAlternatives(
             subject='hi', body='hello', from_email='from@x.com',
             to=['clean@example.com'],
         )
-        sent = backend.send_messages([msg])
-        self.assertEqual(sent, 1)
-        self.assertEqual(backend._recorder.sent[0].to, ['clean@example.com'])
+        sendable = filter_suppressed_recipients([msg])
+        self.assertEqual(len(sendable), 1)
+        self.assertEqual(sendable[0].to, ['clean@example.com'])
 
-    def test_drops_suppressed_recipient(self):
-        backend = _TestBackend()
+    def test_drops_message_when_all_recipients_suppressed(self):
         msg = EmailMultiAlternatives(
             subject='hi', body='hello', from_email='from@x.com',
             to=['blocked@example.com'],
         )
-        sent = backend.send_messages([msg])
-        self.assertEqual(sent, 0)
-        self.assertEqual(backend._recorder.sent, [])
+        sendable = filter_suppressed_recipients([msg])
+        self.assertEqual(sendable, [])
 
     def test_partial_suppression_keeps_clean_recipients(self):
-        backend = _TestBackend()
         msg = EmailMultiAlternatives(
             subject='hi', body='hello', from_email='from@x.com',
             to=['clean@example.com', 'blocked@example.com'],
             cc=['blocked@example.com'],
             bcc=['another-clean@example.com'],
         )
-        sent = backend.send_messages([msg])
-        self.assertEqual(sent, 1)
-        delivered = backend._recorder.sent[0]
+        sendable = filter_suppressed_recipients([msg])
+        self.assertEqual(len(sendable), 1)
+        delivered = sendable[0]
         self.assertEqual(delivered.to, ['clean@example.com'])
         self.assertEqual(delivered.cc, [])
         self.assertEqual(delivered.bcc, ['another-clean@example.com'])
+
+    def test_normalisation_applies(self):
+        """A suppressed Gmail address must block its +tag variants too."""
+        EmailSuppression.objects.create(
+            email='jane@gmail.com',
+            reason=EmailSuppression.Reason.COMPLAINT,
+        )
+        msg = EmailMultiAlternatives(
+            subject='hi', body='hello', from_email='from@x.com',
+            to=['jane+april@gmail.com'],
+        )
+        sendable = filter_suppressed_recipients([msg])
+        self.assertEqual(sendable, [])
 
 
 # ── SNS webhook receiver ────────────────────────────────────────────
