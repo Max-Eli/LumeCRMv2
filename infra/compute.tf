@@ -43,10 +43,53 @@ locals {
   # The RDS-managed secret is a JSON blob with `username`, `password`.
   rds_secret_arn = aws_db_instance.main.master_user_secret[0].secret_arn
 
+  # ── Container-image source-of-truth (deploy contract) ────────────
+  #
+  # We have two writers competing for the same task-definition family:
+  #
+  #   1. CI (`.github/workflows/backend-deploy.yml`) — on every push
+  #      to main, builds a SHA-tagged image, registers a new task def
+  #      revision via `describe-task-definition → swap image →
+  #      register-task-definition`, and updates the ECS service.
+  #
+  #   2. Terraform — when env vars / secrets / IAM bindings change in
+  #      this file, computes a new task def revision and registers it.
+  #      The service has `lifecycle.ignore_changes = [task_definition]`
+  #      so Terraform never promotes its revisions to the running
+  #      service; CI is the sole writer of "what's actually running."
+  #
+  # The trap: if Terraform stamps `:latest` (or any stale tag) into
+  # its new revisions, an operator who manually promotes one of those
+  # revisions for testing pulls stale code. We hit this exact bug on
+  # 2026-05-16 and burned an hour rolling back through old commits.
+  #
+  # The fix: Terraform reads the currently-running image off the
+  # live service via a data source + uses THAT when emitting new
+  # revisions. New env/secret changes get baked into a fresh revision
+  # that, if promoted, runs the right code.
+  #
+  # Bootstrap caveat: on the very first apply the service doesn't
+  # exist yet, so the data source can't resolve. The CI workflow is
+  # responsible for the first deploy (it'll build + push + register +
+  # promote the first SHA-tagged revision); subsequent Terraform
+  # applies pick up the data source automatically.
+  #
+  # The `var.backend_image_tag` variable stays as the fallback for
+  # truly fresh bootstraps (acceptable because right after bootstrap
+  # the CI workflow immediately overwrites with a real SHA).
+  backend_live_image = try(
+    jsondecode(data.aws_ecs_task_definition.backend_live.container_definitions)[0].image,
+    "${aws_ecr_repository.backend.repository_url}:${var.backend_image_tag}",
+  )
+  frontend_live_image = try(
+    jsondecode(data.aws_ecs_task_definition.frontend_live.container_definitions)[0].image,
+    "${aws_ecr_repository.frontend.repository_url}:${var.frontend_image_tag}",
+  )
+
   backend_container_def = jsonencode([
     {
       name      = "backend"
-      image     = "${aws_ecr_repository.backend.repository_url}:${var.backend_image_tag}"
+      image     = local.backend_live_image
       essential = true
 
       portMappings = [
@@ -231,7 +274,7 @@ locals {
   frontend_container_def = jsonencode([
     {
       name      = "frontend"
-      image     = "${aws_ecr_repository.frontend.repository_url}:${var.frontend_image_tag}"
+      image     = local.frontend_live_image
       essential = true
 
       portMappings = [
@@ -380,4 +423,52 @@ resource "aws_ecs_service" "frontend" {
   ]
 
   tags = { Name = "${local.name_prefix}-frontend-svc" }
+}
+
+
+# ── Live-image data sources (deploy contract — see locals block) ──
+#
+# These read the currently-running image off the live ECS service so
+# Terraform-generated task def revisions carry forward whatever CI
+# last deployed. Without these, Terraform would stamp the
+# `var.*_image_tag` value (default "latest") into every new revision
+# and operators who manually promote those revisions for testing
+# would pull stale code.
+#
+# Pulling from `aws_ecs_service.{backend,frontend}.name` rather than
+# a literal string ensures Terraform orders these correctly: the
+# service must exist before we can read its task def. On the very
+# first apply the service is being created in the same plan, so
+# Terraform refreshes the data source after the service comes up.
+# The `try()` in the locals block handles the corner case where the
+# service truly doesn't exist yet (cold bootstrap before any CI
+# deploy has run).
+
+# Reference the services by their literal names rather than via the
+# resource attribute. The attribute path would create a cycle:
+#   aws_ecs_task_definition.backend → local.backend_live_image →
+#   data.aws_ecs_task_definition.backend_live →
+#   data.aws_ecs_service.backend_live → aws_ecs_service.backend →
+#   aws_ecs_service.backend.task_definition → aws_ecs_task_definition.backend
+#
+# Hardcoding the literal names breaks the cycle. The service names
+# are deterministic from `local.name_prefix` + suffix, identical to
+# the values used in the `aws_ecs_service` resources below.
+
+data "aws_ecs_service" "backend_live" {
+  cluster_arn  = aws_ecs_cluster.main.arn
+  service_name = "${local.name_prefix}-backend"
+}
+
+data "aws_ecs_task_definition" "backend_live" {
+  task_definition = data.aws_ecs_service.backend_live.task_definition
+}
+
+data "aws_ecs_service" "frontend_live" {
+  cluster_arn  = aws_ecs_cluster.main.arn
+  service_name = "${local.name_prefix}-frontend"
+}
+
+data "aws_ecs_task_definition" "frontend_live" {
+  task_definition = data.aws_ecs_service.frontend_live.task_definition
 }
