@@ -63,6 +63,13 @@ data "aws_iam_policy_document" "logs_kms" {
   # event destination). Without these grants, SES rejects the
   # CreateConfigurationSetEventDestination call with "Access denied
   # to KMS key for SNS topic." ADR 0029.
+  #
+  # IMPORTANT: when SES calls KMS to wrap a message destined for the
+  # SNS topic, AWS sets aws:SourceArn to the SES *configuration set*
+  # ARN, NOT the SNS topic ARN. An earlier attempt that scoped
+  # SourceArn to the SNS topic failed on apply — keeping the SES
+  # config-set ARN scoping below for tightness; account scope is the
+  # safety net.
   statement {
     sid    = "AllowSESToPublishToEncryptedSesEventsTopic"
     effect = "Allow"
@@ -75,13 +82,10 @@ data "aws_iam_policy_document" "logs_kms" {
       identifiers = ["ses.amazonaws.com"]
     }
     resources = ["*"]
-    # Restrict the grant to the specific SNS topic — SES can only
-    # use this key when publishing to lume-{env}-ses-events, never
-    # for other purposes.
     condition {
-      test     = "ArnEquals"
+      test     = "ArnLike"
       variable = "aws:SourceArn"
-      values   = [aws_sns_topic.ses_events.arn]
+      values   = [aws_sesv2_configuration_set.events.arn]
     }
     condition {
       test     = "StringEquals"
