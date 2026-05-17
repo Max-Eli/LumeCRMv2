@@ -1996,3 +1996,68 @@ class BackfillTests(TestCase):
             result = backfill.backfill_connection(self.conn)
         self.assertEqual(result.messages_created, 1)
         self.assertEqual(result.api_errors, 1)
+
+    def test_backfill_does_not_rewind_fresh_last_inbound_at(self):
+        """Regression: reconnecting an IG account triggers backfill, and
+        backfill must NOT overwrite a fresher last_inbound_at set by
+        recent live webhooks. Otherwise the 24-hour reply window check
+        thinks the conversation is stale even though a real customer
+        message just arrived.
+
+        Setup:
+          1. Pre-create a thread with last_inbound_at = NOW (simulates a
+             live webhook that fired 30s ago).
+          2. Run backfill against Meta history where the most-recent
+             message in this conversation is from 5 days ago.
+          3. Assert last_inbound_at is still the fresh timestamp.
+        """
+        from apps.integrations import backfill
+
+        fresh = timezone.now()
+        stale = fresh - timezone.timedelta(days=5)
+
+        # Pre-existing thread keyed by the same PSID Meta will return.
+        SocialThread.objects.create(
+            tenant=self.tenant,
+            provider=SocialThread.Provider.INSTAGRAM,
+            connection=self.conn,
+            customer=Customer.objects.create(
+                tenant=self.tenant,
+                first_name='Existing',
+                last_name='Customer',
+                external_source='instagram',
+                external_id='psid-old',
+            ),
+            external_thread_id='psid-old',
+            last_message_at=fresh,
+            last_inbound_at=fresh,
+        )
+
+        urls_to_bodies = {
+            '/17841405822304914/conversations': {
+                'data': [{'id': 'conv-old'}],
+            },
+            '/conv-old': {
+                'messages': {
+                    'data': [
+                        {
+                            'id': 'mid.old.1',
+                            'created_time': stale.strftime('%Y-%m-%dT%H:%M:%S+0000'),
+                            'from': {'id': 'psid-old'},
+                            'to': {'data': [{'id': '17841405822304914'}]},
+                            'message': 'old historical message',
+                        },
+                    ],
+                },
+            },
+        }
+        with _patch_outbound(
+            'apps.integrations.meta.requests.get',
+            side_effect=self._mock_get(urls_to_bodies),
+        ):
+            backfill.backfill_connection(self.conn)
+
+        thread = SocialThread.objects.get(external_thread_id='psid-old')
+        # Fresh timestamp must survive — never rewind backwards.
+        self.assertGreaterEqual(thread.last_inbound_at, fresh)
+        self.assertGreaterEqual(thread.last_message_at, fresh)

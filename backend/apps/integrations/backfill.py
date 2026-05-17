@@ -213,16 +213,29 @@ def _ingest_conversation_messages(
 
         result.messages_created += 1
 
-        # Bump thread aggregates as we go so the most recent message
-        # in the conversation ends up as last_message_at.
-        thread.last_message_at = created_time
+        # Bump thread aggregates — only ADVANCE forward, never rewind.
+        # Why: backfill runs on every reconnect, and historical messages
+        # are older than any live-webhook state we already have. Without
+        # this guard, a reconnect overwrites a fresh `last_inbound_at`
+        # (e.g. from a DM that arrived 2 minutes ago) with a timestamp
+        # from days ago — and the operator suddenly can't reply because
+        # the UI thinks Meta's 24-hour window has closed.
+        update_fields = ['updated_at']
+        if thread.last_message_at is None or created_time > thread.last_message_at:
+            thread.last_message_at = created_time
+            update_fields.append('last_message_at')
         if not is_outbound:
-            thread.last_inbound_at = created_time
-            # Backfilled inbound stays UNREAD so the operator triages.
-            thread.read_at = None
-        thread.save(update_fields=[
-            'last_message_at', 'last_inbound_at', 'read_at', 'updated_at',
-        ])
+            if (
+                thread.last_inbound_at is None
+                or created_time > thread.last_inbound_at
+            ):
+                thread.last_inbound_at = created_time
+                # Only flip back to unread if this is the most recent
+                # inbound. Backfilling 6-month-old history shouldn't
+                # re-flag a thread the operator already triaged.
+                thread.read_at = None
+                update_fields += ['last_inbound_at', 'read_at']
+        thread.save(update_fields=update_fields)
 
 
 def _parse_iso(s: str | None) -> _dt.datetime:

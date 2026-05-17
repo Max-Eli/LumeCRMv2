@@ -1029,11 +1029,19 @@ def _process_messaging_event(
                 },
             )
 
-    # Bump thread aggregates.
-    thread.last_message_at = received_at
-    thread.last_inbound_at = received_at
-    thread.read_at = None  # new inbound resets unread state
-    thread.save(update_fields=['last_message_at', 'last_inbound_at', 'read_at', 'updated_at'])
+    # Bump thread aggregates — only ADVANCE forward. Webhooks can
+    # arrive out-of-order (network re-deliveries, Meta retry), and an
+    # older event mustn't rewind a fresher state set by a later one.
+    # The matching backfill path uses the same guard.
+    update_fields = ['updated_at']
+    if thread.last_message_at is None or received_at > thread.last_message_at:
+        thread.last_message_at = received_at
+        update_fields.append('last_message_at')
+    if thread.last_inbound_at is None or received_at > thread.last_inbound_at:
+        thread.last_inbound_at = received_at
+        thread.read_at = None  # new inbound resets unread state
+        update_fields += ['last_inbound_at', 'read_at']
+    thread.save(update_fields=update_fields)
 
     result.threads_touched += 1
     result.messages_created += 1
