@@ -61,8 +61,8 @@ resource "aws_sns_topic" "ses_events" {
 # destination below assumes the SES service principal).
 data "aws_iam_policy_document" "ses_events_publish" {
   statement {
-    sid    = "AllowSESToPublish"
-    effect = "Allow"
+    sid     = "AllowSESToPublish"
+    effect  = "Allow"
     actions = ["sns:Publish"]
     principals {
       type        = "Service"
