@@ -42,8 +42,13 @@ class Command(BaseCommand):
             help='Target tenant slug (e.g. `demo` or `manhattan-laser-spa`).',
         )
         parser.add_argument(
-            '--file', type=str, required=True,
-            help='Path to the Zenoti guest CSV export.',
+            '--file', type=str, default=None,
+            help='Local path to the Zenoti guest CSV export. Mutually exclusive with --s3-uri.',
+        )
+        parser.add_argument(
+            '--s3-uri', type=str, default=None,
+            help='S3 URI to the CSV (e.g. `s3://lume-prod-media-xxx/imports/zenoti.csv`). '
+                 'Streamed into memory; never touched on local disk. Mutually exclusive with --file.',
         )
         parser.add_argument(
             '--dry-run', action='store_true',
@@ -65,10 +70,16 @@ class Command(BaseCommand):
             f'(id={tenant.pk}) dry_run={opts["dry_run"]}'
         ))
 
-        try:
-            file_obj = open(opts['file'], encoding='utf-8-sig')
-        except OSError as e:
-            raise CommandError(f'Cannot open file: {e}')
+        if bool(opts.get('file')) == bool(opts.get('s3_uri')):
+            raise CommandError('Provide exactly one of --file or --s3-uri.')
+
+        if opts.get('s3_uri'):
+            file_obj = _open_s3_uri(opts['s3_uri'])
+        else:
+            try:
+                file_obj = open(opts['file'], encoding='utf-8-sig')
+            except OSError as e:
+                raise CommandError(f'Cannot open file: {e}')
 
         try:
             report = import_zenoti_guests(
@@ -149,3 +160,26 @@ class Command(BaseCommand):
                     err.line_number, err.raw_first_name, err.raw_last_name,
                     err.raw_code, err.reason,
                 ])
+
+
+def _open_s3_uri(uri: str):
+    """Download an S3 object into an in-memory StringIO and return it.
+
+    The backend container has IAM access to the media bucket via the
+    ECS task role (no creds in env). Stream to memory rather than
+    disk so we don't leave PHI on the container filesystem after
+    the task exits.
+    """
+    import io
+    import boto3
+
+    if not uri.startswith('s3://'):
+        raise CommandError('--s3-uri must start with s3://')
+    rest = uri[len('s3://'):]
+    if '/' not in rest:
+        raise CommandError('--s3-uri must include both bucket and key.')
+    bucket, _, key = rest.partition('/')
+    s3 = boto3.client('s3')
+    body = s3.get_object(Bucket=bucket, Key=key)['Body'].read()
+    # utf-8-sig handles a BOM if Zenoti's export was saved from Excel.
+    return io.StringIO(body.decode('utf-8-sig'))
