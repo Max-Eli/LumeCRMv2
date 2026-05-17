@@ -94,15 +94,28 @@ class Service(TenantedModel):
 
     name = models.CharField(max_length=200)
     code = models.CharField(
-        max_length=20,
+        max_length=50,
         blank=True,
         db_index=True,
         help_text=(
             'Short SKU-style identifier. Auto-generated from the name on first save; '
-            'editable. Unique within the tenant.'
+            'editable. Unique within the tenant. Widened to 50 chars to fit longer '
+            'imported codes (Zenoti emits e.g. `addon-acneandoilcontrotx`).'
         ),
     )
     description = models.TextField(blank=True)
+
+    # Provenance — set when this service was created by an importer
+    # (e.g. Zenoti migration). `external_id` is the upstream system's
+    # unique identifier for the service; the importer uses
+    # `(tenant, external_source, external_id)` for idempotent upsert.
+    # Mirrors the same pattern on Customer.
+    external_id = models.CharField(max_length=100, blank=True, db_index=True)
+    external_source = models.CharField(
+        max_length=50, blank=True,
+        help_text="e.g. 'zenoti', 'vagaro'",
+    )
+    imported_at = models.DateTimeField(null=True, blank=True)
 
     service_type = models.CharField(
         max_length=20,
