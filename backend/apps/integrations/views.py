@@ -493,6 +493,8 @@ class MetaWebhookView(APIView):
         },
     )
     def get(self, request):
+        from django.conf import settings as _s
+
         mode = request.query_params.get('hub.mode', '')
         token = request.query_params.get('hub.verify_token', '')
         challenge = request.query_params.get('hub.challenge', '')
@@ -501,6 +503,23 @@ class MetaWebhookView(APIView):
             mode=mode, token=token, challenge=challenge,
         )
         if accepted is None:
+            # Log the mismatch in detail so we can debug why Meta is
+            # sending an unexpected token. Logging only the first +
+            # last 6 chars of each token avoids surfacing the secret
+            # in plain text in CloudWatch while still letting us
+            # tell visually if they're the same.
+            expected = getattr(_s, 'META_WEBHOOK_VERIFY_TOKEN', '') or ''
+            logger.warning(
+                'integrations.meta.webhook_verify_token_mismatch',
+                extra={
+                    'received_mode': mode,
+                    'received_token_preview': _token_preview(token),
+                    'received_token_length': len(token),
+                    'expected_token_preview': _token_preview(expected),
+                    'expected_token_length': len(expected),
+                    'received_challenge_preview': _token_preview(challenge),
+                },
+            )
             return HttpResponse(status=403)
         return HttpResponse(content=accepted, status=200, content_type='text/plain')
 
@@ -1238,3 +1257,18 @@ def uuid_hex() -> str:
     """Tiny helper for pending-message external_id placeholders."""
     import secrets
     return secrets.token_hex(8)
+
+
+def _token_preview(s: str) -> str:
+    """Return `first6…last6` (with length in middle) for safe logging.
+
+    Used by the webhook-verify-token-mismatch diagnostic so we can
+    eyeball whether two tokens are the same without dumping the
+    secret in plaintext. Tokens we use are ≥40 chars so 6+6 is
+    safely non-recoverable.
+    """
+    if not s:
+        return '(empty)'
+    if len(s) <= 12:
+        return f'(short: {len(s)} chars)'
+    return f'{s[:6]}…{s[-6:]} (len={len(s)})'
