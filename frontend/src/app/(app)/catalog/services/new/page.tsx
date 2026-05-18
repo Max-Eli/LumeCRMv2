@@ -91,7 +91,11 @@ export default function NewServicePage() {
     create.mutate(payload, {
       onSuccess: (created) => {
         toast.success(`${created.name} added to catalog`);
-        router.push(`/services/${created.id}`);
+        // Same stale-route bug as /catalog/categories/new: services
+        // moved under /catalog/* in the Phase 1 IA reorg. Old
+        // /services/<id> path 404s. Service WAS created — the
+        // operator just landed on a missing page.
+        router.push(`/catalog/services/${created.id}`);
       },
       onError: (err) => {
         if (err instanceof ApiError && err.status === 400 && typeof err.body === 'object' && err.body) {
