@@ -17,6 +17,7 @@ import { ArrowRight, CheckCircle2, Loader2 } from 'lucide-react';
 import { useState } from 'react';
 
 import { ApiError } from '@/lib/api';
+import { usePublicBranding } from '@/lib/branding';
 import { useRequestMagicLink } from '@/lib/portal';
 
 import { Button } from '@/components/ui/button';
@@ -27,6 +28,8 @@ export default function PortalLoginPage() {
   const [submitted, setSubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const request = useRequestMagicLink();
+  const branding = usePublicBranding();
+  const tenant = branding.data ?? null;
 
   const onSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -51,18 +54,25 @@ export default function PortalLoginPage() {
       <div className="w-full max-w-md">
         <div className="bg-card border rounded-xl shadow-sm overflow-hidden">
           <div className="px-8 pt-8 pb-4 text-center">
-            {/* Soft branded accent. Layout sets --portal-brand from
-                /me when authed; on the login screen no customer is
-                signed in yet, so the variable resolves to the CSS
-                default and the dot reads as neutral foreground. */}
-            <div
-              className="mx-auto size-12 rounded-full inline-flex items-center justify-center mb-3"
-              style={{ background: 'var(--portal-brand, #1f2937)' }}
-            >
-              <div className="size-4 rounded-full bg-white/80" />
-            </div>
+            {tenant?.logo_url ? (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                src={tenant.logo_url}
+                alt={tenant.name}
+                className="mx-auto h-16 w-auto max-w-[200px] object-contain mb-3"
+              />
+            ) : (
+              // Falls back to the neutral branded accent when a tenant
+              // hasn't uploaded a logo (or no tenant resolves).
+              <div
+                className="mx-auto size-12 rounded-full inline-flex items-center justify-center mb-3"
+                style={{ background: tenant?.primary_color || 'var(--portal-brand, #1f2937)' }}
+              >
+                <div className="size-4 rounded-full bg-white/80" />
+              </div>
+            )}
             <h1 className="font-serif text-2xl font-semibold tracking-tight">
-              Sign in
+              {tenant ? tenant.name : 'Sign in'}
             </h1>
             <p className="text-sm text-muted-foreground mt-1.5">
               We&apos;ll email you a one-time sign-in link.

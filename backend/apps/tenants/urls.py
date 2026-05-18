@@ -5,6 +5,7 @@ from .views import (
     JobTitleViewSet,
     LocationViewSet,
     MembershipViewSet,
+    PublicBrandingView,
     ScheduleView,
     TenantSettingsView,
 )
@@ -19,6 +20,9 @@ urlpatterns = [
     # Belongs outside the router because there's no list/detail-by-pk
     # surface; the caller is always operating on "their" tenant.
     path('tenant/', TenantSettingsView.as_view(), name='tenant-settings'),
+    # Public branding for unauthenticated surfaces (login + portal + booking
+    # landing). Subdomain-resolved — no slug, no auth required.
+    path('public/branding/', PublicBrandingView.as_view(), name='public-branding'),
     # Provider schedule per MembershipLocation. Surface is GET / PUT
     # against the membership-location id, with a canonical empty shape
     # returned when no schedule row exists yet.

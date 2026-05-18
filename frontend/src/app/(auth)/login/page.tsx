@@ -14,6 +14,7 @@ import { Field, FieldError, FieldGroup, FieldLabel } from '@/components/ui/field
 import { Input } from '@/components/ui/input';
 import { ApiError } from '@/lib/api';
 import { useLogin } from '@/lib/auth';
+import { usePublicBranding } from '@/lib/branding';
 
 const schema = z.object({
   email: z.string().email('Enter a valid email'),
@@ -25,6 +26,8 @@ type FormValues = z.infer<typeof schema>;
 export default function LoginPage() {
   const router = useRouter();
   const login = useLogin();
+  const branding = usePublicBranding();
+  const tenant = branding.data ?? null;
 
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
@@ -60,22 +63,44 @@ export default function LoginPage() {
 
   return (
     <div className="space-y-8">
-      <div className="text-center">
-        <Link href="/" className="inline-block" aria-label="Lumè">
-          <Image
-            src="/logosquare.png"
-            alt="Lumè"
-            width={120}
-            height={120}
-            priority
-          />
+      <div className="text-center space-y-3">
+        <Link href="/" className="inline-block" aria-label={tenant?.name ?? 'Lumè'}>
+          {tenant?.logo_url ? (
+            // Tenant-supplied logos can be any aspect ratio (PNG / SVG)
+            // hosted on S3 or any public URL; an unconstrained <img>
+            // with object-contain gives them predictable sizing without
+            // forcing Next/Image's domain allowlist.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={tenant.logo_url}
+              alt={tenant.name}
+              className="mx-auto h-20 w-auto max-w-[220px] object-contain"
+            />
+          ) : (
+            <Image
+              src="/logosquare.png"
+              alt="Lumè"
+              width={120}
+              height={120}
+              priority
+            />
+          )}
         </Link>
+        {tenant ? (
+          <p className="font-serif text-sm tracking-tight text-muted-foreground">
+            {tenant.name}
+          </p>
+        ) : null}
       </div>
 
       <Card className="border-0 shadow-sm">
         <CardHeader className="space-y-1.5">
           <CardTitle className="font-serif text-2xl tracking-tight">Sign in</CardTitle>
-          <CardDescription>Enter your email and password to continue.</CardDescription>
+          <CardDescription>
+            {tenant
+              ? `Sign in to ${tenant.name}.`
+              : 'Enter your email and password to continue.'}
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={form.handleSubmit(onSubmit)} noValidate>

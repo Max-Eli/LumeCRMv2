@@ -1546,3 +1546,36 @@ class InvitationAcceptView(APIView):
             'tenant_slug': membership.tenant.slug,
             'redirect': '/dashboard',
         }, status=status.HTTP_200_OK)
+
+
+# ── Public branding (login / portal / booking landing pages) ───────────
+
+
+class PublicBrandingView(APIView):
+    """`GET /api/public/branding/` — public, subdomain-resolved.
+
+    Returns the minimum tenant identity needed to brand
+    unauthenticated surfaces (login page, customer portal login,
+    booking landing) so they show the spa's name + logo rather than
+    the Lumè default. The tenant is resolved by
+    ``TenantMiddleware`` from the request subdomain — no slug in
+    the URL — so this endpoint is safe to cache at the edge per host.
+
+    Returns 204 (not 404) when no tenant resolves: a bare host like
+    ``lumècrm.com`` is a legitimate marketing-surface request, not
+    an error, and the frontend falls back to its default branding.
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def get(self, request):
+        tenant = getattr(request, 'tenant', None)
+        if tenant is None or tenant.status != Tenant.Status.ACTIVE:
+            return Response(status=status.HTTP_204_NO_CONTENT)
+        return Response({
+            'name': tenant.name,
+            'slug': tenant.slug,
+            'logo_url': tenant.logo_url or None,
+            'primary_color': tenant.primary_color or None,
+        })
