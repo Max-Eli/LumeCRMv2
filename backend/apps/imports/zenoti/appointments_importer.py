@@ -78,7 +78,7 @@ class AppointmentsImportReport:
     rows_failed_mapping: int = 0
     rows_skipped_filtered_status: int = 0  # 'Deleted'
     rows_deduped_across_files: int = 0
-    rows_skipped_no_customer: int = 0
+    rows_skipped_no_customer: int = 0  # dry-run only; live auto-creates instead
     rows_skipped_no_service: int = 0
     rows_skipped_no_provider: int = 0
     rows_skipped_db_error: int = 0
@@ -87,6 +87,7 @@ class AppointmentsImportReport:
     invoices_closed: int = 0
     invoices_voided: int = 0
     schedules_set: int = 0
+    placeholder_customers_created: int = 0  # live only
     header_errors: list[str] = field(default_factory=list)
     mapping_errors: list[AppointmentMapError] = field(default_factory=list)
     db_errors: list[str] = field(default_factory=list)
@@ -111,6 +112,7 @@ class AppointmentsImportReport:
             'invoices_closed': self.invoices_closed,
             'invoices_voided': self.invoices_voided,
             'schedules_set': self.schedules_set,
+            'placeholder_customers_created': self.placeholder_customers_created,
             'header_error_count': len(self.header_errors),
             'mapping_error_count': len(self.mapping_errors),
             'db_error_count': len(self.db_errors),
@@ -212,19 +214,20 @@ def import_zenoti_appointments(
     owner_user = _resolve_owner_actor(tenant=tenant, actor=actor)
     seen_external_ids: set[str] = set()
     write_now = timezone.now()
+    placeholder_count = [0]  # mutable ref for the auto-create helper
 
     for mapped in deduped:
         if mapped.external_id in seen_external_ids:
             continue
         seen_external_ids.add(mapped.external_id)
 
-        customer = _match_customer(tenant=tenant, mapped=mapped, cache=customer_cache)
-        if customer is None:
-            report.rows_skipped_no_customer += 1
-            report.customer_misses.append(
-                f'{mapped.customer_first} {mapped.customer_last} (invoice {mapped.external_invoice_no})'
-            )
-            continue
+        # Per operator instruction: customers not in our catalog get
+        # auto-created as name-only placeholders so the appointment
+        # lands. Returns the matched or freshly-created Customer.
+        customer = _match_or_create_customer(
+            tenant=tenant, mapped=mapped, cache=customer_cache,
+            placeholder_count_ref=placeholder_count,
+        )
         service = _match_service(mapped.service_name, service_catalog)
         if service is None:
             report.rows_skipped_no_service += 1
@@ -327,6 +330,7 @@ def import_zenoti_appointments(
 
     report.service_misses = sorted(set(report.service_misses))
     report.provider_misses = sorted(set(report.provider_misses))
+    report.placeholder_customers_created = placeholder_count[0]
     return report
 
 
@@ -338,7 +342,12 @@ def _match_customer(
     cache: dict[tuple[str, str], Customer | None],
 ) -> Customer | None:
     """Same fallback logic as packages: exact (first, last) first,
-    then last-name-only when unambiguous."""
+    then last-name-only when unambiguous.
+
+    Used by the dry-run pre-flight to count misses without writes.
+    The live pass uses `_match_or_create_customer` which auto-creates
+    a placeholder Customer for misses (per operator instruction).
+    """
     key = (mapped.customer_first.lower(), mapped.customer_last.lower())
     if key in cache:
         return cache[key]
@@ -353,6 +362,74 @@ def _match_customer(
             customer = candidates[0]
     cache[key] = customer
     return customer
+
+
+def _match_or_create_customer(
+    *, tenant: Tenant, mapped: MappedAppointment,
+    cache: dict[tuple[str, str], Customer | None],
+    placeholder_count_ref: list[int],
+) -> Customer:
+    """Find an existing customer or auto-create a placeholder.
+
+    Per operator instruction: appointments for customers we don't
+    have in the catalog (because they weren't in the active-guest
+    export) should land anyway — auto-create a stub Customer with
+    just name. Operator manually cleans up duplicates / fills in
+    contact info later.
+
+    Idempotent via external_id: re-runs find the previously-created
+    placeholder rather than spawning a new one. Uses the
+    `zenoti-appt-placeholder:<name-slug>` prefix so these rows are
+    visibly distinct from the customer-importer-generated rows
+    (`zenoti-code:` or `zenoti-syn:`).
+
+    `placeholder_count_ref` is a single-element list mutated as the
+    counter — Python's lack of `nonlocal` parameter sharing is the
+    only reason it isn't an int.
+    """
+    matched = _match_customer(tenant=tenant, mapped=mapped, cache=cache)
+    if matched is not None:
+        return matched
+
+    import re
+    name_slug = re.sub(
+        r'[^a-z0-9]+', '-',
+        f'{mapped.customer_first} {mapped.customer_last}'.lower(),
+    ).strip('-') or 'unknown'
+    eid = f'zenoti-appt-placeholder:{name_slug}'[:100]
+
+    existing = Customer.objects.filter(
+        tenant=tenant,
+        external_source='zenoti',
+        external_id=eid,
+    ).first()
+    if existing is not None:
+        # Cache the lookup so subsequent rows for the same person
+        # don't hit the DB again.
+        key = (mapped.customer_first.lower(), mapped.customer_last.lower())
+        cache[key] = existing
+        return existing
+
+    placeholder = Customer.objects.create(
+        tenant=tenant,
+        first_name=mapped.customer_first[:100] or 'Unknown',
+        last_name=mapped.customer_last[:100],
+        external_source='zenoti',
+        external_id=eid,
+        acquisition_source=Customer.AcquisitionSource.ZENOTI_IMPORT,
+        imported_at=timezone.now(),
+        notes=(
+            'Auto-created by Zenoti appointment import — original '
+            'guest record was not present in ZenotiActiveGuest.csv '
+            '(likely an inactive / departed client). No contact info '
+            'on file. Operator should review + merge or fill in if '
+            'this person becomes active again.'
+        ),
+    )
+    placeholder_count_ref[0] += 1
+    key = (mapped.customer_first.lower(), mapped.customer_last.lower())
+    cache[key] = placeholder
+    return placeholder
 
 
 def _build_service_catalog(*, tenant: Tenant) -> dict[str, Service]:

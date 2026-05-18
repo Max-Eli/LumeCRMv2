@@ -293,7 +293,7 @@ class AppointmentsImporterEndToEndTests(TestCase):
         )
         self.assertEqual(report.rows_created, 1)
         self.assertEqual(report.invoices_closed, 1)
-        appt = Appointment.objects.get(external_id='zenoti-appt:200')
+        appt = Appointment.objects.get(external_id__startswith='zenoti-appt:200:')
         self.assertEqual(appt.status, 'completed')
         invoice = Invoice.objects.get(appointment=appt)
         self.assertEqual(invoice.status, 'paid')
@@ -311,7 +311,7 @@ class AppointmentsImporterEndToEndTests(TestCase):
             tenant=self.tenant, file_objs=[_csv([row])], dry_run=False,
         )
         self.assertEqual(report.invoices_voided, 1)
-        appt = Appointment.objects.get(external_id='zenoti-appt:201')
+        appt = Appointment.objects.get(external_id__startswith='zenoti-appt:201:')
         self.assertEqual(appt.status, 'cancelled')
         invoice = Invoice.objects.get(appointment=appt)
         self.assertEqual(invoice.status, 'void')
@@ -330,6 +330,39 @@ class AppointmentsImporterEndToEndTests(TestCase):
         self.assertEqual(report.rows_created, 0)
         self.assertEqual(report.rows_skipped_no_provider, 1)
         self.assertIn('Ghost Person', report.provider_misses)
+
+    def test_missing_customer_auto_creates_placeholder(self):
+        """Per operator instruction: customers absent from our catalog
+        get auto-created as name-only placeholders so the appointment
+        lands. Re-run is idempotent — same name → same row."""
+        row = _row_csv(**{
+            'Invoice No': '210', 'Guest Name': 'Ghost Customer',
+            'Service Name': 'Botox', 'Provider': 'Maria Lopez',
+            'Start Time': '1/15/2026 10:00 AM',
+            'End Time': '1/15/2026 10:30 AM',
+            'Status': 'Closed',
+        })
+        report = import_zenoti_appointments(
+            tenant=self.tenant, file_objs=[_csv([row])], dry_run=False,
+        )
+        self.assertEqual(report.rows_created, 1)
+        self.assertEqual(report.placeholder_customers_created, 1)
+        placeholder = Customer.objects.get(
+            tenant=self.tenant, first_name='Ghost', last_name='Customer',
+        )
+        self.assertEqual(placeholder.acquisition_source, 'zenoti_import')
+        self.assertTrue(placeholder.external_id.startswith('zenoti-appt-placeholder:'))
+        # Re-run: existing placeholder reused.
+        report2 = import_zenoti_appointments(
+            tenant=self.tenant, file_objs=[_csv([row])], dry_run=False,
+        )
+        self.assertEqual(report2.placeholder_customers_created, 0)
+        self.assertEqual(
+            Customer.objects.filter(
+                tenant=self.tenant, first_name='Ghost', last_name='Customer',
+            ).count(),
+            1,
+        )
 
     def test_provider_schedule_set_from_appointment_weekday(self):
         # 2026-05-11 (UTC noon) = Monday in NY (5/11 morning ET).
@@ -372,6 +405,6 @@ class AppointmentsImporterEndToEndTests(TestCase):
         self.assertEqual(report2.rows_updated, 1)
         # Still exactly one appointment.
         self.assertEqual(
-            Appointment.objects.filter(external_id='zenoti-appt:204').count(),
+            Appointment.objects.filter(external_id__startswith='zenoti-appt:204:').count(),
             1,
         )

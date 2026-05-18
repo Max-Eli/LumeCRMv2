@@ -233,9 +233,17 @@ def map_row(
         upstream_status=upstream_status, start=start, now=now,
     )
 
+    # Composite idempotency key: Invoice No alone is NOT unique in
+    # Zenoti exports (a single invoice covers N services on a visit,
+    # producing N rows with the same Invoice No). Combine with the
+    # service-name slug + start-time epoch so each line item is its
+    # own Appointment row.
+    eid_suffix = f'{_slug(service_name)}:{int(start.timestamp())}'
+    external_id = f'zenoti-appt:{invoice_no}:{eid_suffix}'[:100]
+
     return (
         MappedAppointment(
-            external_id=f'zenoti-appt:{invoice_no}'[:100],
+            external_id=external_id,
             external_invoice_no=invoice_no[:100],
             customer_first=first[:100],
             customer_last=last[:100],
@@ -354,6 +362,11 @@ def _clean(value: str | None) -> str:
     if not value:
         return ''
     return re.sub(r'\s+', ' ', str(value)).strip()
+
+
+def _slug(value: str) -> str:
+    """Slug used in the composite external_id. Stable + short."""
+    return re.sub(r'[^a-z0-9]+', '-', (value or '').lower()).strip('-')[:60]
 
 
 def _split_guest_name(full: str) -> tuple[str, str]:
