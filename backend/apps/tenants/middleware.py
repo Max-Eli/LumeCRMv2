@@ -42,7 +42,16 @@ from .models import Location, Tenant, TenantMembership
 logger = logging.getLogger(__name__)
 
 
-RESERVED_SUBDOMAINS = {'www', 'admin', 'api', 'localhost', ''}
+RESERVED_SUBDOMAINS = {
+    'www',         # canonical apex marker — never a tenant
+    'admin',       # historical reserved name — never a tenant
+    'api',         # backend API — explicit ALB rule routes this
+    'platform',    # platform-admin portal subdomain (frontend proxy.ts)
+    'localhost',   # local dev
+    'mail',        # SES sending identity (mail.<root>) — never a tenant
+    'bounce',      # SES MAIL FROM bounce subdomain — never a tenant
+    '',            # bare hostname (no subdomain) — never a tenant
+}
 
 # Cookie used to remember which Location the operator picked from the
 # location switcher (Phase 1H multi-location session 3). Same name across
