@@ -69,7 +69,17 @@ export default function CalendarPage() {
   const date = requestedDate && /^\d{4}-\d{2}-\d{2}$/.test(requestedDate)
     ? requestedDate
     : todayInTimezone(tenantTimezone);
-  const providerFilter = searchParams.get('provider') ?? '';
+  // Provider filter is a comma-separated list of provider IDs. Empty
+  // string OR missing param = all providers. Multi-select is the
+  // common operator workflow (e.g. "show me only the two injectors
+  // today"); the previous single-string form is a strict subset.
+  const providerFilterRaw = searchParams.get('provider') ?? '';
+  const providerFilter: number[] = providerFilterRaw
+    ? providerFilterRaw
+        .split(',')
+        .map((s) => Number(s.trim()))
+        .filter((n) => Number.isFinite(n) && n > 0)
+    : [];
   const toolParam = searchParams.get('tool');
   const activeTool: CalendarTool | null =
     toolParam && TOOL_IDS.has(toolParam as CalendarTool)
@@ -94,7 +104,11 @@ export default function CalendarPage() {
   const [displayMode, setDisplayMode] = useState<DisplayMode>('calendar');
   const [pxPerMin, setPxPerMin] = useState<number>(PX_PER_MIN_DEFAULT);
   const [columnWidthPx, setColumnWidthPx] = useState<number>(COLUMN_PX_DEFAULT);
-  const [hideCancelled, setHideCancelled] = useState(false);
+  // Default ON — cancelled + no-show appointments clutter the day
+  // view (especially after a bulk migration import); operators that
+  // want them visible can flip the toggle off and the choice
+  // persists in localStorage.
+  const [hideCancelled, setHideCancelled] = useState(true);
 
   // Restore preferences on mount. Numeric prefs are clamped to the slider
   // bounds so a stale or hand-edited value can't render the calendar broken.
@@ -108,8 +122,10 @@ export default function CalendarPage() {
     if (Number.isFinite(storedColumnPx) && storedColumnPx > 0) {
       setColumnWidthPx(clamp(storedColumnPx, COLUMN_PX_MIN, COLUMN_PX_MAX));
     }
+    // Default is true; only flip to false when the operator
+    // explicitly stored '0' (chose to show cancelled).
     const storedHide = window.localStorage.getItem(HIDE_CANCELLED_KEY);
-    if (storedHide === '1') setHideCancelled(true);
+    if (storedHide === '0') setHideCancelled(false);
   }, []);
 
   // ── Data ────────────────────────────────────────────────────────────────
@@ -129,14 +145,16 @@ export default function CalendarPage() {
 
   const filteredProviders = useMemo(() => {
     const all = providers ?? [];
-    if (!providerFilter) return all;
-    return all.filter((p) => String(p.id) === providerFilter);
+    if (providerFilter.length === 0) return all;
+    const allowed = new Set(providerFilter);
+    return all.filter((p) => allowed.has(p.id));
   }, [providers, providerFilter]);
 
   const filteredAppointments = useMemo(() => {
     let list = appointments ?? [];
-    if (providerFilter) {
-      list = list.filter((a) => String(a.provider.id) === providerFilter);
+    if (providerFilter.length > 0) {
+      const allowed = new Set(providerFilter);
+      list = list.filter((a) => allowed.has(a.provider.id));
     }
     if (hideCancelled) {
       list = list.filter((a) => a.status !== 'cancelled' && a.status !== 'no_show');
@@ -159,7 +177,7 @@ export default function CalendarPage() {
 
   const setDate = useCallback((next: string) => updateParam('date', next), [updateParam]);
   const setProviderFilter = useCallback(
-    (next: string) => updateParam('provider', next || null),
+    (next: number[]) => updateParam('provider', next.length === 0 ? null : next.join(',')),
     [updateParam],
   );
   const toggleTool = useCallback(

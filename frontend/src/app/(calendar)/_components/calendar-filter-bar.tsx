@@ -12,17 +12,16 @@
 
 'use client';
 
-import { CalendarDays, ChevronLeft, ChevronRight, EyeOff, List } from 'lucide-react';
+import { CalendarDays, ChevronLeft, ChevronRight, ChevronDown, EyeOff, List, Users } from 'lucide-react';
 
 import { Button } from '@/components/ui/button';
+import { Checkbox } from '@/components/ui/checkbox';
 import { DatePicker } from '@/components/ui/date-picker';
 import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 import { type Membership, membershipName } from '@/lib/memberships';
 import { cn } from '@/lib/utils';
 
@@ -37,8 +36,8 @@ export interface CalendarFilterBarProps {
   displayMode: DisplayMode;
   onChangeDisplayMode: (next: DisplayMode) => void;
   providers: Membership[];
-  providerFilter: string; // '' = all, or numeric id as string
-  onChangeProviderFilter: (next: string) => void;
+  providerFilter: number[]; // [] = all; otherwise the allowed provider IDs
+  onChangeProviderFilter: (next: number[]) => void;
   hideCancelled: boolean;
   onChangeHideCancelled: (next: boolean) => void;
 }
@@ -112,24 +111,11 @@ export function CalendarFilterBar({
         {/* Filters + display mode + view */}
         <div className="flex items-center gap-2">
           <div className="hidden md:flex items-center">
-            <Select
-              value={providerFilter || 'all'}
-              onValueChange={(v) =>
-                onChangeProviderFilter(!v || v === 'all' ? '' : v)
-              }
-            >
-              <SelectTrigger size="sm" className="w-[170px]">
-                <SelectValue placeholder="All providers" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All providers</SelectItem>
-                {providers.map((p) => (
-                  <SelectItem key={p.id} value={String(p.id)}>
-                    {membershipName(p)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            <ProviderMultiSelect
+              providers={providers}
+              providerFilter={providerFilter}
+              onChange={onChangeProviderFilter}
+            />
           </div>
 
           <button
@@ -236,6 +222,106 @@ function ViewToggle({
         );
       })}
     </div>
+  );
+}
+
+// ── Provider multi-select ────────────────────────────────────────────────
+
+/**
+ * Popover with a checkbox per provider. Empty selection = "All providers"
+ * (no filtering). Trigger button label shows the active state:
+ *   - 0 selected → "All providers"
+ *   - 1 selected → that provider's name
+ *   - 2+ selected → "N providers"
+ *
+ * Keeps URL state as a comma-separated list of provider IDs.
+ */
+function ProviderMultiSelect({
+  providers,
+  providerFilter,
+  onChange,
+}: {
+  providers: Membership[];
+  providerFilter: number[];
+  onChange: (next: number[]) => void;
+}) {
+  const selected = new Set(providerFilter);
+  const label = (() => {
+    if (selected.size === 0) return 'All providers';
+    if (selected.size === 1) {
+      const only = providers.find((p) => p.id === [...selected][0]);
+      return only ? membershipName(only) : '1 provider';
+    }
+    return `${selected.size} providers`;
+  })();
+
+  const toggle = (id: number) => {
+    const next = new Set(selected);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange([...next].sort((a, b) => a - b));
+  };
+
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={(props) => (
+          <button
+            {...props}
+            type="button"
+            className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md border border-border bg-card text-xs uppercase tracking-wide text-muted-foreground hover:bg-muted hover:text-foreground transition-colors min-w-[170px] justify-between"
+          >
+            <span className="inline-flex items-center gap-1.5 normal-case tracking-normal text-sm">
+              <Users className="size-3.5" />
+              {label}
+            </span>
+            <ChevronDown className="size-3.5" />
+          </button>
+        )}
+      />
+      <PopoverContent align="start" className="w-64 p-1.5">
+        <button
+          type="button"
+          onClick={() => onChange([])}
+          className={cn(
+            'w-full flex items-center justify-between gap-2 px-2 py-1.5 rounded text-sm hover:bg-muted',
+            selected.size === 0 && 'text-foreground font-medium',
+            selected.size > 0 && 'text-muted-foreground',
+          )}
+        >
+          <span>All providers</span>
+          {selected.size > 0 ? (
+            <span className="text-xs uppercase tracking-wide">Clear</span>
+          ) : null}
+        </button>
+        <div className="my-1 border-t border-border" />
+        <div className="max-h-64 overflow-y-auto">
+          {providers.length === 0 ? (
+            <p className="px-2 py-2 text-xs text-muted-foreground">
+              No bookable providers.
+            </p>
+          ) : (
+            providers.map((p) => {
+              const checked = selected.has(p.id);
+              return (
+                <label
+                  key={p.id}
+                  className="flex items-center gap-2 px-2 py-1.5 rounded hover:bg-muted cursor-pointer"
+                >
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={() => toggle(p.id)}
+                  />
+                  <span className="text-sm flex-1 truncate">
+                    {membershipName(p)}
+                  </span>
+                </label>
+              );
+            })
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }
 
