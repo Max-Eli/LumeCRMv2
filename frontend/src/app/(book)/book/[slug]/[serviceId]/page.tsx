@@ -172,34 +172,36 @@ function PickerBody({
         Back to services
       </Link>
 
-      <div className="mb-8">
-        <p className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">
+      <div className="mb-10 rounded-2xl border border-stone-200 bg-white p-5 sm:p-6 shadow-sm">
+        <p className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-semibold mb-2.5">
           Service
         </p>
-        <h1 className="font-serif text-3xl font-semibold tracking-tight text-stone-900">
+        <h1 className="font-serif text-2xl sm:text-3xl font-semibold tracking-tight text-stone-900 leading-tight">
           {serviceName}
         </h1>
-        <p className="text-sm text-stone-600 mt-1.5">
-          {formatDuration(serviceDuration)}
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-stone-600 mt-3">
+          <span className="font-medium text-stone-700">{formatDuration(serviceDuration)}</span>
           {servicePriceCents > 0 ? (
             <>
-              <span className="mx-1.5">·</span>
-              {formatPriceCents(servicePriceCents)}
+              <span className="text-stone-300">·</span>
+              <span className="font-semibold" style={{ color: primaryColor }}>
+                {formatPriceCents(servicePriceCents)}
+              </span>
             </>
           ) : null}
           {activeLocation ? (
             <>
-              <span className="mx-1.5">·</span>
-              {activeLocation.name}
+              <span className="text-stone-300">·</span>
+              <span>{activeLocation.name}</span>
             </>
           ) : null}
-        </p>
+        </div>
       </div>
 
       {/* Provider picker */}
-      <section className="mb-8">
-        <h2 className="text-sm font-semibold text-stone-900 mb-2">
-          Provider
+      <section className="mb-10">
+        <h2 className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-semibold mb-3">
+          Choose your provider
         </h2>
         <div className="flex flex-wrap gap-2">
           <ProviderPill
@@ -221,8 +223,10 @@ function PickerBody({
       </section>
 
       {/* Date picker — month-view calendar */}
-      <section className="mb-8">
-        <h2 className="text-sm font-semibold text-stone-900 mb-2">Date</h2>
+      <section className="mb-10">
+        <h2 className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-semibold mb-3">
+          Pick a date
+        </h2>
         <BookingCalendar
           value={activeDate}
           onChange={setActiveDate}
@@ -230,14 +234,14 @@ function PickerBody({
           maxDate={maxDateIso}
           primaryColor={primaryColor}
         />
-        <p className="text-xs text-stone-500 mt-2">
-          Selected: {formatPickedDate(activeDate)}
+        <p className="text-xs text-stone-500 mt-3">
+          Selected: <span className="font-medium text-stone-700">{formatPickedDate(activeDate)}</span>
         </p>
       </section>
 
       {/* Slots */}
       <section>
-        <h2 className="text-sm font-semibold text-stone-900 mb-3">
+        <h2 className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-semibold mb-3">
           Available times
         </h2>
         {slotsQ.isLoading ? (
@@ -264,7 +268,7 @@ function PickerBody({
           </>
         ) : (
           <>
-            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2">
+            <div className="grid grid-cols-3 sm:grid-cols-4 gap-2 sm:gap-2.5">
               {(slotsQ.data ?? []).map((slot) => {
                 const label = activeLocation
                   ? formatSlotTime(slot.start, activeLocation.timezone)
@@ -276,7 +280,7 @@ function PickerBody({
                       type="button"
                       disabled
                       title="This time is already booked"
-                      className="rounded-md border border-stone-200 bg-stone-50 px-3 py-2.5 text-sm font-medium text-stone-400 line-through cursor-not-allowed"
+                      className="rounded-lg border border-stone-200 bg-stone-50/60 px-3 py-3 text-sm font-medium text-stone-400 line-through cursor-not-allowed"
                     >
                       {label}
                     </button>
@@ -287,7 +291,7 @@ function PickerBody({
                     key={`${slot.start}-${slot.provider_id ?? 'p'}`}
                     type="button"
                     onClick={() => handlePickSlot(slot)}
-                    className="rounded-md border border-stone-300 bg-white px-3 py-2.5 text-sm font-medium text-stone-800 hover:border-stone-900 hover:bg-stone-900 hover:text-white transition-colors"
+                    className="rounded-lg border border-stone-300 bg-white px-3 py-3 text-sm font-semibold text-stone-800 hover:border-stone-900 hover:bg-stone-900 hover:text-white hover:shadow-sm transition-all"
                     style={{ ['--brand' as string]: primaryColor }}
                   >
                     {label}
@@ -337,18 +341,18 @@ function ProviderPill({
       type="button"
       onClick={onClick}
       className={cn(
-        'rounded-lg border px-3.5 py-2 text-left transition-colors',
+        'rounded-xl border px-4 py-2.5 text-left transition-all',
         active
-          ? 'border-stone-900 bg-stone-900 text-white'
-          : 'border-stone-300 bg-white text-stone-800 hover:border-stone-400',
+          ? 'border-stone-900 bg-stone-900 text-white shadow-sm'
+          : 'border-stone-300 bg-white text-stone-800 hover:border-stone-900 hover:bg-stone-50',
       )}
     >
-      <div className="text-sm font-medium leading-tight">{label}</div>
+      <div className="text-sm font-semibold leading-tight">{label}</div>
       {sublabel ? (
         <div
           className={cn(
             'text-[11px] mt-0.5',
-            active ? 'text-white/70' : 'text-stone-500',
+            active ? 'text-white/75' : 'text-stone-500',
           )}
         >
           {sublabel}

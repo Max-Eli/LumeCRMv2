@@ -29,12 +29,12 @@ export function BrandHeader({
 }) {
   const initial = tenantName.trim().charAt(0).toUpperCase() || 'L';
   return (
-    <header className="border-b border-stone-200 bg-white">
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-4 flex items-center gap-3">
+    <header className="sticky top-0 z-10 border-b border-stone-200/80 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/70">
+      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3.5 flex items-center gap-3">
         {bookingHref ? (
           <Link href={bookingHref} className="flex items-center gap-3 group">
             <BrandMark logoUrl={logoUrl} initial={initial} primaryColor={primaryColor} />
-            <span className="font-serif text-lg font-semibold tracking-tight text-stone-900 group-hover:opacity-80 transition-opacity">
+            <span className="font-serif text-lg font-semibold tracking-tight text-stone-900 group-hover:opacity-70 transition-opacity">
               {tenantName}
             </span>
           </Link>
@@ -66,13 +66,13 @@ function BrandMark({
       <img
         src={logoUrl}
         alt=""
-        className="size-8 rounded-md object-contain"
+        className="h-9 w-9 rounded-md object-contain"
       />
     );
   }
   return (
     <div
-      className="size-8 rounded-md flex items-center justify-center text-white font-semibold text-sm"
+      className="size-9 rounded-md flex items-center justify-center text-white font-serif font-semibold text-base shadow-sm"
       style={{ background: primaryColor }}
     >
       {initial}

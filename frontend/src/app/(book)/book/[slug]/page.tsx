@@ -143,16 +143,16 @@ function CatalogBody({
       <SectionHeader
         eyebrow="Book online"
         title="What can we help you with today?"
-        subtitle="Pick a service to see availability."
+        subtitle="Browse our menu and pick a service to see live availability."
       />
 
       {welcomeMessage ? (
         <div
-          className="rounded-lg px-5 py-4 mb-8 text-sm leading-relaxed"
+          className="rounded-2xl px-6 py-5 mb-10 text-[15px] leading-relaxed shadow-sm"
           style={{
-            background: `${primaryColor}0d`,
+            background: `${primaryColor}0a`,
             color: '#1c1917',
-            borderLeft: `3px solid ${primaryColor}`,
+            border: `1px solid ${primaryColor}22`,
           }}
         >
           {welcomeMessage.split('\n').map((line, i) => (
@@ -164,8 +164,8 @@ function CatalogBody({
       ) : null}
 
       {locations.length > 1 ? (
-        <div className="mb-8">
-          <p className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">
+        <div className="mb-10">
+          <p className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2.5">
             Location
           </p>
           <div className="flex flex-wrap gap-2">
@@ -175,10 +175,10 @@ function CatalogBody({
                 type="button"
                 onClick={() => handlePickLocation(loc.id)}
                 className={cn(
-                  'rounded-full border px-3.5 py-1.5 text-sm transition-colors',
+                  'rounded-full border px-4 py-2 text-sm font-medium transition-all',
                   activeLocation?.id === loc.id
-                    ? 'border-stone-900 bg-stone-900 text-white'
-                    : 'border-stone-300 bg-white text-stone-700 hover:border-stone-400',
+                    ? 'border-stone-900 bg-stone-900 text-white shadow-sm'
+                    : 'border-stone-300 bg-white text-stone-700 hover:border-stone-900 hover:bg-stone-50',
                 )}
               >
                 {loc.name}
@@ -188,43 +188,61 @@ function CatalogBody({
         </div>
       ) : null}
 
-      <div className="space-y-8">
+      <div className="space-y-10">
         {grouped.map(({ categoryName, items }) => (
           <section key={categoryName}>
-            <h2 className="font-serif text-lg font-semibold tracking-tight text-stone-900 mb-3">
-              {categoryName}
-            </h2>
-            <ul className="divide-y divide-stone-200 rounded-lg border border-stone-200 bg-white overflow-hidden">
+            <div className="flex items-baseline gap-3 mb-4">
+              <h2 className="font-serif text-xl font-semibold tracking-tight text-stone-900">
+                {categoryName}
+              </h2>
+              <span
+                className="h-px flex-1"
+                style={{ background: `${primaryColor}33` }}
+              />
+              <span className="text-xs text-stone-500 font-medium">
+                {items.length} service{items.length === 1 ? '' : 's'}
+              </span>
+            </div>
+            <ul className="grid grid-cols-1 gap-3">
               {items.map((service) => (
                 <li key={service.id}>
                   <button
                     type="button"
                     onClick={() => handlePickService(service.id)}
-                    className="w-full text-left px-5 py-4 flex items-center gap-4 hover:bg-stone-50 transition-colors group"
+                    className="w-full text-left rounded-xl border border-stone-200 bg-white px-5 py-5 sm:px-6 sm:py-5 flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6 transition-all hover:border-stone-900 hover:shadow-md hover:-translate-y-0.5 group"
                   >
                     <div className="flex-1 min-w-0">
-                      <div className="font-medium text-stone-900">
+                      <div className="font-medium text-stone-900 text-[15px] sm:text-base group-hover:opacity-90">
                         {service.name}
                       </div>
                       {service.description ? (
-                        <div className="text-sm text-stone-600 mt-1 line-clamp-2">
+                        <div className="text-sm text-stone-600 mt-1.5 leading-relaxed line-clamp-2">
                           {service.description}
                         </div>
                       ) : null}
-                      <div className="text-xs text-stone-500 mt-2">
-                        {formatDuration(service.duration_minutes)}
+                      <div className="flex items-center gap-1.5 text-[13px] text-stone-500 mt-2.5">
+                        <span className="font-medium text-stone-700">
+                          {formatDuration(service.duration_minutes)}
+                        </span>
                         {service.price_cents > 0 ? (
                           <>
-                            <span className="mx-1.5">·</span>
-                            {formatPriceCents(service.price_cents)}
+                            <span className="text-stone-300">·</span>
+                            <span
+                              className="inline-flex items-center font-semibold"
+                              style={{ color: primaryColor }}
+                            >
+                              {formatPriceCents(service.price_cents)}
+                            </span>
                           </>
                         ) : null}
                       </div>
                     </div>
-                    <ChevronRight
-                      className="size-5 text-stone-400 group-hover:text-stone-600 transition-colors shrink-0"
-                      style={{ color: undefined }}
-                    />
+                    <div
+                      className="inline-flex items-center gap-1 rounded-full border border-stone-200 px-3.5 py-1.5 text-xs font-semibold text-stone-700 self-start sm:self-center group-hover:border-stone-900 group-hover:text-white group-hover:bg-stone-900 transition-colors shrink-0"
+                    >
+                      Book
+                      <ChevronRight className="size-3.5" />
+                    </div>
                   </button>
                 </li>
               ))}
@@ -233,10 +251,26 @@ function CatalogBody({
         ))}
       </div>
 
-      <p className="text-xs text-stone-500 mt-12 text-center">
-        Powered by Lumè · {/* tenant name anchor */}
-        <span style={{ color: primaryColor }}>book with confidence</span>
-      </p>
+      <footer className="mt-16 pt-6 border-t border-stone-200 flex flex-col sm:flex-row items-center justify-between gap-3">
+        <p className="text-xs text-stone-500 inline-flex items-center gap-1.5">
+          <span
+            className="inline-block size-1.5 rounded-full"
+            style={{ background: primaryColor }}
+          />
+          Secure booking · Cancel free up to 24 hours before
+        </p>
+        <p className="text-xs text-stone-400">
+          Powered by{' '}
+          <a
+            href="https://www.lumecrm.com"
+            target="_blank"
+            rel="noreferrer"
+            className="font-medium text-stone-600 hover:text-stone-900 transition-colors"
+          >
+            Lumè
+          </a>
+        </p>
+      </footer>
     </BookingContainer>
   );
 }
@@ -251,17 +285,17 @@ function SectionHeader({
   subtitle?: string;
 }) {
   return (
-    <div className="mb-8">
+    <div className="mb-10">
       {eyebrow ? (
-        <p className="text-[11px] uppercase tracking-wider text-stone-500 font-medium mb-2">
+        <p className="text-[11px] uppercase tracking-[0.18em] text-stone-500 font-semibold mb-3">
           {eyebrow}
         </p>
       ) : null}
-      <h1 className="font-serif text-3xl sm:text-4xl font-semibold tracking-tight text-stone-900">
+      <h1 className="font-serif text-3xl sm:text-[2.5rem] font-semibold tracking-tight text-stone-900 leading-[1.1]">
         {title}
       </h1>
       {subtitle ? (
-        <p className="text-stone-600 mt-2 leading-relaxed">{subtitle}</p>
+        <p className="text-stone-600 mt-3 leading-relaxed max-w-prose">{subtitle}</p>
       ) : null}
     </div>
   );
