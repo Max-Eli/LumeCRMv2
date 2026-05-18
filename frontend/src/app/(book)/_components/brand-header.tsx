@@ -45,8 +45,8 @@ export function BrandHeader({
     </>
   );
   return (
-    <header className="sticky top-0 z-10 border-b border-stone-200/80 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/70">
-      <div className="max-w-3xl mx-auto px-4 sm:px-6 py-3 flex items-center gap-3">
+    <header className="sticky top-0 z-10 border-b border-stone-200/70 bg-white/85 backdrop-blur-md supports-[backdrop-filter]:bg-white/70">
+      <div className="max-w-4xl mx-auto px-4 sm:px-6 h-20 sm:h-[88px] flex items-center gap-3">
         {bookingHref ? (
           <Link href={bookingHref} className="flex items-center gap-3 group hover:opacity-70 transition-opacity">
             {inner}
