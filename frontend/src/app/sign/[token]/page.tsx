@@ -260,6 +260,18 @@ function FieldRenderer({
   value: unknown;
   onChange: (v: unknown) => void;
 }) {
+  if (field.type === 'paragraph') {
+    return (
+      <section className="rounded-md border bg-muted/30 px-4 py-3.5">
+        <h3 className="font-serif text-sm font-semibold tracking-tight text-foreground">
+          {field.label}
+        </h3>
+        <p className="text-[13px] text-foreground/85 mt-2 leading-relaxed whitespace-pre-line">
+          {field.body}
+        </p>
+      </section>
+    );
+  }
   return (
     <Field>
       <FieldLabel>
@@ -372,10 +384,10 @@ function FieldControl({
       );
     }
     case 'signature':
-      // Signature is rendered separately by the parent (FillView pulls
-      // the signature field out and renders the canvas at the bottom).
-      // This branch shouldn't actually fire; satisfies the exhaustive
-      // switch.
+    case 'paragraph':
+      // Signature renders via SignatureCanvas in the parent; paragraph
+      // short-circuits in FieldRenderer. Both branches exist only to
+      // satisfy the exhaustive switch.
       return null;
   }
 }
@@ -407,32 +419,41 @@ function SignedView({ submission }: { submission: PublicFormSubmission }) {
         </header>
 
         <dl className="space-y-5">
-          {fields.map((field) => (
-            <div key={field.id}>
-              <dt className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-                {field.label}
-              </dt>
-              <dd className="mt-1 text-sm">
-                {field.type === 'signature' ? (
-                  submission.answers && typeof submission.answers === 'object' ? (
-                    // The signature itself isn't in `answers`; it's in
-                    // `signature_data` which the public endpoint
-                    // doesn't return for signed forms (operator-side
-                    // detail endpoint serves the actual PNG). For the
-                    // public read-back we just confirm "Signed".
-                    <span className="text-muted-foreground italic">
-                      Signature on file.
-                    </span>
-                  ) : null
-                ) : (
-                  <DisplayedAnswer
-                    field={field}
-                    value={submission.answers[field.id]}
-                  />
-                )}
-              </dd>
-            </div>
-          ))}
+          {fields.map((field) => {
+            if (field.type === 'paragraph') {
+              return (
+                <section key={field.id} className="rounded-md border bg-muted/30 px-4 py-3.5">
+                  <h3 className="font-serif text-sm font-semibold tracking-tight text-foreground">
+                    {field.label}
+                  </h3>
+                  <p className="text-[13px] text-foreground/85 mt-2 leading-relaxed whitespace-pre-line">
+                    {field.body}
+                  </p>
+                </section>
+              );
+            }
+            return (
+              <div key={field.id}>
+                <dt className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                  {field.label}
+                </dt>
+                <dd className="mt-1 text-sm">
+                  {field.type === 'signature' ? (
+                    submission.answers && typeof submission.answers === 'object' ? (
+                      <span className="text-muted-foreground italic">
+                        Signature on file.
+                      </span>
+                    ) : null
+                  ) : (
+                    <DisplayedAnswer
+                      field={field}
+                      value={submission.answers[field.id]}
+                    />
+                  )}
+                </dd>
+              </div>
+            );
+          })}
         </dl>
 
         <p className="text-[11px] text-muted-foreground/80 mt-8 leading-relaxed">

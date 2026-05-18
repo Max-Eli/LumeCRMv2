@@ -203,6 +203,34 @@ class FormTemplateViewSet(viewsets.ModelViewSet):
         )
         return Response(self.get_serializer(instance).data)
 
+    # ── Starter library (clone-from templates) ──────────────────────
+
+    @action(detail=False, methods=['get'], url_path='starters')
+    def starters(self, request, *args, **kwargs):  # noqa: ARG002
+        """List the pre-built starter form templates.
+
+        Returns just the catalog metadata for the picker UI. The full
+        starter (including the fields schema) is fetched via the
+        per-slug endpoint below — keeps the catalog payload small.
+        """
+        from .starter_templates import STARTER_CATEGORIES, list_starter_forms
+        return Response({
+            'categories': list(STARTER_CATEGORIES),
+            'starters': list_starter_forms(),
+        })
+
+    @action(detail=False, methods=['get'], url_path=r'starters/(?P<slug>[a-z0-9-]+)')
+    def starter_detail(self, request, slug=None, *args, **kwargs):  # noqa: ARG002
+        """Return the full starter payload (including schema fields)
+        for a given slug. The frontend uses this to seed the form
+        builder when the operator picks 'Use this template'."""
+        from rest_framework.exceptions import NotFound
+        from .starter_templates import starter_form_by_slug
+        starter = starter_form_by_slug(slug or '')
+        if starter is None:
+            raise NotFound(f'No starter form with slug {slug!r}.')
+        return Response(starter)
+
 
 def _replace_service_assignments(template: FormTemplate, services) -> None:
     """Reconcile `ServiceFormAssignment` rows for a template to match

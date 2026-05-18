@@ -49,6 +49,7 @@ export const FIELD_TYPES = [
   'choice_multiple',
   'date',
   'signature',
+  'paragraph',
 ] as const;
 
 export type FieldType = (typeof FIELD_TYPES)[number];
@@ -60,6 +61,7 @@ export const FIELD_TYPE_LABELS: Record<FieldType, string> = {
   choice_multiple: 'Multiple choice',
   date: 'Date',
   signature: 'Signature',
+  paragraph: 'Paragraph (display-only)',
 };
 
 /** A single option in a choice field. `value` is the stored answer
@@ -70,14 +72,20 @@ export interface FieldOption {
 }
 
 /** Discriminated union for fields. Optional props are typed on each
- *  variant so the builder can render the right config UI per type. */
+ *  variant so the builder can render the right config UI per type.
+ *
+ *  `paragraph` is the only display-only variant — it's how consent
+ *  forms render their legal/clinical body. `label` doubles as the
+ *  heading; `body` is the prose block. No `required` (the patient
+ *  doesn't fill anything in). */
 export type FormField =
   | { id: string; type: 'short_text'; label: string; required: boolean; help_text?: string; placeholder?: string }
   | { id: string; type: 'long_text'; label: string; required: boolean; help_text?: string; placeholder?: string }
   | { id: string; type: 'choice_single'; label: string; required: boolean; help_text?: string; options: FieldOption[] }
   | { id: string; type: 'choice_multiple'; label: string; required: boolean; help_text?: string; options: FieldOption[] }
   | { id: string; type: 'date'; label: string; required: boolean; help_text?: string }
-  | { id: string; type: 'signature'; label: string; required: boolean; help_text?: string };
+  | { id: string; type: 'signature'; label: string; required: boolean; help_text?: string }
+  | { id: string; type: 'paragraph'; label: string; required?: false; body: string };
 
 export interface FormSchema {
   fields: FormField[];
@@ -220,5 +228,52 @@ export function defaultField(type: FieldType, existing: FormField[]): FormField 
         label: 'I have read and consent to this treatment.',
         required: true,
       };
+    case 'paragraph':
+      return {
+        id, type: 'paragraph',
+        label: 'Section heading',
+        body: 'Paragraph text the patient should read before signing.',
+      };
   }
+}
+
+
+// ── Starter library ────────────────────────────────────────────────
+
+export interface StarterFormMeta {
+  slug: string;
+  name: string;
+  description: string;
+  category: string;
+  form_type: FormType;
+  recurrence: Recurrence;
+  field_count: number;
+}
+
+export interface StarterFormDetail extends StarterFormMeta {
+  fields: FormField[];
+}
+
+export interface StarterFormCatalog {
+  categories: string[];
+  starters: StarterFormMeta[];
+}
+
+export function useStarterForms() {
+  return useQuery<StarterFormCatalog>({
+    queryKey: [...FORM_TEMPLATES_KEY, 'starters'],
+    queryFn: () => api.get<StarterFormCatalog>('/api/form-templates/starters/'),
+    staleTime: 5 * 60 * 1000,
+  });
+}
+
+/**
+ * Fetch a single starter's full payload (incl. fields). Returns
+ * the imperative fetcher; call when the operator clicks
+ * "Use this template" on a starter card.
+ */
+export async function fetchStarterForm(slug: string): Promise<StarterFormDetail> {
+  return api.get<StarterFormDetail>(
+    `/api/form-templates/starters/${encodeURIComponent(slug)}/`,
+  );
 }

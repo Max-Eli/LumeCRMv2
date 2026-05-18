@@ -26,6 +26,7 @@ import {
   ArrowUp,
   ClipboardCheck,
   ClipboardList,
+  Eye,
   GripVertical,
   Plus,
   Trash2,
@@ -33,6 +34,14 @@ import {
 import { useEffect, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogBody,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import {
@@ -134,6 +143,7 @@ export function FormTemplateBuilder({
   // ── Validation ────────────────────────────────────────────────────
   const errors = validate(values);
   const canSave = errors.length === 0 && values.name.trim().length > 0;
+  const [previewOpen, setPreviewOpen] = useState(false);
 
   const setField = <K extends keyof FormTemplateBuilderValues>(
     key: K,
@@ -311,6 +321,15 @@ export function FormTemplateBuilder({
           <Button
             type="button"
             variant="outline"
+            disabled={isSubmitting || values.schema.fields.length === 0}
+            onClick={() => setPreviewOpen(true)}
+          >
+            <Eye className="size-3.5" />
+            Preview
+          </Button>
+          <Button
+            type="button"
+            variant="outline"
             disabled={isSubmitting}
             onClick={onCancel}
           >
@@ -321,8 +340,158 @@ export function FormTemplateBuilder({
           </Button>
         </div>
       </div>
+
+      <FormPreviewDialog
+        open={previewOpen}
+        onOpenChange={setPreviewOpen}
+        values={values}
+      />
     </form>
   );
+}
+
+// ── Preview dialog ──────────────────────────────────────────────────
+
+function FormPreviewDialog({
+  open,
+  onOpenChange,
+  values,
+}: {
+  open: boolean;
+  onOpenChange: (v: boolean) => void;
+  values: FormTemplateBuilderValues;
+}) {
+  const fields = values.schema.fields;
+  const nonSignatureFields = fields.filter((f) => f.type !== 'signature');
+  const signatureField = fields.find((f) => f.type === 'signature');
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Client preview</DialogTitle>
+          <p className="text-xs text-muted-foreground mt-1">
+            This is what the client will see when they open the signing link.
+            Fields are read-only here.
+          </p>
+        </DialogHeader>
+        <DialogBody className="max-h-[70vh] overflow-y-auto">
+          <div className="rounded-md border bg-background p-5 sm:p-6 space-y-5">
+            <header>
+              <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+                Form
+              </p>
+              <h2 className="font-serif text-xl sm:text-2xl font-semibold tracking-tight mt-1">
+                {values.name || 'Untitled form'}
+              </h2>
+            </header>
+            {nonSignatureFields.length === 0 ? (
+              <p className="text-sm text-muted-foreground italic">
+                No fields yet — add fields in the builder to preview them here.
+              </p>
+            ) : (
+              nonSignatureFields.map((field) => (
+                <PreviewField key={field.id} field={field} />
+              ))
+            )}
+            {signatureField ? (
+              <div className="space-y-1.5">
+                <p className="text-sm font-medium">
+                  {signatureField.label}
+                  {signatureField.required ? (
+                    <span className="text-destructive ml-1">*</span>
+                  ) : null}
+                </p>
+                <div className="rounded-md border border-dashed bg-muted/30 h-28 flex items-center justify-center text-xs text-muted-foreground italic">
+                  Signature pad
+                </div>
+              </div>
+            ) : null}
+          </div>
+        </DialogBody>
+        <DialogFooter>
+          <Button type="button" variant="outline" onClick={() => onOpenChange(false)}>
+            Close preview
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function PreviewField({ field }: { field: FormField }) {
+  if (field.type === 'paragraph') {
+    return (
+      <section className="rounded-md border bg-muted/30 px-4 py-3.5">
+        <h3 className="font-serif text-sm font-semibold tracking-tight">
+          {field.label}
+        </h3>
+        <p className="text-[13px] text-foreground/85 mt-2 leading-relaxed whitespace-pre-line">
+          {field.body}
+        </p>
+      </section>
+    );
+  }
+  return (
+    <div className="space-y-1.5">
+      <p className="text-sm font-medium">
+        {field.label}
+        {field.required ? <span className="text-destructive ml-1">*</span> : null}
+      </p>
+      {'help_text' in field && field.help_text ? (
+        <p className="text-[11px] text-muted-foreground">{field.help_text}</p>
+      ) : null}
+      <PreviewControl field={field} />
+    </div>
+  );
+}
+
+function PreviewControl({ field }: { field: FormField }) {
+  switch (field.type) {
+    case 'short_text':
+      return <Input disabled placeholder={field.placeholder || ''} />;
+    case 'long_text':
+      return (
+        <textarea
+          disabled
+          rows={3}
+          placeholder={field.placeholder || ''}
+          className="w-full rounded-md border bg-muted/20 px-3 py-2 text-sm resize-none"
+        />
+      );
+    case 'date':
+      return <Input disabled type="date" />;
+    case 'choice_single':
+      return (
+        <div className="space-y-1.5">
+          {field.options.map((opt) => (
+            <div
+              key={opt.value}
+              className="flex items-center gap-2 rounded-md border bg-muted/10 px-3 py-2"
+            >
+              <input type="radio" disabled className="size-4" />
+              <span className="text-sm">{opt.label}</span>
+            </div>
+          ))}
+        </div>
+      );
+    case 'choice_multiple':
+      return (
+        <div className="space-y-1.5">
+          {field.options.map((opt) => (
+            <div
+              key={opt.value}
+              className="flex items-center gap-2 rounded-md border bg-muted/10 px-3 py-2"
+            >
+              <input type="checkbox" disabled className="size-4" />
+              <span className="text-sm">{opt.label}</span>
+            </div>
+          ))}
+        </div>
+      );
+    case 'signature':
+    case 'paragraph':
+      return null;
+  }
 }
 
 // ── Field editor ─────────────────────────────────────────────────────
@@ -441,30 +610,45 @@ function FieldRow({
           <Input
             value={field.label}
             onChange={(e) => onChange({ ...field, label: e.target.value })}
-            placeholder="Field label shown to the client"
+            placeholder={
+              field.type === 'paragraph'
+                ? 'Section heading (e.g. "Risks & complications")'
+                : 'Field label shown to the client'
+            }
           />
-          {/* Help text */}
-          <Input
-            value={field.help_text ?? ''}
-            onChange={(e) => onChange({ ...field, help_text: e.target.value || undefined })}
-            placeholder="Help text (optional)"
-            className="text-xs"
-          />
-          {isChoiceField(field) ? (
-            <ChoiceOptionsEditor
-              options={field.options}
-              onChange={(opts) => onChange({ ...field, options: opts })}
+          {field.type === 'paragraph' ? (
+            <textarea
+              value={field.body}
+              onChange={(e) => onChange({ ...field, body: e.target.value })}
+              placeholder="Paragraph text the patient should read…"
+              rows={5}
+              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 resize-y"
             />
-          ) : null}
-          <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
-            <input
-              type="checkbox"
-              checked={field.required}
-              onChange={(e) => onChange({ ...field, required: e.target.checked })}
-              className="size-3.5 rounded border-border text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
-            />
-            <span className="text-foreground">Required</span>
-          </label>
+          ) : (
+            <>
+              <Input
+                value={field.help_text ?? ''}
+                onChange={(e) => onChange({ ...field, help_text: e.target.value || undefined })}
+                placeholder="Help text (optional)"
+                className="text-xs"
+              />
+              {isChoiceField(field) ? (
+                <ChoiceOptionsEditor
+                  options={field.options}
+                  onChange={(opts) => onChange({ ...field, options: opts })}
+                />
+              ) : null}
+              <label className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={field.required}
+                  onChange={(e) => onChange({ ...field, required: e.target.checked })}
+                  className="size-3.5 rounded border-border text-foreground focus-visible:ring-2 focus-visible:ring-ring/50"
+                />
+                <span className="text-foreground">Required</span>
+              </label>
+            </>
+          )}
         </div>
 
         <button

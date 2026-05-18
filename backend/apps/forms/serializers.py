@@ -21,6 +21,14 @@ from .models import FormSubmission, FormTemplate, ServiceFormAssignment
 
 # Field types supported in v1. Adding more (image upload, file
 # upload, conditional logic) is a polish concern.
+#
+# `paragraph` is an instructional-text field (no input). It's how
+# consent forms render the legal/clinical body the patient must
+# read before signing — risks, alternatives, etc. The patient
+# doesn't fill anything in; the renderer treats it as a styled
+# block of prose. Stored as a regular schema field with `type:
+# paragraph` + `label` (used as the heading) + `body` (the block
+# of prose). No `required` check, no answer expected at sign time.
 ALLOWED_FIELD_TYPES = frozenset({
     'short_text',
     'long_text',
@@ -28,6 +36,16 @@ ALLOWED_FIELD_TYPES = frozenset({
     'choice_multiple',
     'date',
     'signature',
+    'paragraph',
+})
+
+# Subset that ACCEPTS an answer from the patient. `paragraph` is
+# the only display-only type — it never lands in the submission's
+# `answers` JSON and the public-sign endpoint silently ignores any
+# value submitted for it.
+INPUT_FIELD_TYPES = frozenset({
+    'short_text', 'long_text', 'choice_single',
+    'choice_multiple', 'date', 'signature',
 })
 
 # Field id pattern — kept simple ASCII so we can use it as a JSON key
