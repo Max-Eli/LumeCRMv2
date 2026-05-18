@@ -73,9 +73,16 @@ export function DatePicker({ value, onChange, ariaLabel = 'Select date', classNa
     handlePick(today);
   };
 
-  const triggerLabel = selected
+  // Two labels — long form for desktop, short for mobile. The
+  // mobile calendar bar has ~370px to share across 5+ controls;
+  // "May 17, 2026" doesn't need to compete for those pixels when
+  // the year is implicit from context.
+  const triggerLabelLong = selected
     ? selected.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
     : 'Pick a date';
+  const triggerLabelShort = selected
+    ? selected.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
+    : 'Pick';
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
@@ -85,7 +92,7 @@ export function DatePicker({ value, onChange, ariaLabel = 'Select date', classNa
             type="button"
             aria-label={ariaLabel}
             className={cn(
-              'inline-flex items-center gap-1.5 h-8 rounded-md border bg-card px-2.5 text-sm tabular-nums',
+              'inline-flex items-center gap-1.5 h-8 rounded-md border bg-card px-2.5 text-sm tabular-nums shrink-0 whitespace-nowrap',
               'hover:bg-muted transition-colors',
               'aria-expanded:bg-muted aria-expanded:border-ring/40',
               'focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50 outline-none',
@@ -93,7 +100,8 @@ export function DatePicker({ value, onChange, ariaLabel = 'Select date', classNa
             )}
           >
             <CalendarDays className="size-3.5 text-muted-foreground" aria-hidden />
-            <span>{triggerLabel}</span>
+            <span className="md:hidden">{triggerLabelShort}</span>
+            <span className="hidden md:inline">{triggerLabelLong}</span>
           </button>
         }
       />

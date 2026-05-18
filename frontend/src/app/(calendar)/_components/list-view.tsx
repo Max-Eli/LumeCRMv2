@@ -54,67 +54,124 @@ export function ListView({ timezone, appointments }: ListViewProps) {
         {appointments.map((appt) => {
           const cancelled = appt.status === 'cancelled' || appt.status === 'no_show';
           const color = appt.service.category_color ?? 'hsl(220 9% 46%)';
+          const durationMinutes = Math.max(
+            1,
+            Math.round(
+              (new Date(appt.end_time).getTime() - new Date(appt.start_time).getTime()) / 60000,
+            ),
+          );
+          const providerName = `${appt.provider.user_first_name} ${appt.provider.user_last_name}`;
+          // Two layouts — mobile is card-style (modern CRM pattern:
+          // big time anchor, service centered, customer + provider
+          // + status at the bottom). Desktop keeps the dense grid
+          // for high-density scanning.
           const trigger = (
             <button
               type="button"
               className={cn(
-                'w-full grid grid-cols-[88px_1fr_auto] sm:grid-cols-[110px_1fr_auto]',
-                'items-center gap-3 sm:gap-4 px-4 sm:px-6 py-3 text-left',
-                'hover:bg-muted/50 transition-colors focus-visible:bg-muted/50 outline-none',
+                'block w-full text-left px-4 sm:px-6 py-4 transition-colors outline-none',
+                'hover:bg-muted/50 focus-visible:bg-muted/50',
               )}
             >
-              <div
-                className="font-mono tabular-nums text-sm"
-                style={{ color: cancelled ? 'var(--muted-foreground)' : 'inherit' }}
-              >
-                {formatTimeRange(appt, timezone)}
-              </div>
+              {/* ─── Mobile card layout ─────────────────────── */}
+              <div className="md:hidden flex gap-4">
+                {/* Time anchor — bold start time, smaller duration */}
+                <div
+                  className="shrink-0 w-16 flex flex-col justify-center"
+                  style={{ color: cancelled ? 'var(--muted-foreground)' : 'inherit' }}
+                >
+                  <div className="font-semibold text-base tabular-nums leading-tight whitespace-nowrap">
+                    {formatStartTime(appt, timezone)}
+                  </div>
+                  <div className="text-[11px] uppercase tracking-wide text-muted-foreground mt-0.5">
+                    {durationMinutes}m
+                  </div>
+                </div>
 
-              <div className="flex items-center gap-3 min-w-0">
+                {/* Left color bar — category accent */}
                 <span
-                  className="size-2 rounded-full shrink-0"
+                  className="w-1 rounded-full shrink-0 self-stretch"
                   style={{ backgroundColor: color }}
                   aria-hidden
                 />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <p
-                      className={cn(
-                        'font-medium text-sm truncate',
-                        cancelled && 'line-through text-muted-foreground',
-                      )}
-                    >
-                      {appt.service.name}
-                    </p>
-                    {appt.service.category_name ? (
-                      <Badge
-                        variant="outline"
-                        className="font-normal text-[10px] py-0"
-                        style={{ borderColor: `${color}66`, color }}
-                      >
-                        {appt.service.category_name}
-                      </Badge>
-                    ) : null}
-                  </div>
-                  <p className="text-xs text-muted-foreground truncate">
+
+                {/* Service + customer + provider + status */}
+                <div className="min-w-0 flex-1 flex flex-col justify-center gap-1">
+                  <p
+                    className={cn(
+                      'font-medium text-[15px] leading-snug',
+                      cancelled && 'line-through text-muted-foreground',
+                    )}
+                  >
+                    {appt.service.name}
+                  </p>
+                  <p className="text-[13px] text-muted-foreground truncate">
                     {appt.customer.full_name}
                   </p>
+                  <div className="flex items-center justify-between gap-2 mt-1">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <InitialsAvatar name={providerName} size="sm" />
+                      <span className="text-xs text-muted-foreground truncate">
+                        {providerName}
+                      </span>
+                    </div>
+                    <StatusBadge tone={STATUS_TONE[appt.status]}>
+                      {STATUS_LABELS[appt.status]}
+                    </StatusBadge>
+                  </div>
                 </div>
               </div>
 
-              <div className="flex items-center gap-3 shrink-0">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-                  <InitialsAvatar
-                    name={`${appt.provider.user_first_name} ${appt.provider.user_last_name}`}
-                    size="sm"
-                  />
-                  <span className="hidden md:inline">
-                    {appt.provider.user_first_name} {appt.provider.user_last_name}
-                  </span>
+              {/* ─── Desktop dense-grid layout ─────────────── */}
+              <div className="hidden md:grid md:grid-cols-[110px_1fr_auto] md:items-center md:gap-4">
+                <div
+                  className="font-mono tabular-nums text-sm"
+                  style={{ color: cancelled ? 'var(--muted-foreground)' : 'inherit' }}
+                >
+                  {formatTimeRange(appt, timezone)}
                 </div>
-                <StatusBadge tone={STATUS_TONE[appt.status]}>
-                  {STATUS_LABELS[appt.status]}
-                </StatusBadge>
+
+                <div className="flex items-center gap-3 min-w-0">
+                  <span
+                    className="size-2 rounded-full shrink-0"
+                    style={{ backgroundColor: color }}
+                    aria-hidden
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <p
+                        className={cn(
+                          'font-medium text-sm truncate',
+                          cancelled && 'line-through text-muted-foreground',
+                        )}
+                      >
+                        {appt.service.name}
+                      </p>
+                      {appt.service.category_name ? (
+                        <Badge
+                          variant="outline"
+                          className="font-normal text-[10px] py-0"
+                          style={{ borderColor: `${color}66`, color }}
+                        >
+                          {appt.service.category_name}
+                        </Badge>
+                      ) : null}
+                    </div>
+                    <p className="text-xs text-muted-foreground truncate">
+                      {appt.customer.full_name}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-3 shrink-0">
+                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                    <InitialsAvatar name={providerName} size="sm" />
+                    <span>{providerName}</span>
+                  </div>
+                  <StatusBadge tone={STATUS_TONE[appt.status]}>
+                    {STATUS_LABELS[appt.status]}
+                  </StatusBadge>
+                </div>
               </div>
             </button>
           );
@@ -139,4 +196,16 @@ function formatTimeRange(appt: Appointment, timezone: string): string {
   const start = new Date(appt.start_time).toLocaleTimeString('en-US', opts);
   const end = new Date(appt.end_time).toLocaleTimeString('en-US', opts);
   return `${start} – ${end}`;
+}
+
+function formatStartTime(appt: Appointment, timezone: string): string {
+  // Mobile-only: a single-line start time, narrow enough to fit a
+  // 64px column. We DON'T abbreviate AM/PM further — operators
+  // habitually scan for it as a disambiguator.
+  return new Date(appt.start_time).toLocaleTimeString('en-US', {
+    timeZone: timezone,
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
 }

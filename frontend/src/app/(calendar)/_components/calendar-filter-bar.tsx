@@ -270,6 +270,10 @@ function ProviderMultiSelect({
     onChange([...next].sort((a, b) => a - b));
   };
 
+  // Mobile gets a compact label: just the icon + count ("2") to
+  // save horizontal space. Desktop gets the full word treatment.
+  const labelShort = selected.size === 0 ? 'All' : String(selected.size);
+
   return (
     <Popover>
       <PopoverTrigger
@@ -277,11 +281,12 @@ function ProviderMultiSelect({
           <button
             {...props}
             type="button"
-            className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md border border-border bg-card text-xs uppercase tracking-wide text-muted-foreground hover:bg-muted hover:text-foreground transition-colors min-w-[170px] justify-between"
+            className="inline-flex items-center gap-1.5 h-8 px-2.5 rounded-md border border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground transition-colors shrink-0 justify-between md:min-w-[170px]"
           >
-            <span className="inline-flex items-center gap-1.5 normal-case tracking-normal text-sm">
+            <span className="inline-flex items-center gap-1.5 text-sm">
               <Users className="size-3.5" />
-              {label}
+              <span className="hidden md:inline">{label}</span>
+              <span className="md:hidden tabular-nums">{labelShort}</span>
             </span>
             <ChevronDown className="size-3.5" />
           </button>
