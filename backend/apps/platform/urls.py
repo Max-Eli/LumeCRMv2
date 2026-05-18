@@ -7,7 +7,11 @@ Mounted under `/api/platform/`. All endpoints gated to
 from django.urls import path
 from rest_framework.routers import DefaultRouter
 
-from .views import PlatformSummaryView, PlatformTenantViewSet
+from .views import (
+    PlatformAuditLogView,
+    PlatformSummaryView,
+    PlatformTenantViewSet,
+)
 
 router = DefaultRouter()
 router.register(
@@ -18,4 +22,5 @@ router.register(
 
 urlpatterns = [
     path('platform/summary/', PlatformSummaryView.as_view(), name='platform-summary'),
+    path('platform/audit-log/', PlatformAuditLogView.as_view(), name='platform-audit-log'),
 ] + router.urls

@@ -14,7 +14,12 @@
 
 'use client';
 
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import {
+  useInfiniteQuery,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query';
 
 import { api } from './api';
 
@@ -179,3 +184,118 @@ export const STATUS_TONE: Record<PlatformTenantStatus, string> = {
   suspended: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
   cancelled: 'bg-foreground/10 text-foreground/60 ring-foreground/20',
 };
+
+
+// ── Cross-tenant audit log (Platform Logs page) ────────────────────
+
+/**
+ * Action enum mirrors `apps.audit.models.AuditLog.Action` on the
+ * backend. Keep these in sync — the platform filter UI lists them
+ * verbatim.
+ */
+export type AuditAction =
+  | 'create'
+  | 'read'
+  | 'update'
+  | 'delete'
+  | 'login'
+  | 'logout'
+  | 'login_failed'
+  | 'export'
+  | 'permission_granted'
+  | 'permission_revoked';
+
+export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
+  create: 'Create',
+  read: 'Read',
+  update: 'Update',
+  delete: 'Delete',
+  login: 'Login',
+  logout: 'Logout',
+  login_failed: 'Login failed',
+  export: 'Export',
+  permission_granted: 'Permission granted',
+  permission_revoked: 'Permission revoked',
+};
+
+/** Tone class per action — dark theme. */
+export const AUDIT_ACTION_TONE: Record<AuditAction, string> = {
+  create: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
+  read: 'bg-foreground/10 text-foreground/70 ring-foreground/20',
+  update: 'bg-sky-500/15 text-sky-300 ring-sky-500/30',
+  delete: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
+  login: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
+  logout: 'bg-foreground/10 text-foreground/70 ring-foreground/20',
+  login_failed: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
+  export: 'bg-violet-500/15 text-violet-300 ring-violet-500/30',
+  permission_granted: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
+  permission_revoked: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
+};
+
+export interface AuditEntry {
+  id: number;
+  timestamp: string;
+  action: AuditAction;
+  resource_type: string;
+  resource_id: string;
+  ip_address: string | null;
+  metadata: Record<string, unknown>;
+  tenant: { id: number; slug: string; name: string } | null;
+  user: { id: number; email: string; full_name: string } | null;
+}
+
+export interface AuditLogPage {
+  results: AuditEntry[];
+  next_cursor: string | null;
+}
+
+export interface AuditLogFilters {
+  q?: string;
+  tenant?: string[];       // tenant slugs (multi-select)
+  action?: AuditAction[];  // action enum (multi-select)
+  resource_type?: string[];
+  from?: string;           // ISO datetime
+  to?: string;             // ISO datetime
+  limit?: number;
+  cursor?: string;
+}
+
+function buildAuditLogQuery(f: AuditLogFilters): string {
+  const params = new URLSearchParams();
+  if (f.q) params.set('q', f.q);
+  if (f.tenant && f.tenant.length) params.set('tenant', f.tenant.join(','));
+  if (f.action && f.action.length) params.set('action', f.action.join(','));
+  if (f.resource_type && f.resource_type.length) {
+    params.set('resource_type', f.resource_type.join(','));
+  }
+  if (f.from) params.set('from', f.from);
+  if (f.to) params.set('to', f.to);
+  if (f.limit) params.set('limit', String(f.limit));
+  if (f.cursor) params.set('cursor', f.cursor);
+  return params.toString();
+}
+
+/**
+ * Cursor-paginated cross-tenant audit log query. Uses TanStack
+ * `useInfiniteQuery` because we want the operator to scroll/load-
+ * more rather than jump pages — newest-first reads naturally as a
+ * timeline.
+ */
+export function usePlatformAuditLog(filters: AuditLogFilters) {
+  const baseFilters = { ...filters };
+  delete baseFilters.cursor;
+
+  return useInfiniteQuery<AuditLogPage, Error>({
+    queryKey: [...PLATFORM_KEY, 'audit-log', baseFilters],
+    queryFn: ({ pageParam }) => {
+      const q = buildAuditLogQuery({
+        ...baseFilters,
+        cursor: (pageParam as string | undefined) ?? undefined,
+      });
+      return api.get<AuditLogPage>(`/api/platform/audit-log/${q ? `?${q}` : ''}`);
+    },
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.next_cursor ?? undefined,
+    staleTime: 10 * 1000,
+  });
+}

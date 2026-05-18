@@ -53,6 +53,11 @@ dist/
 # Logs
 *.log
 logs/
+# But DO track the platform-admin /logs page directory in the
+# Next.js app router — the rule above was meant for runtime log
+# files, not Next route folders that happen to be named `logs`.
+!frontend/src/app/(platform)/platform/logs/
+!frontend/src/app/(platform)/platform/logs/**
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

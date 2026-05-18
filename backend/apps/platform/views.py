@@ -355,3 +355,211 @@ class PlatformSummaryView(APIView):
                 for a in recent_audit
             ],
         })
+
+
+# ── Cross-tenant audit log search (Platform Logs page) ───────────────────
+
+
+class PlatformAuditLogPagination:
+    """Cursor pagination over `-timestamp, -id`.
+
+    Audit log can grow to millions of rows; offset pagination on a
+    table this hot becomes catastrophic. Cursors keep page-N queries
+    cheap regardless of N. Standard pattern: encode the (timestamp, id)
+    of the last seen row, filter the next query with `(timestamp, id) <
+    cursor`.
+
+    Implemented inline (not DRF's CursorPagination) so we can return
+    extra metadata in the response shape — total-on-page count for
+    the operator UI — without subclassing fights.
+    """
+
+    DEFAULT_LIMIT = 50
+    MAX_LIMIT = 200
+
+    def __init__(self, request):
+        try:
+            self.limit = min(
+                int(request.query_params.get('limit', self.DEFAULT_LIMIT)),
+                self.MAX_LIMIT,
+            )
+        except (TypeError, ValueError):
+            self.limit = self.DEFAULT_LIMIT
+        if self.limit < 1:
+            self.limit = self.DEFAULT_LIMIT
+
+        self.cursor_raw = request.query_params.get('cursor', '')
+
+    def paginate(self, queryset):
+        """Apply cursor filter, slice limit+1, return (page, next_cursor)."""
+        if self.cursor_raw:
+            cursor = _parse_cursor(self.cursor_raw)
+            if cursor is not None:
+                ts, last_id = cursor
+                queryset = queryset.filter(
+                    Q(timestamp__lt=ts)
+                    | Q(timestamp=ts, id__lt=last_id),
+                )
+
+        # Fetch one extra row to detect if there's a next page.
+        rows = list(queryset[: self.limit + 1])
+        has_more = len(rows) > self.limit
+        page = rows[: self.limit]
+        next_cursor = (
+            _encode_cursor(page[-1].timestamp, page[-1].id)
+            if has_more and page else None
+        )
+        return page, next_cursor
+
+
+def _encode_cursor(timestamp, row_id):
+    import base64
+    raw = f'{timestamp.isoformat()}|{row_id}'
+    return base64.urlsafe_b64encode(raw.encode('ascii', errors='ignore')).decode('ascii').rstrip('=')
+
+
+def _parse_cursor(token: str):
+    import base64
+    try:
+        padding = '=' * (-len(token) % 4)
+        decoded = base64.urlsafe_b64decode((token + padding).encode('ascii')).decode('ascii')
+        ts_str, id_str = decoded.split('|', 1)
+        from datetime import datetime
+        from django.utils.timezone import make_aware, is_naive
+        ts = datetime.fromisoformat(ts_str)
+        if is_naive(ts):
+            ts = make_aware(ts)
+        return ts, int(id_str)
+    except Exception:
+        return None
+
+
+class PlatformAuditLogView(APIView):
+    """Cross-tenant audit log search for the platform-admin /logs page.
+
+    Filters (all optional, AND-combined):
+
+      - `q`              — free-text. Matches resource_id, resource_type,
+                           user email, tenant slug/name, and event metadata.
+      - `tenant`         — comma-separated tenant slugs.
+      - `action`         — comma-separated action enum values.
+      - `resource_type`  — comma-separated resource types.
+      - `from` / `to`    — ISO datetime bounds (inclusive / exclusive).
+
+    Pagination:
+      - `limit`          — page size (default 50, max 200).
+      - `cursor`         — opaque, returned as `next_cursor` in
+                           previous response.
+
+    Response shape:
+      {
+        "results": [ { ...audit entry... } ],
+        "next_cursor": "..."  | null,
+      }
+    """
+
+    permission_classes = [PlatformPermission]
+
+    def get(self, request):
+        qs = (
+            AuditLog.objects
+            .select_related('tenant', 'user')
+            .order_by('-timestamp', '-id')
+        )
+
+        q = (request.query_params.get('q') or '').strip()
+        if q:
+            qs = qs.filter(
+                Q(resource_id__icontains=q)
+                | Q(resource_type__icontains=q)
+                | Q(user__email__icontains=q)
+                | Q(tenant__slug__icontains=q)
+                | Q(tenant__name__icontains=q)
+            )
+
+        tenant_slugs = _split_csv(request.query_params.get('tenant'))
+        if tenant_slugs:
+            qs = qs.filter(tenant__slug__in=tenant_slugs)
+
+        actions = _split_csv(request.query_params.get('action'))
+        if actions:
+            qs = qs.filter(action__in=actions)
+
+        resource_types = _split_csv(request.query_params.get('resource_type'))
+        if resource_types:
+            qs = qs.filter(resource_type__in=resource_types)
+
+        date_from = (request.query_params.get('from') or '').strip()
+        if date_from:
+            parsed = _parse_iso(date_from)
+            if parsed is None:
+                raise ValidationError({'from': 'Invalid ISO datetime'})
+            qs = qs.filter(timestamp__gte=parsed)
+
+        date_to = (request.query_params.get('to') or '').strip()
+        if date_to:
+            parsed = _parse_iso(date_to)
+            if parsed is None:
+                raise ValidationError({'to': 'Invalid ISO datetime'})
+            qs = qs.filter(timestamp__lt=parsed)
+
+        paginator = PlatformAuditLogPagination(request)
+        page, next_cursor = paginator.paginate(qs)
+
+        return Response({
+            'results': [_serialise_audit_entry(entry) for entry in page],
+            'next_cursor': next_cursor,
+        })
+
+
+def _split_csv(raw):
+    if not raw:
+        return []
+    return [x.strip() for x in raw.split(',') if x.strip()]
+
+
+def _parse_iso(s):
+    from datetime import datetime
+    from django.utils.timezone import make_aware, is_naive
+    try:
+        d = datetime.fromisoformat(s.replace('Z', '+00:00'))
+        if is_naive(d):
+            d = make_aware(d)
+        return d
+    except (TypeError, ValueError):
+        return None
+
+
+def _serialise_audit_entry(entry):
+    """Compact JSON shape for the logs page. PII-conscious — we
+    intentionally DO include user email + tenant slug because
+    platform admins need both to identify the actor + scope. PHI
+    inside metadata is already redacted at write time by the
+    `apps.audit.services.record()` helper."""
+    return {
+        'id': entry.id,
+        'timestamp': entry.timestamp.isoformat(),
+        'action': entry.action,
+        'resource_type': entry.resource_type or '',
+        'resource_id': entry.resource_id or '',
+        'ip_address': entry.ip_address,
+        'metadata': entry.metadata or {},
+        'tenant': (
+            {
+                'id': entry.tenant_id,
+                'slug': entry.tenant.slug,
+                'name': entry.tenant.name,
+            }
+            if entry.tenant_id and entry.tenant
+            else None
+        ),
+        'user': (
+            {
+                'id': entry.user_id,
+                'email': entry.user.email,
+                'full_name': entry.user.get_full_name(),
+            }
+            if entry.user_id and entry.user
+            else None
+        ),
+    }

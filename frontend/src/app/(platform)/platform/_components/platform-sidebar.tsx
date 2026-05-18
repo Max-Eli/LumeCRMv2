@@ -39,8 +39,12 @@ interface NavLink {
 const PLATFORM_NAV: NavLink[] = [
   { href: '/platform', label: 'Dashboard', icon: LayoutDashboard },
   { href: '/platform/tenants', label: 'Tenants', icon: Building2 },
-  { href: '/platform/notifications', label: 'Notifications', icon: Bell, comingSoon: true },
-  { href: '/platform/logs', label: 'Error logs', icon: ScrollText, comingSoon: true },
+  // "Error logs" was the placeholder name; we renamed to "Audit log"
+  // because the page surfaces application audit entries (PHI CRUD,
+  // logins, exports), not stack-trace error logs. Error logs proper
+  // live in CloudWatch + Sentry — surfacing those is Phase 3.
+  { href: '/platform/logs', label: 'Audit log', icon: ScrollText },
+  { href: '/platform/notifications', label: 'Notifications', icon: Bell },
 ];
 
 export function PlatformSidebar({ user }: { user: User }) {

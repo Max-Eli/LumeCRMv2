@@ -47,7 +47,12 @@ export default function NewCategoryPage() {
       {
         onSuccess: (created) => {
           toast.success(`${created.name} created`);
-          router.push(`/services/categories/${created.id}`);
+          // Categories live under /catalog/* since the Phase 1 IA
+          // reorganisation. The old /services/categories/ path
+          // was a leftover that 404'd silently — the category WAS
+          // created (mutation succeeded), the operator just saw
+          // "page does not exist" after creation.
+          router.push(`/catalog/categories/${created.id}`);
         },
         onError: (err) => {
           if (err instanceof ApiError && err.status === 400 && typeof err.body === 'object' && err.body) {
