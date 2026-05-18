@@ -110,7 +110,10 @@ export function CalendarFilterBar({
 
         {/* Filters + display mode + view */}
         <div className="flex items-center gap-2">
-          <div className="hidden md:flex items-center">
+          {/* Provider multi-select is meaningful on every screen size
+              — on mobile we collapse the trigger to an icon-only
+              button (the popover content is identical). */}
+          <div className="flex items-center">
             <ProviderMultiSelect
               providers={providers}
               providerFilter={providerFilter}
@@ -135,13 +138,18 @@ export function CalendarFilterBar({
             <span className="hidden sm:inline">Hide cancelled</span>
           </button>
 
-          {/* DisplayMode (calendar grid vs list) is meaningful on every
-              size — the mobile day-view now uses horizontal swipe-between-
-              providers, so the user can still pick list view if they
-              prefer a vertical timeline. ViewToggle (Day/Week/Month) is
-              desktop-only since Week + Month aren't built yet — showing
-              disabled buttons on a phone is more clutter than signal. */}
-          <DisplayModeToggle value={displayMode} onChange={onChangeDisplayMode} />
+          {/* DisplayMode toggle (grid vs list) is desktop-only now —
+              mobile ALWAYS renders the list view because the time-
+              grid is unusable below 768px (operator decision; the
+              calendar/page.tsx wrapper forces the list at this
+              breakpoint via CSS-only). Hiding the toggle prevents
+              clicks that would otherwise have no visible effect.
+              ViewToggle (Day/Week/Month) stays desktop-only too —
+              Week + Month aren't built yet, so showing disabled
+              buttons on a phone is clutter, not signal. */}
+          <div className="hidden md:flex items-center">
+            <DisplayModeToggle value={displayMode} onChange={onChangeDisplayMode} />
+          </div>
           <div className="hidden sm:flex items-center">
             <ViewToggle value={view} onChange={onChangeView} />
           </div>

@@ -41,6 +41,7 @@ import { useAppointment, useAppointmentsForDate } from '@/lib/appointments';
 import { useActiveLocation } from '@/lib/locations';
 import { useBookableMemberships } from '@/lib/memberships';
 import { tenantHourFromTime } from '@/lib/tenant';
+import { cn } from '@/lib/utils';
 
 const DEFAULT_TIMEZONE = 'America/New_York';
 const PX_PER_MIN_KEY = 'lume_calendar_px_per_min';
@@ -287,47 +288,68 @@ export default function CalendarPage() {
             <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
               Loading calendar…
             </div>
-          ) : displayMode === 'list' ? (
-            <ListView
-              timezone={tenantTimezone}
-              appointments={filteredAppointments}
-            />
           ) : (
             <>
-              <DayView
-                date={date}
-                timezone={tenantTimezone}
-                providers={filteredProviders}
-                appointments={filteredAppointments}
-                pxPerMin={pxPerMin}
-                columnWidthPx={columnWidthPx}
-                rescheduling={
-                  reschedulingId && reschedulingDuration
-                    ? { appointmentId: reschedulingId, durationMinutes: reschedulingDuration }
-                    : null
-                }
-                onCancelReschedule={cancelReschedule}
-                onEmptySlotClick={(slot) =>
-                  openNewAppointment({
-                    date: slot.date,
-                    time: slot.time,
-                    providerId: slot.providerId,
-                  })
-                }
-                dayStartHour={dayStartHour}
-                dayEndHour={dayEndHour}
-              />
-              {/* Day-summary stats — sits flush at the bottom of the
-                  calendar column. Uses the same filtered data the
-                  DayView renders so toggling Hide cancelled / changing
-                  the provider filter naturally re-derives the stats. */}
-              <DayStatsFooter
-                appointments={filteredAppointments}
-                providers={filteredProviders}
-                date={date}
-                dayStartHour={dayStartHour ?? 8}
-                dayEndHour={dayEndHour ?? 20}
-              />
+              {/* Mobile-first: ListView is ALWAYS shown on phones
+                  (the time-grid breaks down below 768px no matter
+                  how cleverly we columnize). On desktop, ListView
+                  honors the operator's display-mode toggle.
+                  Implementation is pure-CSS so there's no
+                  hydration-mismatch risk from a client-only
+                  useMediaQuery flip. */}
+              <div
+                className={cn(
+                  'flex-1 min-h-0 flex flex-col',
+                  displayMode === 'calendar' && 'md:hidden',
+                )}
+              >
+                <ListView
+                  timezone={tenantTimezone}
+                  appointments={filteredAppointments}
+                />
+              </div>
+
+              {/* Desktop-only: time-grid day view + day-stats footer.
+                  The stats footer is hidden on mobile (per operator
+                  request — irrelevant at phone-screen sizes where
+                  the list view IS the surface). */}
+              <div
+                className={cn(
+                  'hidden flex-1 min-h-0 flex-col',
+                  displayMode === 'calendar' && 'md:flex',
+                )}
+              >
+                <DayView
+                  date={date}
+                  timezone={tenantTimezone}
+                  providers={filteredProviders}
+                  appointments={filteredAppointments}
+                  pxPerMin={pxPerMin}
+                  columnWidthPx={columnWidthPx}
+                  rescheduling={
+                    reschedulingId && reschedulingDuration
+                      ? { appointmentId: reschedulingId, durationMinutes: reschedulingDuration }
+                      : null
+                  }
+                  onCancelReschedule={cancelReschedule}
+                  onEmptySlotClick={(slot) =>
+                    openNewAppointment({
+                      date: slot.date,
+                      time: slot.time,
+                      providerId: slot.providerId,
+                    })
+                  }
+                  dayStartHour={dayStartHour}
+                  dayEndHour={dayEndHour}
+                />
+                <DayStatsFooter
+                  appointments={filteredAppointments}
+                  providers={filteredProviders}
+                  date={date}
+                  dayStartHour={dayStartHour ?? 8}
+                  dayEndHour={dayEndHour ?? 20}
+                />
+              </div>
             </>
           )}
         </main>
