@@ -516,6 +516,13 @@ def _upsert_appointment(
             # — only refresh the times + assignment.
             existing.save()
             return existing, False
+        # Belt-and-suspenders against the auto-confirmation SMS
+        # signal: even if the signal's `source.endswith('_import')`
+        # check is bypassed (e.g. signal change rolled back), pre-
+        # setting these timestamps makes the idempotency check in
+        # `send_confirmation_sms` + `send_reminder_sms` short-circuit.
+        # `source='zenoti_import'` is the PRIMARY gate; these are a
+        # safety net.
         appt = Appointment.objects.create(
             tenant=tenant,
             customer=customer,
@@ -530,6 +537,9 @@ def _upsert_appointment(
             external_id=mapped.external_id,
             imported_at=write_now,
             quoted_price_cents=service.price_cents,
+            confirmation_sms_sent_at=write_now,
+            reminder_sms_sent_at=write_now,
+            review_request_sms_sent_at=write_now,
         )
         return appt, True
 

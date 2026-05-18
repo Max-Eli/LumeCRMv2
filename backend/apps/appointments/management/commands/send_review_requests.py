@@ -83,6 +83,12 @@ class Command(BaseCommand):
                     completed_at__gte=window_start,
                     completed_at__lte=window_end,
                 )
+                # Skip migration-imported appointments — see
+                # signals.py + send_appointment_reminders. Imports
+                # land thousands of "completed" rows in bulk; a
+                # review-request blast against years-old visits is
+                # spammy + TCPA-risky.
+                .exclude(source__endswith='_import')
                 .select_related('customer', 'tenant', 'location')
             )
 

@@ -50,6 +50,15 @@ def send_confirmation_sms_on_create(sender, instance: Appointment, created: bool
         return
     if instance.status in _TERMINAL_STATUSES:
         return
+    # Critical: NEVER fire confirmation SMS for migration-imported
+    # appointments. Imports create thousands of historical / future
+    # rows in one shot; texting every customer about appointments
+    # they made years ago (or appointments they already attended) is
+    # a TCPA + customer-trust disaster. The importer also pre-fills
+    # confirmation_sms_sent_at as a belt-and-suspenders backstop;
+    # this check is the primary gate.
+    if (instance.source or '').endswith('_import'):
+        return
 
     from .sms import SMSDispatchError, send_confirmation_sms
 

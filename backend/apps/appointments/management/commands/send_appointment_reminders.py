@@ -78,6 +78,10 @@ class Command(BaseCommand):
                 start_time__gte=window_start,
                 start_time__lte=window_end,
             )
+            # Skip migration-imported appointments — see signals.py:
+            # imports create thousands of historical/future rows at
+            # once; the operator never consented to a mass-text blast.
+            .exclude(source__endswith='_import')
             .select_related('customer', 'tenant', 'location')
         )
 
