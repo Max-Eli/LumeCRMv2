@@ -1,35 +1,32 @@
 /**
- * Edge proxy (formerly "middleware" in Next < 16) that powers the
- * `platform.lumècrm.com` subdomain for the platform-admin portal.
+ * Edge proxy (Next 16's renamed-but-otherwise-same middleware) that
+ * powers the `platform.lumècrm.com` subdomain for the platform-admin
+ * portal.
  *
- * The platform admin pages live under `app/(platform)/platform/*` and
- * are served at the URL `/platform/*` on any host. This proxy makes
- * them ALSO reachable at the root of `platform.<root-domain>` so the
- * URL bar reads `platform.lumècrm.com/tenants` instead of
- * `acmespa.lumècrm.com/platform/tenants`.
+ * The platform admin pages live at `/platform/*` in the app router.
+ * This proxy makes them reachable via the dedicated `platform.<root>`
+ * subdomain instead of mixing into a tenant's URL space.
  *
- * Two routing rules:
+ * Design — REDIRECT-ONLY (no internal rewrite). An earlier version
+ * tried rewriting `platform.<root>/foo` → internal `/platform/foo` to
+ * achieve cleaner URLs, but Next.js's `usePathname()` returned the
+ * browser URL on the client and the rewritten URL on the server,
+ * which broke hydration and confused page-level pathname checks
+ * (e.g. `isLoginPage = pathname === '/platform/login'`).
  *
- *   1. On the platform subdomain:
- *      - `platform.lumè.../foo` → rewritten internally to `/platform/foo`
- *        (server-side rewrite — browser URL stays clean).
- *      - `platform.lumè.../platform/foo` → 308 redirect to
- *        `platform.lumè.../foo` so canonical URLs converge.
+ * The fix: keep `/platform/*` in the URL bar AND in the page code.
+ * The proxy now does only:
  *
- *   2. On ANY non-platform host (root domain + every tenant subdomain):
- *      - `acmespa.lumè.../platform/foo` → 308 redirect to
- *        `platform.lumè.../foo`. Keeps old bookmarks alive AND makes
- *        sure platform pages never leak into a tenant context.
+ *   1. `platform.<root>/`             → 308 → `platform.<root>/platform`
+ *   2. `platform.<root>/<anything>`   if path doesn't start with
+ *      `/platform`, 308 → `platform.<root>/platform/<anything>` so a
+ *      stray path on this host always ends up under the admin tree.
+ *   3. `<not-platform>/platform/<x>`  → 308 → `platform.<root>/platform/<x>`
+ *      so an old bookmark / cross-tenant nav hits the canonical host.
  *
- * Local dev (`localhost:3000`) bails out of all rewrites — the
- * developer hits `/platform/*` paths directly and there's no
- * subdomain to play with.
- *
- * Notes on Next 16 specifically:
- *   - The convention is now `proxy.ts` (not `middleware.ts`).
- *   - The export name is `proxy`.
- *   - `NextResponse.rewrite/redirect` and the `config.matcher` are
- *     unchanged from the older middleware API.
+ * Local dev untouched: when the host doesn't end with the root
+ * domain (localhost etc.), the proxy bails and existing `/platform/*`
+ * paths work directly.
  */
 
 import { NextResponse, type NextRequest } from 'next/server';
@@ -43,41 +40,32 @@ export function proxy(request: NextRequest) {
   const url = request.nextUrl.clone();
   const pathname = url.pathname;
 
-  // Bail in local dev / preview deploys that don't use the production
-  // root domain. Existing `/platform/*` paths continue to work.
+  // Local dev / preview deploys without the production root domain
+  // pass through untouched.
   if (!host.endsWith(ROOT_DOMAIN)) {
     return NextResponse.next();
   }
 
   const onPlatformHost = host === PLATFORM_HOST;
+  const isUnderPlatform =
+    pathname === '/platform' || pathname.startsWith('/platform/');
 
-  if (onPlatformHost) {
-    // Canonicalise: if someone lands on the platform host with a
-    // redundant `/platform` prefix (old bookmark, an in-app link
-    // pasted around), strip it via 308 so the URL bar reads cleanly.
-    if (pathname === '/platform' || pathname.startsWith('/platform/')) {
-      url.pathname =
-        pathname === '/platform' ? '/' : pathname.slice('/platform'.length);
-      return NextResponse.redirect(url, 308);
-    }
-
-    // Internal rewrite so the existing app/(platform)/platform/<page>
-    // route tree serves the request without us moving any files. The
-    // browser URL is unchanged — still reads `platform.foo.com/tenants`.
+  if (onPlatformHost && !isUnderPlatform) {
+    // On platform.<root>, anything not already under /platform gets
+    // redirected so the app-router page tree resolves cleanly.
+    // Examples:
+    //   /            → /platform
+    //   /tenants     → /platform/tenants
+    //   /logs        → /platform/logs
     url.pathname = `/platform${pathname === '/' ? '' : pathname}`;
-    return NextResponse.rewrite(url);
+    return NextResponse.redirect(url, 308);
   }
 
-  // On the root domain or a tenant subdomain — if someone hits
-  // `/platform/foo`, redirect them to the canonical platform host.
-  // Catches old bookmarks AND prevents accidental cross-context
-  // navigation (e.g. owner of acmespa accidentally landing on the
-  // platform admin while logged in as a tenant user).
-  if (pathname === '/platform' || pathname.startsWith('/platform/')) {
+  if (!onPlatformHost && isUnderPlatform) {
+    // Old bookmark / accidental link — bounce to the canonical host
+    // so platform admin pages never load inside a tenant context.
     const target = new URL(request.url);
     target.host = PLATFORM_HOST;
-    target.pathname =
-      pathname === '/platform' ? '/' : pathname.slice('/platform'.length);
     return NextResponse.redirect(target, 308);
   }
 
@@ -85,7 +73,11 @@ export function proxy(request: NextRequest) {
 }
 
 export const config = {
-  // Skip Next internals, the API proxy (we don't have one), static
-  // assets that look like `*.png` / `*.svg` / etc., and the favicon.
-  matcher: ['/((?!_next/static|_next/image|favicon.ico|api/).*)'],
+  // Exclude Next internals, any path with a file extension (favicon
+  // .png / .ico, robots.txt, manifest.json, etc.), and the internal
+  // API proxy. Matching anything with a dot covers static assets
+  // we don't own paths for — without this guard, `/favicon.png` on
+  // the platform host would redirect to `/platform/favicon.png`
+  // which 404s.
+  matcher: ['/((?!_next/|api/|.*\\..*).*)'],
 };
