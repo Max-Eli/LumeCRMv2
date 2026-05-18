@@ -80,47 +80,53 @@ function AllServicesView() {
   const count = services?.length ?? 0;
 
   return (
-    <div className="px-10 py-10 max-w-7xl">
-      <PageHeader
-        title="Services"
-        description={`${count} service${count === 1 ? '' : 's'} across every category`}
-        actions={
-          <>
-            <Button render={<Link href="/catalog/categories" />} nativeButton={false} variant="outline">
-              <ListFilter className="size-4" />
-              Browse by category
-            </Button>
-            <Button render={<Link href="/catalog/services/new" />} nativeButton={false}>
-              <Plus className="size-4" />
-              New service
-            </Button>
-          </>
-        }
-      />
-
-      <div className="relative max-w-md mb-6">
-        <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-        <Input
-          placeholder="Search by name or description…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-9"
+    <div className="px-10 py-10">
+      {/* Sticky strip: title + actions + search bar pinned to the top
+          while the (potentially 300+) services table scrolls below. */}
+      <div className="sticky top-0 z-10 -mx-10 -mt-10 px-10 pt-10 pb-4 bg-background border-b border-border">
+        <PageHeader
+          title="Services"
+          description={`${count} service${count === 1 ? '' : 's'} across every category`}
+          actions={
+            <>
+              <Button render={<Link href="/catalog/categories" />} nativeButton={false} variant="outline">
+                <ListFilter className="size-4" />
+                Browse by category
+              </Button>
+              <Button render={<Link href="/catalog/services/new" />} nativeButton={false}>
+                <Plus className="size-4" />
+                New service
+              </Button>
+            </>
+          }
         />
+
+        <div className="relative max-w-md mt-4">
+          <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <Input
+            placeholder="Search by name or description…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
       </div>
 
       {isLoading ? (
-        <div className="rounded-lg border bg-card p-12 text-center text-sm text-muted-foreground">
+        <div className="mt-6 rounded-lg border bg-card p-12 text-center text-sm text-muted-foreground">
           Loading…
         </div>
       ) : count === 0 ? (
-        <div className="rounded-lg border bg-card p-12 text-center text-sm text-muted-foreground">
+        <div className="mt-6 rounded-lg border bg-card p-12 text-center text-sm text-muted-foreground">
           No services yet.
         </div>
       ) : (
-        <ServicesTable
-          services={services as ServiceRow[]}
-          onRowClick={(id) => router.push(`/catalog/services/${id}`)}
-        />
+        <div className="mt-6">
+          <ServicesTable
+            services={services as ServiceRow[]}
+            onRowClick={(id) => router.push(`/catalog/services/${id}`)}
+          />
+        </div>
       )}
     </div>
   );
@@ -137,56 +143,63 @@ function CategoryServicesView({ categoryId }: { categoryId: number }) {
   const count = services?.length ?? 0;
 
   return (
-    <div className="px-10 py-10 max-w-7xl">
-      <PageHeader
-        title={category?.name ?? 'Category'}
-        description={category ? `${category.service_count} services in this category` : ''}
-        back={{ href: '/catalog/services', label: 'All services' }}
-        actions={
-          <>
-            <Button
-              render={<Link href={`/catalog/categories/${categoryId}`} />}
-              nativeButton={false}
-              variant="outline"
-            >
-              <Settings2 className="size-4" />
-              Edit category
-            </Button>
-            <Button render={<Link href="/catalog/services/new" />} nativeButton={false}>
-              <Plus className="size-4" />
-              New service
-            </Button>
-          </>
-        }
-      />
-
-      {category ? <EligibilitySummary category={category} /> : null}
-
-      <div className="relative max-w-md mb-6">
-        <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
-        <Input
-          placeholder="Search services in this category…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          className="pl-9"
+    <div className="px-10 py-10">
+      {/* Sticky strip matching AllServicesView. EligibilitySummary
+          lives BELOW the sticky strip because it's per-category
+          context the operator only needs to glance at once. */}
+      <div className="sticky top-0 z-10 -mx-10 -mt-10 px-10 pt-10 pb-4 bg-background border-b border-border">
+        <PageHeader
+          title={category?.name ?? 'Category'}
+          description={category ? `${category.service_count} services in this category` : ''}
+          back={{ href: '/catalog/services', label: 'All services' }}
+          actions={
+            <>
+              <Button
+                render={<Link href={`/catalog/categories/${categoryId}`} />}
+                nativeButton={false}
+                variant="outline"
+              >
+                <Settings2 className="size-4" />
+                Edit category
+              </Button>
+              <Button render={<Link href="/catalog/services/new" />} nativeButton={false}>
+                <Plus className="size-4" />
+                New service
+              </Button>
+            </>
+          }
         />
+
+        <div className="relative max-w-md mt-4">
+          <Search className="size-4 absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground pointer-events-none" />
+          <Input
+            placeholder="Search services in this category…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            className="pl-9"
+          />
+        </div>
       </div>
 
+      {category ? <div className="mt-6"><EligibilitySummary category={category} /></div> : null}
+
       {isLoading ? (
-        <div className="rounded-lg border bg-card p-12 text-center text-sm text-muted-foreground">
+        <div className="mt-6 rounded-lg border bg-card p-12 text-center text-sm text-muted-foreground">
           Loading…
         </div>
       ) : count === 0 ? (
-        <div className="rounded-lg border bg-card p-12 text-center">
+        <div className="mt-6 rounded-lg border bg-card p-12 text-center">
           <p className="text-sm text-muted-foreground">
             {search ? 'No services match.' : 'No services in this category yet.'}
           </p>
         </div>
       ) : (
-        <ServicesTable
-          services={services as ServiceRow[]}
-          onRowClick={(id) => router.push(`/catalog/services/${id}`)}
-        />
+        <div className="mt-6">
+          <ServicesTable
+            services={services as ServiceRow[]}
+            onRowClick={(id) => router.push(`/catalog/services/${id}`)}
+          />
+        </div>
       )}
     </div>
   );
