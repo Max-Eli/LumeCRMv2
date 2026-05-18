@@ -298,8 +298,34 @@ class Subscription(TenantedModel):
         'invoices.InvoiceLineItem',
         on_delete=models.PROTECT,
         related_name='subscription',
-        help_text='The invoice line that paid for this cycle.',
+        null=True,
+        blank=True,
+        help_text=(
+            'The Lumè invoice line that paid for this cycle. '
+            'NULL for migration-imported rows — the upstream proof-of-'
+            'payment lives in `external_invoice_no` instead. Same '
+            'pattern as PurchasedPackage.'
+        ),
     )
+
+    # ── Migration provenance (Zenoti / Vagaro / etc.) ─────────────
+    # Set when this row was created by an importer rather than a
+    # live invoice close. The importer uses `(tenant, external_source,
+    # external_id)` for idempotent upsert. Live-created rows leave
+    # these blank.
+    external_id = models.CharField(max_length=100, blank=True, db_index=True)
+    external_source = models.CharField(
+        max_length=50, blank=True,
+        help_text="e.g. 'zenoti', 'vagaro'",
+    )
+    external_invoice_no = models.CharField(
+        max_length=100, blank=True,
+        help_text=(
+            "Upstream invoice / receipt number — the operator's link "
+            'back to the original system when researching a balance.'
+        ),
+    )
+    imported_at = models.DateTimeField(null=True, blank=True)
 
     # Snapshots — the plan as of sale time.
     name = models.CharField(max_length=200)
@@ -397,6 +423,15 @@ class SubscriptionItem(models.Model):
         'services.Service',
         on_delete=models.PROTECT,
         related_name='+',
+        null=True,
+        blank=True,
+        help_text=(
+            'FK to the catalog Service. NULL for migration-imported '
+            'rows where the upstream service name did not match any '
+            'Lumè Service in the catalog — the snapshot `service_name` '
+            'still displays so the operator can manually map / redeem '
+            'after the fact.'
+        ),
     )
     service_name = models.CharField(max_length=200)
     quantity_per_cycle = models.PositiveIntegerField()
