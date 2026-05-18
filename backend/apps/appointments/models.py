@@ -106,6 +106,18 @@ class Appointment(TenantedModel):
         help_text="e.g. 'staff', 'online', 'zenoti_import'",
     )
 
+    # Importer-set provenance. `external_id` is the upstream system's
+    # unique identifier (e.g. Zenoti's Invoice No on the appointment
+    # row). The importer uses `(tenant, external_source, external_id)`
+    # for idempotent upsert. Mirrors the pattern on Customer + Service
+    # + PurchasedPackage.
+    external_id = models.CharField(max_length=100, blank=True, db_index=True)
+    external_source = models.CharField(
+        max_length=50, blank=True,
+        help_text="e.g. 'zenoti', 'vagaro'",
+    )
+    imported_at = models.DateTimeField(null=True, blank=True)
+
     # Tokenized public-manage URL — set when source='online' so the
     # confirmation email can link to /book/manage/<token> for
     # reschedule + cancel WITHOUT login. 256-bit entropy via
