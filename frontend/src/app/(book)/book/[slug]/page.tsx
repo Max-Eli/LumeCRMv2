@@ -15,9 +15,9 @@
 
 'use client';
 
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, Search, X } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { use, useMemo } from 'react';
+import { use, useMemo, useState } from 'react';
 
 import { ApiError } from '@/lib/api';
 import {
@@ -112,8 +112,31 @@ function CatalogBody({
     return locations[0];
   }, [locations, urlLocationId]);
 
+  // Filter UI state. `null` category = All.
+  const [query, setQuery] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
+
+  const allCategories = useMemo(
+    () =>
+      Array.from(new Set(services.map((s) => s.category_name || 'Other'))).sort(),
+    [services],
+  );
+
+  const filteredServices = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return services.filter((s) => {
+      if (categoryFilter && (s.category_name || 'Other') !== categoryFilter) {
+        return false;
+      }
+      if (!q) return true;
+      const hay = `${s.name} ${s.description ?? ''}`.toLowerCase();
+      return hay.includes(q);
+    });
+  }, [services, categoryFilter, query]);
+
   // Group services by category for a scannable layout.
-  const grouped = useMemo(() => groupByCategory(services), [services]);
+  const grouped = useMemo(() => groupByCategory(filteredServices), [filteredServices]);
+  const showCategoryFilter = allCategories.length > 1;
 
   const handlePickService = (serviceId: number) => {
     if (!activeLocation) return;
@@ -185,6 +208,66 @@ function CatalogBody({
               </button>
             ))}
           </div>
+        </div>
+      ) : null}
+
+      {showCategoryFilter ? (
+        <div className="sticky top-[72px] sm:top-[80px] z-[9] -mx-4 sm:-mx-6 px-4 sm:px-6 py-3 bg-white/95 backdrop-blur supports-[backdrop-filter]:bg-white/80 border-b border-stone-200/80 mb-8 space-y-2.5">
+          <div className="relative">
+            <Search className="absolute left-3.5 top-1/2 -translate-y-1/2 size-4 text-stone-400 pointer-events-none" />
+            <input
+              type="search"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Search services…"
+              className="w-full h-10 pl-10 pr-10 rounded-full border border-stone-200 bg-white text-sm placeholder:text-stone-400 focus:outline-none focus:border-stone-900 focus:ring-2 focus:ring-stone-900/5 transition-colors"
+            />
+            {query ? (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 inline-flex size-7 items-center justify-center rounded-full text-stone-400 hover:text-stone-700 hover:bg-stone-100 transition-colors"
+              >
+                <X className="size-3.5" />
+              </button>
+            ) : null}
+          </div>
+          <div className="flex gap-1.5 overflow-x-auto -mx-4 sm:-mx-6 px-4 sm:px-6 pb-0.5 scrollbar-none">
+            <CategoryChip
+              active={categoryFilter === null}
+              onClick={() => setCategoryFilter(null)}
+              primaryColor={primaryColor}
+            >
+              All
+            </CategoryChip>
+            {allCategories.map((cat) => (
+              <CategoryChip
+                key={cat}
+                active={categoryFilter === cat}
+                onClick={() => setCategoryFilter(cat)}
+                primaryColor={primaryColor}
+              >
+                {cat}
+              </CategoryChip>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      {filteredServices.length === 0 ? (
+        <div className="rounded-2xl border border-stone-200 bg-stone-50/60 px-6 py-10 text-center">
+          <p className="font-serif text-lg font-semibold text-stone-900">No matches</p>
+          <p className="text-sm text-stone-600 mt-1.5">
+            Try a different search or clear the filters.
+          </p>
+          <button
+            type="button"
+            onClick={() => { setQuery(''); setCategoryFilter(null); }}
+            className="mt-4 inline-flex items-center gap-1.5 rounded-full border border-stone-300 bg-white px-4 py-1.5 text-xs font-medium text-stone-700 hover:border-stone-900 hover:bg-stone-50 transition-colors"
+          >
+            Clear filters
+          </button>
         </div>
       ) : null}
 
@@ -298,6 +381,34 @@ function SectionHeader({
         <p className="text-stone-600 mt-3 leading-relaxed max-w-prose">{subtitle}</p>
       ) : null}
     </div>
+  );
+}
+
+function CategoryChip({
+  active,
+  onClick,
+  primaryColor,
+  children,
+}: {
+  active: boolean;
+  onClick: () => void;
+  primaryColor: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        'shrink-0 rounded-full px-3.5 py-1.5 text-xs font-medium transition-all border whitespace-nowrap',
+        active
+          ? 'text-white shadow-sm border-transparent'
+          : 'border-stone-200 bg-white text-stone-700 hover:border-stone-900 hover:bg-stone-50',
+      )}
+      style={active ? { background: primaryColor } : undefined}
+    >
+      {children}
+    </button>
   );
 }
 

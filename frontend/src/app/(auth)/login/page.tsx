@@ -86,7 +86,7 @@ export default function LoginPage() {
             />
           )}
         </Link>
-        {tenant ? (
+        {tenant && !tenant.logo_url ? (
           <p className="font-serif text-sm tracking-tight text-muted-foreground">
             {tenant.name}
           </p>

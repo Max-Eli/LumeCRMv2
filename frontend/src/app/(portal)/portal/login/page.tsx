@@ -72,7 +72,7 @@ export default function PortalLoginPage() {
               </div>
             )}
             <h1 className="font-serif text-2xl font-semibold tracking-tight">
-              {tenant ? tenant.name : 'Sign in'}
+              {tenant && !tenant.logo_url ? tenant.name : 'Sign in'}
             </h1>
             <p className="text-sm text-muted-foreground mt-1.5">
               We&apos;ll email you a one-time sign-in link.
