@@ -106,17 +106,13 @@ export function PlatformSidebar({ user }: { user: User }) {
         })}
       </nav>
 
-      {/* Footer — exit + sign out */}
-      <div className="p-3 border-t border-sidebar-border space-y-1">
-        <Link
-          href="/dashboard"
-          className="flex items-center gap-3 px-3 py-2 rounded-md text-sm text-foreground/65 hover:bg-sidebar-accent/60 hover:text-foreground transition-colors"
-        >
-          <span className="text-xs uppercase tracking-wide text-accent">←</span>
-          <span>Back to CRM</span>
-        </Link>
-
-        <div className="px-3 pt-3 pb-2 flex items-center gap-2.5 border-t border-sidebar-border/50 mt-2">
+      {/* Footer — signed-in identity + sign out. The "Back to CRM"
+          link was removed: platform admins land here intentionally
+          and don't need a one-click route into a tenant they aren't
+          a member of. Real cross-tenant access goes through the
+          Impersonate feature on a tenant detail page (Phase 2). */}
+      <div className="p-3 border-t border-sidebar-border">
+        <div className="px-3 py-2 flex items-center gap-2.5">
           <InitialsAvatar name={userDisplayName} size="sm" />
           <div className="min-w-0 flex-1">
             <p className="text-xs text-foreground truncate font-medium">{userDisplayName}</p>
