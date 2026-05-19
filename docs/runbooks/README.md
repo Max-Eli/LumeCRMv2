@@ -31,3 +31,9 @@ muddling through.
 
 * [20-prod-launch-checklist.md](20-prod-launch-checklist.md) — every
   box that has to be ticked before the first paying spa onboards
+
+## Tenant onboarding
+
+* [30-zenoti-tenant-import.md](30-zenoti-tenant-import.md) — migrate a
+  spa from Zenoti into prod (services / employees / customers /
+  packages / memberships / appointments)
