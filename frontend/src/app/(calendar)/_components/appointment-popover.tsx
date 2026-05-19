@@ -38,7 +38,7 @@ import {
   useUpdateAppointment,
 } from '@/lib/appointments';
 import { useEmailSubmission, useFormSubmissions } from '@/lib/form-submissions';
-import { useAppointmentTreatmentRecords } from '@/lib/treatments';
+import { openTreatmentRecordWindow, useAppointmentTreatmentRecords } from '@/lib/treatments';
 import {
   INVOICE_STATUS_LABELS,
   formatMoneyCents,
@@ -692,7 +692,7 @@ function PopoverEmailButton({ submissionId }: { submissionId: number }) {
  */
 function TreatmentRecordSection({
   appointmentId,
-  customerId,
+  customerId: _customerId,
 }: {
   appointmentId: number;
   customerId: number;
@@ -702,12 +702,8 @@ function TreatmentRecordSection({
 
   const list = records ?? [];
   const signed = list.find((r) => r.parent_record_id === null);
-  // Deep-link to the customer-profile EMR tab where the operator can
-  // pick a template + fill it out. The `sign` param hints the page
-  // to auto-open the new-record dialog and pre-pin this appointment.
-  const targetPath = `/clients/${customerId}?tab=treatment-records${
-    signed ? '' : `&sign=${appointmentId}`
-  }`;
+
+  const openWindow = () => openTreatmentRecordWindow(appointmentId);
 
   return (
     <div className="px-4 py-3 space-y-2">
@@ -715,9 +711,10 @@ function TreatmentRecordSection({
         Treatment record
       </p>
       {signed ? (
-        <Link
-          href={targetPath}
-          className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-950/10 px-2.5 py-2 hover:bg-emerald-50/60 dark:hover:bg-emerald-950/20 transition-colors"
+        <button
+          type="button"
+          onClick={openWindow}
+          className="w-full flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-950/10 px-2.5 py-2 hover:bg-emerald-50/60 dark:hover:bg-emerald-950/20 transition-colors text-left"
         >
           <Activity className="size-3.5 text-emerald-700 dark:text-emerald-500 shrink-0" />
           <span className="text-xs flex-1 truncate">
@@ -727,18 +724,19 @@ function TreatmentRecordSection({
             Signed
           </span>
           <ExternalLink className="size-3 text-muted-foreground/70 shrink-0" aria-hidden />
-        </Link>
+        </button>
       ) : (
-        <Link
-          href={targetPath}
-          className="flex items-center gap-2 rounded-md border border-dashed border-foreground/15 bg-card hover:border-foreground/30 hover:bg-muted/40 px-2.5 py-2 transition-colors"
+        <button
+          type="button"
+          onClick={openWindow}
+          className="w-full flex items-center gap-2 rounded-md border border-dashed border-foreground/15 bg-card hover:border-foreground/30 hover:bg-muted/40 px-2.5 py-2 transition-colors text-left"
         >
           <Activity className="size-3.5 text-muted-foreground shrink-0" />
           <span className="text-xs flex-1 text-foreground/90">
             Sign treatment record
           </span>
           <ExternalLink className="size-3 text-muted-foreground/70 shrink-0" aria-hidden />
-        </Link>
+        </button>
       )}
     </div>
   );

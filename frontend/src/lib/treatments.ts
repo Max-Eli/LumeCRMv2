@@ -22,6 +22,26 @@ import {
 
 import { api } from './api';
 
+// ── Standalone window helper ──────────────────────────────────────
+
+/** Open the EMR fill page for an appointment in a focused popup
+ *  window (not a tab). Mirrors `openInvoiceWindow` — operators chart
+ *  in a dedicated window without the CRM dashboard chrome competing
+ *  for attention. Mobile browsers fall back to a tab.
+ *
+ *  Usage: from the calendar appointment popover's "Sign treatment
+ *  record" affordance. */
+export function openTreatmentRecordWindow(appointmentId: number): void {
+  const features = [
+    'popup=yes',
+    'width=1080',
+    'height=920',
+    'resizable=yes',
+    'scrollbars=yes',
+  ].join(',');
+  window.open(`/emr/${appointmentId}`, '_blank', features);
+}
+
 // ── Schema vocabulary ──────────────────────────────────────────────
 
 
