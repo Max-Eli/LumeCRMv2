@@ -179,6 +179,12 @@ STORAGES = {
             'default_acl': None,                            # block ACLs
             'querystring_auth': True,                       # signed URLs
             'querystring_expire': 600,                      # 10 minutes
+            # KMS-encrypted objects require AWS Signature v4. Without
+            # this django-storages can fall back to v2 and signed
+            # GETs return `InvalidArgument: ... require AWS Signature
+            # Version 4`.
+            'signature_version': 's3v4',
+            'addressing_style': 'virtual',
             'object_parameters': {
                 'ServerSideEncryption': 'aws:kms',
                 'SSEKMSKeyId': env('AWS_S3_KMS_KEY_ID'),
