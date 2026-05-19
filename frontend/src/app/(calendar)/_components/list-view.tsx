@@ -49,8 +49,13 @@ export function ListView({ timezone, appointments }: ListViewProps) {
 
   // Appointments come from the API ordered by start_time ascending; trust that.
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-card">
-      <ul className="divide-y">
+    <div className="flex-1 min-h-0 overflow-y-auto bg-muted/30 md:bg-card">
+      {/* Mobile: rounded cards with breathing room between them — a
+          flat divided list crammed dense rows together when the day
+          was busy and made the page hard to scan on a phone. Desktop
+          keeps the dense divided layout where vertical real estate
+          matters more than per-row separation. */}
+      <ul className="space-y-2.5 px-3 py-3 md:space-y-0 md:px-0 md:py-0 md:divide-y">
         {appointments.map((appt) => {
           const cancelled = appt.status === 'cancelled' || appt.status === 'no_show';
           const color = appt.service.category_color ?? 'hsl(220 9% 46%)';
@@ -176,7 +181,10 @@ export function ListView({ timezone, appointments }: ListViewProps) {
             </button>
           );
           return (
-            <li key={appt.id}>
+            <li
+              key={appt.id}
+              className="rounded-xl border bg-card overflow-hidden shadow-[0_1px_2px_rgba(28,25,23,0.03)] md:rounded-none md:border-0 md:shadow-none md:bg-transparent"
+            >
               <AppointmentPopover appointment={appt} timezone={timezone} trigger={trigger} />
             </li>
           );
