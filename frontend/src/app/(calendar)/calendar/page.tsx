@@ -17,7 +17,7 @@
 
 import { CalendarClock, X } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
 import { CalendarFilterBar, type DisplayMode } from '../_components/calendar-filter-bar';
 import { CalendarTopBar } from '../_components/calendar-top-bar';
@@ -38,6 +38,7 @@ import { NewAppointmentSheet } from '../_components/new-appointment-sheet';
 import { RightToolRail, TOOLS, type CalendarTool } from '../_components/right-tool-rail';
 import { ToolPanel } from '../_components/tool-panel';
 import { useAppointment, useAppointmentsForDate } from '@/lib/appointments';
+import { useCurrentMembership, useUser } from '@/lib/auth';
 import { useActiveLocation } from '@/lib/locations';
 import { useBookableMemberships } from '@/lib/memberships';
 import { tenantHourFromTime } from '@/lib/tenant';
@@ -132,6 +133,45 @@ export default function CalendarPage() {
   // ── Data ────────────────────────────────────────────────────────────────
   const { data: providers, isLoading: loadingProviders } = useBookableMemberships();
   const { data: appointments, isLoading: loadingAppts, error } = useAppointmentsForDate(date);
+  const { data: currentUser } = useUser();
+  const currentMembership = useCurrentMembership();
+
+  // Provider-role default: when a "provider" role user opens the
+  // calendar for the first time in this session, narrow the provider
+  // filter to their own appointments. Multi-provider tenants (5+
+  // injectors per day) overwhelm a single provider trying to find
+  // "my day" in the wall of other people's blocks.
+  //
+  // Behaviour rules:
+  //   - Fires once per page load, after both `useUser` and
+  //     `useBookableMemberships` have resolved.
+  //   - Skipped when the URL already has `?provider=` (deep-link,
+  //     reload, or the user has manually picked a filter — all are
+  //     respected).
+  //   - Skipped for any role other than `provider`.
+  //   - Match by email (the bookable-memberships payload is the
+  //     authoritative provider list; the current user's membership
+  //     doesn't carry an id we could use directly).
+  const didProviderDefault = useRef(false);
+  useEffect(() => {
+    if (didProviderDefault.current) return;
+    if (!providers || providers.length === 0) return;
+    if (!currentUser || !currentMembership) return;
+    didProviderDefault.current = true;
+    if (currentMembership.role !== 'provider') return;
+    if (providerFilter.length > 0) return;
+    const me = providers.find((p) => p.user_email === currentUser.email);
+    if (me) {
+      const next = new URLSearchParams(searchParams.toString());
+      next.set('provider', String(me.id));
+      router.replace(`/calendar${next.toString() ? `?${next.toString()}` : ''}`, {
+        scroll: false,
+      });
+    }
+    // The deps cover the data we read; we still gate with the ref so
+    // an intentional clear-filter doesn't re-trigger.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [providers, currentUser, currentMembership]);
   // The active location's business hours drive the day-view's visible
   // time window. Editing a location's hours at /org/locations/[id]
   // refreshes this query (TanStack invalidates the list), so the
