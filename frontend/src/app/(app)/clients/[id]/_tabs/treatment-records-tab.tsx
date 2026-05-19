@@ -98,7 +98,7 @@ export function TreatmentRecordsTab({ customerId }: { customerId: number }) {
   if (!records?.length) {
     return (
       <>
-        <div className="rounded-xl border border-dashed bg-card px-10 py-16 text-center max-w-2xl">
+        <div className="rounded-xl border border-dashed bg-card px-6 py-12 sm:px-10 sm:py-16 text-center max-w-2xl">
           <div className="inline-flex size-12 items-center justify-center rounded-full bg-muted mb-3">
             <ClipboardCheck className="size-5 text-muted-foreground" />
           </div>
