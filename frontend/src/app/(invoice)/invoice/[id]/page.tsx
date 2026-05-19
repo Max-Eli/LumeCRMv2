@@ -25,6 +25,7 @@ import {
   Ban,
   CheckCircle2,
   ChevronDown,
+  ChevronLeft,
   CreditCard,
   Download,
   Gift,
@@ -39,6 +40,7 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
+import Link from 'next/link';
 import { useSearchParams } from 'next/navigation';
 import { use, useState } from 'react';
 import { toast } from 'sonner';
@@ -331,21 +333,8 @@ function InvoiceBody({
   const tz = DEFAULT_TIMEZONE;
 
   return (
-    <div className="px-4 sm:px-8 py-6 sm:py-10 max-w-3xl mx-auto">
-      <PageHeader
-        title={invoice.invoice_number || `Invoice #${invoice.id}`}
-        description={`${appointment.customer.full_name} · ${appointment.service.name} · ${formatLongDateTime(appointment.start_time, tz)}`}
-        back={{ href: '/calendar', label: 'Back to calendar' }}
-        actions={
-          <div className="flex items-center gap-2">
-            <EmailInvoiceButton invoice={invoice} />
-            <DownloadPdfButton invoice={invoice} />
-            <StatusBadge tone={INVOICE_STATUS_TONE[invoice.status]}>
-              {INVOICE_STATUS_LABELS[invoice.status]}
-            </StatusBadge>
-          </div>
-        }
-      />
+    <div className="px-3 sm:px-8 py-4 sm:py-10 max-w-3xl mx-auto">
+      <InvoiceHeader appointment={appointment} invoice={invoice} timezone={tz} />
 
       <Card>
         <CardContent className="p-0">
@@ -427,6 +416,63 @@ function InvoiceBody({
   );
 }
 
+// ── Header ───────────────────────────────────────────────────────────────
+//
+// Mobile-tuned standalone header. The generic `<PageHeader>` puts the
+// title + actions on one row which crowds badly when the actions slot
+// holds 3 controls (Email, PDF, status badge) and the title is a long
+// invoice number. This header stacks:
+//   row 1: Back link
+//   row 2: Title + status badge
+//   row 3: Subtitle (customer · service · time)
+//   row 4: Action row (Email · PDF) — right-aligned on desktop, full-
+//          width pill row on mobile
+
+function InvoiceHeader({
+  appointment,
+  invoice,
+  timezone,
+}: {
+  appointment: NonNullable<ReturnType<typeof useAppointment>['data']>;
+  invoice: Invoice;
+  timezone: string;
+}) {
+  return (
+    <div className="mb-5 sm:mb-8">
+      <Link
+        href="/calendar"
+        className="inline-flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground transition-colors mb-3"
+      >
+        <ChevronLeft className="size-3.5" />
+        Back to calendar
+      </Link>
+      <div className="flex items-start gap-3 flex-wrap">
+        <div className="min-w-0 flex-1">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h1 className="font-serif text-xl sm:text-3xl font-semibold tracking-tight text-foreground break-all">
+              {invoice.invoice_number || `Invoice #${invoice.id}`}
+            </h1>
+            <StatusBadge tone={INVOICE_STATUS_TONE[invoice.status]}>
+              {INVOICE_STATUS_LABELS[invoice.status]}
+            </StatusBadge>
+          </div>
+          <p className="text-xs sm:text-sm text-muted-foreground mt-2 leading-relaxed">
+            <span className="font-medium text-foreground/90">{appointment.customer.full_name}</span>
+            <span className="mx-1.5 text-muted-foreground/50">·</span>
+            {appointment.service.name}
+            <span className="mx-1.5 text-muted-foreground/50">·</span>
+            <span className="tabular-nums">{formatLongDateTime(appointment.start_time, timezone)}</span>
+          </p>
+        </div>
+      </div>
+      <div className="flex items-center gap-2 mt-4">
+        <EmailInvoiceButton invoice={invoice} />
+        <DownloadPdfButton invoice={invoice} />
+      </div>
+    </div>
+  );
+}
+
 // ── Sections ─────────────────────────────────────────────────────────────
 
 function ContextSection({
@@ -441,7 +487,7 @@ function ContextSection({
     `${provider.user_first_name ?? ''} ${provider.user_last_name ?? ''}`.trim() ||
     provider.user_email;
   return (
-    <dl className="grid grid-cols-[max-content_1fr] gap-x-6 gap-y-2 px-6 py-5 text-sm">
+    <dl className="grid grid-cols-[max-content_1fr] gap-x-4 sm:gap-x-6 gap-y-2 px-4 sm:px-6 py-5 text-sm">
       <dt className="text-muted-foreground">Customer</dt>
       <dd className="font-medium">{appointment.customer.full_name}</dd>
 
@@ -661,11 +707,11 @@ function AddLinePanel({ invoice }: { invoice: Invoice }) {
           : membershipOptions;
 
   return (
-    <div className="px-6 py-5 border-t bg-muted/20">
+    <div className="px-4 sm:px-6 py-5 border-t bg-muted/20">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-3">
         Add to this invoice
       </p>
-      <div className="flex items-end gap-2 flex-wrap">
+      <div className="flex flex-col sm:flex-row sm:items-end sm:flex-wrap gap-2">
         <div className="inline-flex items-center gap-0.5 rounded-md border bg-card p-0.5 flex-wrap">
           {(['product', 'service', 'package', 'membership'] as const).map((k) => (
             <button
@@ -693,7 +739,7 @@ function AddLinePanel({ invoice }: { invoice: Invoice }) {
           ))}
         </div>
 
-        <div className="flex-1 min-w-[200px]">
+        <div className="w-full sm:flex-1 sm:min-w-[200px]">
           <Select
             value={selectedId}
             onValueChange={(v) => setSelectedId(v ?? '')}
@@ -743,6 +789,7 @@ function AddLinePanel({ invoice }: { invoice: Invoice }) {
           type="button"
           onClick={onAdd}
           disabled={!selectedId || add.isPending}
+          className="w-full sm:w-auto"
         >
           {add.isPending ? (
             <Loader2 className="size-4 animate-spin" />
@@ -817,7 +864,7 @@ function RedeemFromPackagePanel({
   };
 
   return (
-    <div className="px-6 py-5 border-t bg-emerald-50/40">
+    <div className="px-4 sm:px-6 py-5 border-t bg-emerald-50/40">
       <div className="flex items-start gap-2 mb-3">
         <Layers className="size-3.5 text-emerald-700 mt-0.5 shrink-0" />
         <p className="text-[11px] uppercase tracking-wide text-emerald-900 font-medium">
@@ -829,8 +876,8 @@ function RedeemFromPackagePanel({
           Loading package balances…
         </p>
       ) : (
-        <div className="flex items-end gap-2 flex-wrap">
-          <div className="flex-1 min-w-[200px]">
+        <div className="flex flex-col sm:flex-row sm:items-end sm:flex-wrap gap-2">
+          <div className="w-full sm:flex-1 sm:min-w-[200px]">
             <Select
               value={selectedPackageId}
               onValueChange={(v) => onPackageChange(v ?? '')}
@@ -853,7 +900,7 @@ function RedeemFromPackagePanel({
             </Select>
           </div>
 
-          <div className="flex-1 min-w-[200px]">
+          <div className="w-full sm:flex-1 sm:min-w-[200px]">
             <Select
               value={selectedServiceId}
               onValueChange={(v) => setSelectedServiceId(v ?? '')}
@@ -884,6 +931,7 @@ function RedeemFromPackagePanel({
             disabled={
               !selectedPackageId || !selectedServiceId || redeem.isPending
             }
+            className="w-full sm:w-auto"
           >
             {redeem.isPending ? (
               <Loader2 className="size-4 animate-spin" />
@@ -901,8 +949,8 @@ function RedeemFromPackagePanel({
 function TotalsBlock({ invoice }: { invoice: Invoice }) {
   const hasGiftCardCredits = invoice.gift_card_credits_cents > 0;
   return (
-    <div className="px-6 py-5 flex justify-end">
-      <dl className="text-sm space-y-1.5 min-w-[220px]">
+    <div className="px-4 sm:px-6 py-5 flex justify-stretch sm:justify-end">
+      <dl className="text-sm space-y-1.5 w-full sm:w-auto sm:min-w-[260px]">
         <SummaryRow label="Subtotal" value={formatMoneyCents(invoice.subtotal_cents)} />
         <SummaryRow label="Tax" value={formatMoneyCents(invoice.tax_cents)} />
         <div className="border-t border-border/60 pt-1.5 mt-1.5">
@@ -970,7 +1018,7 @@ function SummaryRow({
 function LifecycleSummary({ invoice }: { invoice: Invoice }) {
   if (invoice.status === 'paid') {
     return (
-      <div className="px-6 py-5 text-xs space-y-1 text-muted-foreground">
+      <div className="px-4 sm:px-6 py-5 text-xs space-y-1 text-muted-foreground">
         <p>
           <span className="text-foreground font-medium">Paid</span>{' '}
           {invoice.closed_at ? `on ${formatLongDateTime(invoice.closed_at, DEFAULT_TIMEZONE)}` : ''}
@@ -992,7 +1040,7 @@ function LifecycleSummary({ invoice }: { invoice: Invoice }) {
   }
   if (invoice.status === 'void') {
     return (
-      <div className="px-6 py-5 text-xs space-y-1 text-muted-foreground">
+      <div className="px-4 sm:px-6 py-5 text-xs space-y-1 text-muted-foreground">
         <p>
           <span className="text-destructive font-medium">Voided</span>{' '}
           {invoice.voided_at ? `on ${formatLongDateTime(invoice.voided_at, DEFAULT_TIMEZONE)}` : ''}
@@ -1062,7 +1110,7 @@ function RedeemFromMembershipPanel({
   };
 
   return (
-    <div className="px-6 py-5 border-t bg-violet-50/40">
+    <div className="px-4 sm:px-6 py-5 border-t bg-violet-50/40">
       <div className="flex items-start gap-2 mb-3">
         <Repeat className="size-3.5 text-violet-700 mt-0.5 shrink-0" />
         <p className="text-[11px] uppercase tracking-wide text-violet-900 font-medium">
@@ -1074,8 +1122,8 @@ function RedeemFromMembershipPanel({
           Loading membership balances…
         </p>
       ) : (
-        <div className="flex items-end gap-2 flex-wrap">
-          <div className="flex-1 min-w-[200px]">
+        <div className="flex flex-col sm:flex-row sm:items-end sm:flex-wrap gap-2">
+          <div className="w-full sm:flex-1 sm:min-w-[200px]">
             <Select
               value={selectedSubId}
               onValueChange={(v) => onSubChange(v ?? '')}
@@ -1098,7 +1146,7 @@ function RedeemFromMembershipPanel({
             </Select>
           </div>
 
-          <div className="flex-1 min-w-[200px]">
+          <div className="w-full sm:flex-1 sm:min-w-[200px]">
             <Select
               value={selectedServiceId}
               onValueChange={(v) => setSelectedServiceId(v ?? '')}
@@ -1129,6 +1177,7 @@ function RedeemFromMembershipPanel({
             disabled={
               !selectedSubId || !selectedServiceId || redeem.isPending
             }
+            className="w-full sm:w-auto"
           >
             {redeem.isPending ? (
               <Loader2 className="size-4 animate-spin" />
@@ -1202,7 +1251,7 @@ function SellGiftCardPanel({ invoice }: { invoice: Invoice }) {
 
   if (!open) {
     return (
-      <div className="px-6 py-4 border-t bg-emerald-50/30">
+      <div className="px-4 sm:px-6 py-4 border-t bg-emerald-50/30">
         <button
           type="button"
           onClick={() => setOpen(true)}
@@ -1219,7 +1268,7 @@ function SellGiftCardPanel({ invoice }: { invoice: Invoice }) {
   return (
     <form
       onSubmit={onSubmit}
-      className="px-6 py-5 border-t bg-emerald-50/30 space-y-3"
+      className="px-4 sm:px-6 py-5 border-t bg-emerald-50/30 space-y-3"
     >
       <div className="flex items-start justify-between gap-3">
         <div>
@@ -1337,8 +1386,8 @@ function SellGiftCardPanel({ invoice }: { invoice: Invoice }) {
         </div>
       ) : null}
 
-      <div className="flex justify-end pt-2">
-        <Button type="submit" disabled={sale.isPending}>
+      <div className="flex justify-stretch sm:justify-end pt-2">
+        <Button type="submit" disabled={sale.isPending} className="w-full sm:w-auto">
           {sale.isPending ? (
             <Loader2 className="size-4 animate-spin" />
           ) : (
@@ -1435,7 +1484,7 @@ function ApplyGiftCardPanel({ invoice }: { invoice: Invoice }) {
 
   if (!open) {
     return (
-      <div className="px-6 py-4 border-t bg-emerald-50/30">
+      <div className="px-4 sm:px-6 py-4 border-t bg-emerald-50/30">
         <button
           type="button"
           onClick={() => setOpen(true)}
@@ -1455,7 +1504,7 @@ function ApplyGiftCardPanel({ invoice }: { invoice: Invoice }) {
   }
 
   return (
-    <div className="px-6 py-5 border-t bg-emerald-50/30 space-y-3">
+    <div className="px-4 sm:px-6 py-5 border-t bg-emerald-50/30 space-y-3">
       <div className="flex items-start justify-between gap-3">
         <div>
           <p className="text-[11px] uppercase tracking-wide text-emerald-900 font-medium flex items-center gap-1.5">
@@ -1481,8 +1530,8 @@ function ApplyGiftCardPanel({ invoice }: { invoice: Invoice }) {
         </button>
       </div>
 
-      <div className="flex items-end gap-2 flex-wrap">
-        <div className="flex-1 min-w-[200px]">
+      <div className="flex flex-col sm:flex-row sm:items-end sm:flex-wrap gap-2">
+        <div className="w-full sm:flex-1 sm:min-w-[200px]">
           <label
             htmlFor="agc-code"
             className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium"
@@ -1510,6 +1559,7 @@ function ApplyGiftCardPanel({ invoice }: { invoice: Invoice }) {
             onClick={onLookup}
             disabled={lookup.isPending || !code.trim()}
             variant="outline"
+            className="w-full sm:w-auto"
           >
             {lookup.isPending ? (
               <Loader2 className="size-4 animate-spin" />
@@ -1535,8 +1585,8 @@ function ApplyGiftCardPanel({ invoice }: { invoice: Invoice }) {
               This card isn&rsquo;t redeemable (voided, expired, or zero balance).
             </div>
           ) : (
-            <div className="flex items-end gap-2 flex-wrap">
-              <div className="flex-1 min-w-[200px]">
+            <div className="flex flex-col sm:flex-row sm:items-end sm:flex-wrap gap-2">
+              <div className="w-full sm:flex-1 sm:min-w-[200px]">
                 <label
                   htmlFor="agc-amount"
                   className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium"
@@ -1564,6 +1614,7 @@ function ApplyGiftCardPanel({ invoice }: { invoice: Invoice }) {
                 type="button"
                 onClick={onApply}
                 disabled={apply.isPending}
+                className="w-full sm:w-auto"
               >
                 {apply.isPending ? (
                   <Loader2 className="size-4 animate-spin" />
@@ -1577,6 +1628,7 @@ function ApplyGiftCardPanel({ invoice }: { invoice: Invoice }) {
                 variant="outline"
                 onClick={reset}
                 disabled={apply.isPending}
+                className="w-full sm:w-auto"
               >
                 Different card
               </Button>
@@ -1621,8 +1673,8 @@ function ActionRow({
 }) {
   if (invoice.status === 'open') {
     return (
-      <div className="flex flex-wrap items-center gap-2">
-        <Button type="button" onClick={onPay}>
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2">
+        <Button type="button" onClick={onPay} size="lg" className="w-full sm:w-auto">
           <CreditCard className="size-4" />
           Take payment · {formatMoneyCents(invoice.total_cents)}
         </Button>
@@ -1631,7 +1683,7 @@ function ActionRow({
             type="button"
             variant="outline"
             onClick={onVoid}
-            className="text-destructive hover:text-destructive"
+            className="w-full sm:w-auto text-destructive hover:text-destructive"
           >
             <Ban className="size-4" />
             Void invoice
@@ -1661,8 +1713,8 @@ function ActionRow({
       );
     }
     return (
-      <div className="flex flex-wrap items-center gap-3">
-        <Button type="button" variant="outline" onClick={onReopen}>
+      <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-3">
+        <Button type="button" variant="outline" onClick={onReopen} className="w-full sm:w-auto">
           <RotateCcw className="size-4" />
           Reopen invoice
         </Button>
@@ -1716,7 +1768,7 @@ function PayForm({
 
   return (
     <Card>
-      <CardContent className="p-6 space-y-4">
+      <CardContent className="p-4 sm:p-6 space-y-4">
         <div>
           <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
             Take payment
@@ -1760,11 +1812,11 @@ function PayForm({
           </label>
         </div>
 
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <Button type="button" variant="outline" disabled={close.isPending} onClick={onCancel}>
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
+          <Button type="button" variant="outline" disabled={close.isPending} onClick={onCancel} className="w-full sm:w-auto">
             Cancel
           </Button>
-          <Button type="button" disabled={close.isPending} onClick={submit}>
+          <Button type="button" disabled={close.isPending} onClick={submit} size="lg" className="w-full sm:w-auto sm:size-default">
             {close.isPending ? 'Recording…' : 'Confirm payment'}
           </Button>
         </div>
@@ -1803,7 +1855,7 @@ function ReopenForm({
 
   return (
     <Card>
-      <CardContent className="p-6 space-y-4">
+      <CardContent className="p-4 sm:p-6 space-y-4">
         <div>
           <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
             Reopen invoice
@@ -1824,11 +1876,11 @@ function ReopenForm({
             className="w-full mt-1.5 h-9 rounded-md border bg-background px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
           />
         </label>
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <Button type="button" variant="outline" disabled={reopen.isPending} onClick={onCancel}>
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
+          <Button type="button" variant="outline" disabled={reopen.isPending} onClick={onCancel} className="w-full sm:w-auto">
             Cancel
           </Button>
-          <Button type="button" disabled={reopen.isPending || !trimmed} onClick={submit}>
+          <Button type="button" disabled={reopen.isPending || !trimmed} onClick={submit} className="w-full sm:w-auto">
             {reopen.isPending ? 'Reopening…' : 'Reopen'}
           </Button>
         </div>
@@ -1867,7 +1919,7 @@ function VoidForm({
 
   return (
     <Card>
-      <CardContent className="p-6 space-y-4">
+      <CardContent className="p-4 sm:p-6 space-y-4">
         <div>
           <p className="text-[11px] uppercase tracking-wide text-destructive">
             Void invoice
@@ -1887,8 +1939,8 @@ function VoidForm({
             className="w-full mt-1.5 h-9 rounded-md border bg-background px-3 text-sm shadow-xs outline-none focus-visible:border-ring focus-visible:ring-3 focus-visible:ring-ring/50"
           />
         </label>
-        <div className="flex items-center justify-end gap-2 pt-2">
-          <Button type="button" variant="outline" disabled={voidInv.isPending} onClick={onCancel}>
+        <div className="flex flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2 pt-2">
+          <Button type="button" variant="outline" disabled={voidInv.isPending} onClick={onCancel} className="w-full sm:w-auto">
             Cancel
           </Button>
           <Button
@@ -1896,6 +1948,7 @@ function VoidForm({
             variant="destructive"
             disabled={voidInv.isPending || !trimmed}
             onClick={submit}
+            className="w-full sm:w-auto"
           >
             {voidInv.isPending ? 'Voiding…' : 'Void invoice'}
           </Button>

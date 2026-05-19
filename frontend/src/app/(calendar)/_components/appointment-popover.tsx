@@ -41,6 +41,7 @@ import { useEmailSubmission, useFormSubmissions } from '@/lib/form-submissions';
 import {
   INVOICE_STATUS_LABELS,
   formatMoneyCents,
+  openInvoiceWindow,
   useInvoiceForAppointment,
 } from '@/lib/invoices';
 import { cn } from '@/lib/utils';
@@ -432,19 +433,14 @@ function InvoiceCta({ appointmentId }: { appointmentId: number }) {
   }
 
   const isOpen = invoice.status === 'open';
-  const href = isOpen
-    ? `/invoice/${appointmentId}?action=pay`
-    : `/invoice/${appointmentId}`;
-
   const label = isOpen
     ? `Take payment · ${formatMoneyCents(invoice.total_cents)}`
     : `View invoice · ${INVOICE_STATUS_LABELS[invoice.status]}`;
 
   return (
-    <Link
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
+    <button
+      type="button"
+      onClick={() => openInvoiceWindow(appointmentId, isOpen ? 'pay' : undefined)}
       className={cn(
         buttonVariants({ variant: isOpen ? 'default' : 'outline', size: 'lg' }),
         'w-full justify-start',
@@ -453,8 +449,8 @@ function InvoiceCta({ appointmentId }: { appointmentId: number }) {
       <CreditCard className="size-4" />
       <span className="truncate">{label}</span>
       <ExternalLink className="size-3.5 ml-auto opacity-70" aria-hidden />
-      <span className="sr-only">(opens in new tab)</span>
-    </Link>
+      <span className="sr-only">(opens in a new window)</span>
+    </button>
   );
 }
 

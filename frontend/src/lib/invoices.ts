@@ -21,6 +21,34 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { ApiError, api } from './api';
 
+// ── Take-payment window ──────────────────────────────────────────────────
+
+/** Open the invoice / take-payment surface in a true popup window
+ *  (not a new tab). Operators expect a focused checkout context,
+ *  not another tab buried in their existing stack.
+ *
+ *  Browsers vary in how they honor `popup`: Chrome reliably opens a
+ *  bare window; Firefox + Safari may still render a tab if the user
+ *  has set their preferences that way. Mobile browsers always open
+ *  it as a tab — there's no concept of a window on a phone — which
+ *  is the right behavior there anyway. */
+export function openInvoiceWindow(appointmentId: number, action?: 'pay' | 'reopen' | 'void'): void {
+  const path = action
+    ? `/invoice/${appointmentId}?action=${action}`
+    : `/invoice/${appointmentId}`;
+  const features = [
+    'popup=yes',
+    'width=1080',
+    'height=920',
+    'resizable=yes',
+    'scrollbars=yes',
+  ].join(',');
+  // `_blank` so each open invoice gets its own window — using a
+  // named target would reuse one window and clobber the operator's
+  // existing checkout.
+  window.open(path, '_blank', features);
+}
+
 // ── Types ────────────────────────────────────────────────────────────────
 
 export type InvoiceStatus = 'open' | 'paid' | 'void';

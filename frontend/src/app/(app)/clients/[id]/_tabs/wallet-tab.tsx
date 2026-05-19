@@ -20,13 +20,13 @@ import {
   Clock,
   Receipt,
 } from 'lucide-react';
-import Link from 'next/link';
 import { useMemo } from 'react';
 
 import {
   type Invoice,
   type InvoiceStatus,
   formatMoneyCents,
+  openInvoiceWindow,
   PAYMENT_METHOD_LABELS,
   useCustomerInvoices,
 } from '@/lib/invoices';
@@ -228,27 +228,20 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
       ? invoice.closed_at
       : invoice.created_at,
   );
-  // Invoice detail lives at `/invoice/[appointmentId]` and opens in
-  // its own window so the operator's checkout context isn't tangled
-  // with the CRM dashboard. When `appointment` is null we render a
-  // non-link row — Phase 2A POS will add standalone invoices with
-  // their own page.
-  const href = invoice.appointment
-    ? `/invoice/${invoice.appointment.id}`
-    : null;
-  const Wrapper: React.ElementType = href ? Link : 'div';
-  const wrapperProps = href
-    ? { href, target: '_blank' as const, rel: 'noopener noreferrer' }
-    : {};
+  // Invoice detail opens in a separate popup window via
+  // `openInvoiceWindow` so the operator's checkout context lives
+  // outside the CRM dashboard chrome. Rows without an appointment
+  // (manual invoices, Phase 2A) render as a non-interactive div.
+  const appointmentId = invoice.appointment?.id ?? null;
+  const interactive = appointmentId !== null;
 
-  return (
-    <Wrapper
-      {...wrapperProps}
-      className={cn(
-        'flex items-center gap-4 px-4 py-3 transition-colors group',
-        href ? 'hover:bg-muted/40' : '',
-      )}
-    >
+  const sharedClasses = cn(
+    'flex items-center gap-4 px-4 py-3 transition-colors group w-full text-left',
+    interactive ? 'hover:bg-muted/40 cursor-pointer' : '',
+  );
+
+  const inner = (
+    <>
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2 flex-wrap">
           <span className="font-mono text-xs text-foreground/80">
@@ -281,10 +274,23 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
           </div>
         ) : null}
       </div>
-      {href ? (
+      {interactive ? (
         <ChevronRight className="size-4 text-muted-foreground/60 group-hover:text-foreground transition-colors shrink-0" />
       ) : null}
-    </Wrapper>
+    </>
+  );
+
+  if (!interactive || appointmentId === null) {
+    return <div className={sharedClasses}>{inner}</div>;
+  }
+  return (
+    <button
+      type="button"
+      onClick={() => openInvoiceWindow(appointmentId)}
+      className={sharedClasses}
+    >
+      {inner}
+    </button>
   );
 }
 
