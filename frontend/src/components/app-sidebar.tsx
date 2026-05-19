@@ -51,7 +51,7 @@ import { cn } from '@/lib/utils';
 
 const COLLAPSED_KEY = 'lume_sidebar_collapsed';
 
-interface NavLink {
+export interface NavLink {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
@@ -74,7 +74,7 @@ interface NavLink {
   children?: SubNavLink[];
 }
 
-interface SubNavLink {
+export interface SubNavLink {
   href: string;
   label: string;
   /** When set, only members with one of these roles see the link.
@@ -83,7 +83,7 @@ interface SubNavLink {
   roles?: ReadonlyArray<'owner' | 'manager' | 'front_desk' | 'provider' | 'bookkeeper' | 'marketing'>;
 }
 
-const NAV_LINKS: NavLink[] = [
+export const NAV_LINKS: NavLink[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, group: 'location' },
   { href: '/calendar', label: 'Calendar', icon: Calendar, group: 'location' },
   { href: '/clients', label: 'Clients', icon: Users, group: 'location' },

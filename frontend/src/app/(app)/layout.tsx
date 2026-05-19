@@ -4,15 +4,22 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 import { AppSidebar } from '@/components/app-sidebar';
+import { MobileNav } from '@/components/mobile-nav';
 import { useLogout, useUser } from '@/lib/auth';
+import { cn } from '@/lib/utils';
 
 /**
  * Authenticated app shell.
  *
- * Two-pane layout: the sidebar is pinned (own component, viewport-tall),
- * `<main>` is the scrolling area. Routes that need to use sticky positioning
- * (sticky save bar on forms, sticky filter row on tables, etc.) work because
- * `<main>` is the nearest scrolling ancestor.
+ * **Desktop (≥1024px)**: two-pane layout — the `<AppSidebar>` is
+ * pinned (own component, viewport-tall) and `<main>` is the scrolling
+ * area. Routes that need sticky positioning (sticky save bars, sticky
+ * filter rows) work because `<main>` is the nearest scrolling ancestor.
+ *
+ * **Mobile (<1024px)**: the desktop sidebar is hidden; `<MobileNav>`
+ * supplies a top app bar (hamburger + brand) and a bottom tab bar
+ * (Calendar · Clients · Catalog · More). The page body sits between
+ * them with enough bottom padding to clear the tab bar.
  *
  * Auth gates:
  *   1. Anyone without a current user is redirected to /login.
@@ -83,9 +90,26 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="flex h-screen overflow-hidden bg-background">
-      <AppSidebar user={user} />
-      <main className="flex-1 min-w-0 overflow-y-auto">{children}</main>
+    <div className="lg:flex lg:h-screen lg:overflow-hidden bg-background">
+      {/* Desktop sidebar — hidden on mobile, the MobileNav fills in. */}
+      <div className="hidden lg:flex">
+        <AppSidebar user={user} />
+      </div>
+
+      {/* Mobile top + bottom nav bars. Self-hides at lg+. */}
+      <MobileNav user={user} />
+
+      <main
+        className={cn(
+          // Desktop: own scrollable column inside the flex shell.
+          'lg:flex-1 lg:min-w-0 lg:overflow-y-auto',
+          // Mobile: page body scrolls naturally; pad the bottom so
+          // content clears the 56px tab bar (+ iOS safe-area).
+          'pb-[calc(56px+env(safe-area-inset-bottom))] lg:pb-0',
+        )}
+      >
+        {children}
+      </main>
     </div>
   );
 }
