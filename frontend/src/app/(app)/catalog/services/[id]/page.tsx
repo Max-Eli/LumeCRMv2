@@ -795,7 +795,7 @@ function HeroPhotoSection({ service }: { service: Service }) {
               src={photoUrl}
               alt=""
               className={cn(
-                'absolute inset-0 size-full object-cover transition-opacity',
+                'absolute inset-0 size-full object-contain transition-opacity',
                 busy && 'opacity-40',
               )}
             />
