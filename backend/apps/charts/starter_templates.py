@@ -70,6 +70,7 @@ STARTER_CATEGORIES = (
     'Facials & Skin',
     'Laser & Energy',
     'Body & Contouring',
+    'IV & Wellness',
     'Other',
 )
 
@@ -602,6 +603,175 @@ STARTER_TEMPLATES: list[StarterTemplate] = [
              'options': _options('Yes', 'No')},
             {'id': 'follow_up_weeks', 'type': 'number',
              'label': 'Follow-up consult in (weeks)'},
+            {'id': 'provider_notes', 'type': 'long_text',
+             'label': 'Provider notes'},
+        ],
+    },
+
+    # ── IV & Wellness ───────────────────────────────────────────────
+    {
+        'slug': 'iv-therapy',
+        'name': 'IV therapy / infusion record',
+        'description': (
+            'Clinical documentation for intravenous vitamin / hydration '
+            '/ NAD+ infusions. Pre-infusion vitals, IV access details, '
+            'protocol + ingredient capture (with lot numbers), infusion '
+            'monitoring, and post-infusion assessment.'
+        ),
+        'category': 'IV & Wellness',
+        'fields': [
+            # Pre-infusion screening
+            {'id': 'consent_on_file', 'type': 'choice_single',
+             'label': 'IV therapy consent on file + reviewed today',
+             'required': True,
+             'options': _options('Yes', 'Reviewed verbally', 'No — stop')},
+            {'id': 'nothing_to_drink_or_eat', 'type': 'short_text',
+             'label': 'Last food / drink (time + what)'},
+            {'id': 'allergies_today', 'type': 'long_text',
+             'label': 'Allergies reviewed (medications, foods, latex, adhesives)',
+             'required': True},
+            {'id': 'recent_meds', 'type': 'long_text',
+             'label': 'Current medications + supplements (blood thinners, diuretics, etc.)'},
+            {'id': 'pregnancy_status', 'type': 'choice_single',
+             'label': 'Pregnancy / nursing status',
+             'options': _options('Not applicable', 'Not pregnant', 'Pregnant', 'Nursing', 'Unsure')},
+
+            # Pre-infusion vitals
+            {'id': 'pre_bp_systolic', 'type': 'number',
+             'label': 'Pre-infusion BP — systolic (mmHg)', 'required': True},
+            {'id': 'pre_bp_diastolic', 'type': 'number',
+             'label': 'Pre-infusion BP — diastolic (mmHg)', 'required': True},
+            {'id': 'pre_heart_rate', 'type': 'number',
+             'label': 'Pre-infusion heart rate (bpm)', 'required': True},
+            {'id': 'pre_spo2', 'type': 'number',
+             'label': 'Pre-infusion SpO2 (%)'},
+            {'id': 'pre_temp', 'type': 'short_text',
+             'label': 'Pre-infusion temperature (°F)'},
+            {'id': 'patient_weight_lbs', 'type': 'number',
+             'label': 'Patient weight (lbs)'},
+
+            # IV access
+            {'id': 'iv_site', 'type': 'choice_single',
+             'label': 'IV access site',
+             'required': True,
+             'options': _options(
+                 'Right antecubital (AC)', 'Left antecubital (AC)',
+                 'Right forearm', 'Left forearm',
+                 'Right hand', 'Left hand',
+                 'Right wrist', 'Left wrist',
+                 'Other',
+             )},
+            {'id': 'iv_site_other', 'type': 'short_text',
+             'label': 'IV site — other / detail'},
+            {'id': 'iv_gauge', 'type': 'choice_single',
+             'label': 'Catheter gauge',
+             'required': True,
+             'options': _options('20g', '22g', '24g', 'Other')},
+            {'id': 'iv_attempts', 'type': 'number',
+             'label': 'IV access attempts',
+             'required': True},
+            {'id': 'access_notes', 'type': 'long_text',
+             'label': 'IV access notes (anatomy, difficulty, flush response)'},
+
+            # Protocol + bag / additives
+            {'id': 'base_fluid', 'type': 'choice_single',
+             'label': 'Base fluid',
+             'required': True,
+             'options': _options(
+                 '0.9% Normal Saline',
+                 "Lactated Ringer's",
+                 'D5W',
+                 'Sterile water',
+                 'Other',
+             )},
+            {'id': 'base_volume_ml', 'type': 'number',
+             'label': 'Base fluid volume (mL)',
+             'required': True},
+            {'id': 'protocol_name', 'type': 'choice_single',
+             'label': 'Protocol / drip',
+             'required': True,
+             'options': _options(
+                 "Myers' cocktail",
+                 'Energy / B-complex boost',
+                 'Immune support (high-dose vitamin C)',
+                 'Hydration only',
+                 'Hangover recovery',
+                 'NAD+ infusion',
+                 'Glutathione push',
+                 'Beauty / glow',
+                 'Athletic recovery',
+                 'Custom (specify in additives)',
+             )},
+            {'id': 'additives', 'type': 'long_text',
+             'label': 'Additives — list each: name · dose · lot · expiration',
+             'required': True,
+             'help_text': (
+                 'One per line. Example: "Magnesium chloride 2g · Lot '
+                 'A4823 · exp 2027-03". Capture lot + expiration on '
+                 'every ingredient.'
+             )},
+            {'id': 'push_meds', 'type': 'long_text',
+             'label': 'IV push medications (glutathione, B12, etc.) — name, dose, lot'},
+
+            # Infusion details
+            {'id': 'drip_rate', 'type': 'short_text',
+             'label': 'Drip rate (gtts/min or mL/hr)'},
+            {'id': 'infusion_duration_min', 'type': 'number',
+             'label': 'Total infusion duration (minutes)',
+             'required': True},
+
+            # Monitoring + post
+            {'id': 'tolerance', 'type': 'choice_single',
+             'label': 'Patient tolerance during infusion',
+             'required': True,
+             'options': _options('Excellent', 'Good', 'Fair', 'Poor — stopped early')},
+            {'id': 'reactions', 'type': 'choice_multiple',
+             'label': 'Adverse events / reactions observed',
+             'required': True,
+             'options': _options(
+                 'None',
+                 'Vasovagal / lightheaded',
+                 'Vein irritation / phlebitis',
+                 'Extravasation / infiltration',
+                 'Cool sensation (expected)',
+                 'Mineral taste (expected)',
+                 'Localized pain at site',
+                 'Allergic reaction (mild)',
+                 'Allergic reaction (severe / anaphylaxis)',
+                 'Nausea',
+                 'Headache',
+                 'Other',
+             )},
+            {'id': 'reaction_detail', 'type': 'long_text',
+             'label': 'Reaction detail + intervention (if any)'},
+
+            # Post-infusion vitals
+            {'id': 'post_bp_systolic', 'type': 'number',
+             'label': 'Post-infusion BP — systolic (mmHg)',
+             'required': True},
+            {'id': 'post_bp_diastolic', 'type': 'number',
+             'label': 'Post-infusion BP — diastolic (mmHg)',
+             'required': True},
+            {'id': 'post_heart_rate', 'type': 'number',
+             'label': 'Post-infusion heart rate (bpm)',
+             'required': True},
+            {'id': 'patient_status_on_discharge', 'type': 'choice_single',
+             'label': 'Patient status on discharge',
+             'required': True,
+             'options': _options(
+                 'Stable, ambulating without assistance',
+                 'Stable with mild residual symptoms',
+                 'Required extended observation',
+                 'Transferred to higher level of care',
+             )},
+
+            # Aftercare + follow-up
+            {'id': 'post_care_reviewed', 'type': 'choice_single',
+             'label': 'Post-care instructions reviewed with client',
+             'required': True,
+             'options': _options('Yes', 'No')},
+            {'id': 'follow_up_weeks', 'type': 'number',
+             'label': 'Follow-up recommended in (weeks)'},
             {'id': 'provider_notes', 'type': 'long_text',
              'label': 'Provider notes'},
         ],
