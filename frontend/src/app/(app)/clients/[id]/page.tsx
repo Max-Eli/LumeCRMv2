@@ -85,6 +85,7 @@ import { GiftCardsTab } from './_tabs/gift-cards-tab';
 import { MembershipsTab } from './_tabs/memberships-tab';
 import { NotesTab } from './_tabs/notes-tab';
 import { PackagesTab } from './_tabs/packages-tab';
+import { ProductsTab } from './_tabs/products-tab';
 import { TreatmentRecordsTab } from './_tabs/treatment-records-tab';
 import { WalletTab } from './_tabs/wallet-tab';
 
@@ -103,7 +104,7 @@ const TABS: readonly TabDef[] = [
   { id: 'appointments', label: 'Appointments' },
   { id: 'notes', label: 'Notes' },
   { id: 'treatment-records', label: 'Treatment records' },
-  { id: 'products', label: 'Products', comingPhase: 'Phase 2A · POS' },
+  { id: 'products', label: 'Products' },
   { id: 'memberships', label: 'Memberships' },
   { id: 'packages', label: 'Packages' },
   { id: 'gift-cards', label: 'Gift cards' },
@@ -208,6 +209,8 @@ export default function ClientDetailPage({ params }: { params: Promise<{ id: str
           <AppointmentsTab customerId={customer.id} />
         ) : activeTab.id === 'wallet' ? (
           <WalletTab customerId={customer.id} />
+        ) : activeTab.id === 'products' ? (
+          <ProductsTab customerId={customer.id} />
         ) : activeTab.id === 'packages' ? (
           <PackagesTab customerId={customer.id} />
         ) : activeTab.id === 'memberships' ? (
