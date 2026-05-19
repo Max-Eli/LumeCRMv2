@@ -38,6 +38,7 @@ import {
   useUpdateAppointment,
 } from '@/lib/appointments';
 import { useEmailSubmission, useFormSubmissions } from '@/lib/form-submissions';
+import { useAppointmentTreatmentRecords } from '@/lib/treatments';
 import {
   INVOICE_STATUS_LABELS,
   formatMoneyCents,
@@ -175,6 +176,12 @@ function PopoverBody({
       <Divider />
 
       <FormsSection
+        appointmentId={appointment.id}
+        customerId={appointment.customer.id}
+      />
+      <Divider />
+
+      <TreatmentRecordSection
         appointmentId={appointment.id}
         customerId={appointment.customer.id}
       />
@@ -669,6 +676,71 @@ function PopoverEmailButton({ submissionId }: { submissionId: number }) {
     >
       Email
     </button>
+  );
+}
+
+/**
+ * Treatment record section — the provider-side EMR chart for this
+ * appointment. Distinct from the patient-facing intake / consent
+ * forms (those live in <FormsSection> above) — this is the clinical
+ * documentation of what was actually performed.
+ *
+ * One record per appointment is the common case. Addenda (corrections
+ * + late additions) are handled in the customer-profile EMR tab,
+ * which is where the section deep-links. The popover stays focused
+ * on "is there one or not, click to sign / view."
+ */
+function TreatmentRecordSection({
+  appointmentId,
+  customerId,
+}: {
+  appointmentId: number;
+  customerId: number;
+}) {
+  const { data: records, isLoading } = useAppointmentTreatmentRecords(appointmentId);
+  if (isLoading) return null;
+
+  const list = records ?? [];
+  const signed = list.find((r) => r.parent_record_id === null);
+  // Deep-link to the customer-profile EMR tab where the operator can
+  // pick a template + fill it out. The `sign` param hints the page
+  // to auto-open the new-record dialog and pre-pin this appointment.
+  const targetPath = `/clients/${customerId}?tab=treatment-records${
+    signed ? '' : `&sign=${appointmentId}`
+  }`;
+
+  return (
+    <div className="px-4 py-3 space-y-2">
+      <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
+        Treatment record
+      </p>
+      {signed ? (
+        <Link
+          href={targetPath}
+          className="flex items-center gap-2 rounded-md border border-emerald-500/30 bg-emerald-50/40 dark:bg-emerald-950/10 px-2.5 py-2 hover:bg-emerald-50/60 dark:hover:bg-emerald-950/20 transition-colors"
+        >
+          <Activity className="size-3.5 text-emerald-700 dark:text-emerald-500 shrink-0" />
+          <span className="text-xs flex-1 truncate">
+            {signed.template_name || 'Treatment record'}
+          </span>
+          <span className="text-[11px] text-emerald-700 dark:text-emerald-500 shrink-0">
+            Signed
+          </span>
+          <ExternalLink className="size-3 text-muted-foreground/70 shrink-0" aria-hidden />
+        </Link>
+      ) : (
+        <Link
+          href={targetPath}
+          className="flex items-center gap-2 rounded-md border border-dashed border-foreground/15 bg-card hover:border-foreground/30 hover:bg-muted/40 px-2.5 py-2 transition-colors"
+        >
+          <Activity className="size-3.5 text-muted-foreground shrink-0" />
+          <span className="text-xs flex-1 text-foreground/90">
+            Sign treatment record
+          </span>
+          <ExternalLink className="size-3 text-muted-foreground/70 shrink-0" aria-hidden />
+        </Link>
+      )}
+    </div>
   );
 }
 

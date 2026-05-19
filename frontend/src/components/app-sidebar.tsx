@@ -19,7 +19,6 @@ import {
   BarChart3,
   Building2,
   Calendar,
-  Clock,
   FileText,
   Inbox,
   LayoutDashboard,
@@ -91,10 +90,11 @@ export const NAV_LINKS: NavLink[] = [
   // which opens a popout window at /inbox. Intentional: front-desk
   // staff work the inbox alongside the calendar, not on a separate
   // sidebar route.
-  // Mobile-first clock-in/out for any staff member. Sits at top
-  // level (rather than under /staff) because every role uses it,
-  // not just managers.
-  { href: '/clock-in', label: 'Clock in', icon: Clock, group: 'location' },
+  //
+  // `/clock-in` (staff shift clock-in/out) is intentionally NOT in
+  // the nav — operators access it from the staff schedule page +
+  // the calendar's right-rail when they need it. The route is still
+  // live, just hidden from the rail to avoid sidebar bloat.
   // Catalog — services + categories live here today; products,
   // memberships, and packages are placeholder pages until the
   // retail / packages / memberships features land. Sub-pages

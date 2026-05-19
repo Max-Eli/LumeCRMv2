@@ -26,6 +26,7 @@ import {
   Plus,
   UserCircle2,
 } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -64,6 +65,27 @@ import {
 export function TreatmentRecordsTab({ customerId }: { customerId: number }) {
   const { data: records, isLoading } = useCustomerTreatmentRecords(customerId);
   const [signOpen, setSignOpen] = useState(false);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+
+  // Deep-link from the calendar appointment popover:
+  //   /clients/<id>?tab=treatment-records&sign=<appointmentId>
+  // Auto-opens the new-record dialog with that appointment pre-pinned.
+  // We strip the `sign` param after opening so a back/forward doesn't
+  // pop the dialog open every time.
+  const signParam = searchParams.get('sign');
+  const pinnedAppointmentId = signParam ? Number(signParam) : null;
+  useEffect(() => {
+    if (pinnedAppointmentId && pinnedAppointmentId > 0) {
+      setSignOpen(true);
+      const next = new URLSearchParams(searchParams);
+      next.delete('sign');
+      const qs = next.toString();
+      router.replace(qs ? `?${qs}` : '?', { scroll: false });
+    }
+    // Intentionally empty deps — fire once on mount when the param exists.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   if (isLoading) {
     return (
@@ -95,6 +117,7 @@ export function TreatmentRecordsTab({ customerId }: { customerId: number }) {
         </div>
         <SignRecordDialog
           customerId={customerId}
+          appointmentId={pinnedAppointmentId}
           open={signOpen}
           onOpenChange={setSignOpen}
         />
@@ -147,10 +170,15 @@ export function TreatmentRecordsTab({ customerId }: { customerId: number }) {
 
 function SignRecordDialog({
   customerId,
+  appointmentId,
   open,
   onOpenChange,
 }: {
   customerId: number;
+  /** When set, the record is pinned to this appointment — used by
+   *  the calendar popover's "Sign treatment record" flow so the
+   *  resulting EMR row links back to the visit it documents. */
+  appointmentId?: number | null;
   open: boolean;
   onOpenChange: (v: boolean) => void;
 }) {
@@ -199,6 +227,7 @@ function SignRecordDialog({
         customer_id: customerId,
         template_id: templateId,
         answers,
+        ...(appointmentId ? { appointment_id: appointmentId } : {}),
       });
       toast.success('Treatment record signed.');
       onOpenChange(false);
@@ -222,6 +251,15 @@ function SignRecordDialog({
           <DialogTitle>Sign treatment record</DialogTitle>
         </DialogHeader>
         <DialogBody className="space-y-4">
+          {appointmentId ? (
+            <div className="rounded-md border border-accent/30 bg-accent/[0.05] px-3 py-2 flex items-start gap-2 text-xs">
+              <CalendarClock className="size-3.5 shrink-0 text-accent-foreground/80 mt-0.5" />
+              <p className="text-foreground/85 leading-relaxed">
+                This record will be pinned to the appointment you came from,
+                so it shows up under that visit's chart.
+              </p>
+            </div>
+          ) : null}
           <div>
             <label className="text-xs font-medium block mb-1.5">Template</label>
             <Select
