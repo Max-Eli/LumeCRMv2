@@ -20,6 +20,21 @@ import type { NextConfig } from 'next';
  */
 const nextConfig: NextConfig = {
   output: 'standalone',
+
+  // Redirects for routes that have relocated. Kept narrow on purpose
+  // — proliferating redirects is a recipe for confusing routing.
+  async redirects() {
+    return [
+      // Invoice / take-payment surface moved out of the CRM dashboard
+      // into its own standalone window (`(invoice)` route group).
+      // Permanent redirect so bookmarks + stale tabs keep working.
+      {
+        source: '/appointments/:id/invoice',
+        destination: '/invoice/:id',
+        permanent: true,
+      },
+    ];
+  },
 };
 
 export default nextConfig;

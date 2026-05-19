@@ -433,8 +433,8 @@ function InvoiceCta({ appointmentId }: { appointmentId: number }) {
 
   const isOpen = invoice.status === 'open';
   const href = isOpen
-    ? `/appointments/${appointmentId}/invoice?action=pay`
-    : `/appointments/${appointmentId}/invoice`;
+    ? `/invoice/${appointmentId}?action=pay`
+    : `/invoice/${appointmentId}`;
 
   const label = isOpen
     ? `Take payment · ${formatMoneyCents(invoice.total_cents)}`

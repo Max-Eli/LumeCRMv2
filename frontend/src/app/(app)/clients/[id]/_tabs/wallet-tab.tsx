@@ -228,17 +228,18 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
       ? invoice.closed_at
       : invoice.created_at,
   );
-  // Invoice detail lives under the appointment route in v1
-  // (Phase 1E ships invoice-per-appointment; Phase 2A POS will add
-  // standalone invoices with their own page). When `appointment` is
-  // null we render a non-link row — the operator can still see the
-  // line items via the customer profile, but follow-on invoice work
-  // happens at the appointment level today.
+  // Invoice detail lives at `/invoice/[appointmentId]` and opens in
+  // its own window so the operator's checkout context isn't tangled
+  // with the CRM dashboard. When `appointment` is null we render a
+  // non-link row — Phase 2A POS will add standalone invoices with
+  // their own page.
   const href = invoice.appointment
-    ? `/appointments/${invoice.appointment.id}/invoice`
+    ? `/invoice/${invoice.appointment.id}`
     : null;
   const Wrapper: React.ElementType = href ? Link : 'div';
-  const wrapperProps = href ? { href } : {};
+  const wrapperProps = href
+    ? { href, target: '_blank' as const, rel: 'noopener noreferrer' }
+    : {};
 
   return (
     <Wrapper

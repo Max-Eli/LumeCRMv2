@@ -1,11 +1,17 @@
 /**
- * Invoice page for a single appointment.
+ * Invoice / take-payment page for a single appointment.
  *
- * Reachable from the calendar's appointment popover via the "Take
- * payment" CTA, which opens this page in a new tab with `?action=pay`
- * so the payment form is already focused when the page loads. The
- * popover stays minimal; the full invoice surface — line items, tax
- * breakdown, payment metadata, Reopen / Void actions — lives here.
+ * URL: `/invoice/<appointmentId>` (the `[id]` param IS the
+ * appointment id). Lives in the `(invoice)` route group — its own
+ * window, no CRM sidebar, no top bar. Operators open it from the
+ * calendar appointment popover ("Take payment") or the customer
+ * wallet tab, always in a new tab. The standalone surface keeps the
+ * checkout context focused and reads cleanly on mobile (operators
+ * frequently take payment at the front desk on a tablet or phone).
+ *
+ * `?action=pay` (or `reopen` / `void`) auto-focuses the matching
+ * mode on first render so the popover's CTA lands the operator in
+ * the right place.
  *
  * Per ADR 0007: closing the invoice (Take Payment) is the only path
  * to marking the linked appointment `completed`. The Reopen action is

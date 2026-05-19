@@ -339,12 +339,9 @@ function LedgerCard({ card }: { card: GiftCard }) {
                     <p className="text-sm font-medium">
                       {LEDGER_KIND_LABELS[entry.kind]}
                       {entry.invoice ? (
-                        <Link
-                          href={`/appointments/${entry.invoice}/invoice`}
-                          className="ml-2 text-xs text-muted-foreground underline hover:no-underline"
-                        >
+                        <span className="ml-2 text-xs text-muted-foreground font-mono">
                           Invoice #{entry.invoice}
-                        </Link>
+                        </span>
                       ) : null}
                     </p>
                     <p className="text-xs text-muted-foreground mt-0.5">

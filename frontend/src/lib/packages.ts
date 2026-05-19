@@ -226,9 +226,8 @@ export interface BuildCustomPackageResult {
 /** Build a one-off `PurchasedPackage` for a specific customer +
  *  an accompanying draft invoice in one atomic call. The returned
  *  `invoice_id` is the POS-handoff target — the UI links the
- *  operator to `/appointments/.../invoice/` or the
- *  `/invoices/<id>` page (whichever exists) so they can take
- *  payment on the spot. */
+ *  operator to `/invoice/<appointmentId>` (standalone payment
+ *  window) so they can take payment on the spot. */
 export function useBuildCustomPackage() {
   const qc = useQueryClient();
   return useMutation<BuildCustomPackageResult, Error, BuildCustomPackageInput>({
