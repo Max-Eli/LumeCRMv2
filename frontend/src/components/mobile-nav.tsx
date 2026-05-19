@@ -230,13 +230,17 @@ function MobileDrawerContents({ user }: { user: User }) {
       </nav>
 
       <div className="border-t px-4 py-4 space-y-3">
-        <div className="flex items-center gap-3">
+        <Link
+          href="/account"
+          className="flex items-center gap-3 px-2 py-2 -mx-2 rounded-md hover:bg-muted transition-colors"
+        >
           <InitialsAvatar name={userDisplayName || user.email} size="default" />
           <div className="min-w-0 flex-1">
             <p className="text-sm font-medium truncate">{userDisplayName}</p>
             <p className="text-xs text-muted-foreground truncate">{user.email}</p>
           </div>
-        </div>
+          <ChevronRight className="size-4 text-muted-foreground shrink-0" aria-hidden />
+        </Link>
         <button
           type="button"
           onClick={handleSignOut}

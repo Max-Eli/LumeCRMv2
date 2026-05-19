@@ -173,3 +173,38 @@ export function useLogout() {
     },
   });
 }
+
+/** Change the signed-in user's password. Requires the current
+ *  password (defends against a hijacked session). On success the
+ *  current browser stays signed in; every other open session is
+ *  invalidated by Django's session-key rotation. */
+export interface ChangePasswordInput {
+  current_password: string;
+  new_password: string;
+  confirm_password: string;
+}
+
+export function useChangePassword() {
+  return useMutation<void, Error, ChangePasswordInput>({
+    mutationFn: async (input) => {
+      await api.post('/api/auth/change-password/', input);
+    },
+  });
+}
+
+/** Verify an email + password belongs to an active staff member at
+ *  the tenant, WITHOUT opening a session. Used by the kiosk-unlock
+ *  flow on the public form-sign page (`/sign/[token]`): front-desk
+ *  hands the iPad to a customer, locks the page, and any staff
+ *  member can unlock by typing their CRM credentials.
+ *
+ *  Returns `{ ok: true, email }` on success or throws an `ApiError`
+ *  with status 401 on bad creds / no active membership. */
+export function useVerifyCredentials() {
+  return useMutation<{ ok: true; email: string }, Error, { email: string; password: string }>({
+    mutationFn: async (input) => {
+      await api.get('/api/auth/csrf/');
+      return api.post<{ ok: true; email: string }>('/api/auth/verify-credentials/', input);
+    },
+  });
+}

@@ -344,7 +344,11 @@ export function AppSidebar({ user }: AppSidebarProps) {
           </div>
         ) : (
           <>
-            <div className="flex items-center gap-3 px-2 py-2">
+            <Link
+              href="/account"
+              className="flex items-center gap-3 px-2 py-2 rounded-md hover:bg-sidebar-accent hover:text-sidebar-accent-foreground transition-colors"
+              title="Account settings"
+            >
               <InitialsAvatar name={userDisplayName} size="sm" />
               <div className="min-w-0 flex-1">
                 <p className="text-xs font-medium truncate" title={userDisplayName}>
@@ -356,7 +360,7 @@ export function AppSidebar({ user }: AppSidebarProps) {
                   </p>
                 ) : null}
               </div>
-            </div>
+            </Link>
             <Button
               variant="outline"
               size="sm"

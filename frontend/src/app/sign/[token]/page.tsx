@@ -26,19 +26,32 @@ import {
   CircleAlert,
   CircleCheck,
   Loader2,
+  Lock,
+  ShieldCheck,
+  Unlock,
+  X,
   XCircle,
 } from 'lucide-react';
 import Link from 'next/link';
-import { use, useRef, useState } from 'react';
+import { use, useCallback, useEffect, useRef, useState } from 'react';
 
 import {
   SignatureCanvas,
   type SignatureCanvasHandle,
 } from '@/components/signature-canvas';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Field, FieldError, FieldLabel } from '@/components/ui/field';
 import { Input } from '@/components/ui/input';
 import { ApiError } from '@/lib/api';
+import { useVerifyCredentials } from '@/lib/auth';
 import {
   type PublicFormSubmission,
   useSubmitPublicForm,
@@ -177,24 +190,27 @@ function FillView({
   };
 
   return (
-    <div className="min-h-screen bg-background py-6 sm:py-12 px-4">
-      <div className="max-w-2xl mx-auto">
-        <header className="mb-6 sm:mb-8">
-          <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
-            Form
-          </p>
-          <h1 className="font-serif text-2xl sm:text-3xl font-semibold tracking-tight mt-1">
-            {submission.template_name}
-          </h1>
-          {submission.customer_first_name ? (
-            <p className="text-sm text-muted-foreground mt-2">
-              Hi {submission.customer_first_name} — please review and sign
-              below.
-            </p>
-          ) : null}
-        </header>
+    <KioskShell>
+      <div className="min-h-screen bg-stone-50/60 pb-12">
+        <BrandedHeader submission={submission} />
 
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <div className="max-w-2xl mx-auto px-4 sm:px-6 pt-6 sm:pt-10">
+          <header className="mb-6 sm:mb-8">
+            <p className="text-[11px] uppercase tracking-[0.18em] text-muted-foreground font-semibold">
+              Consent &amp; intake form
+            </p>
+            <h1 className="font-serif text-2xl sm:text-[2rem] leading-[1.1] font-semibold tracking-tight mt-2">
+              {submission.template_name}
+            </h1>
+            {submission.customer_first_name ? (
+              <p className="text-sm text-muted-foreground mt-3">
+                Hi {submission.customer_first_name} — please review the form
+                below and sign at the bottom.
+              </p>
+            ) : null}
+          </header>
+
+          <form onSubmit={handleSubmit} className="space-y-5">
           {nonSignatureFields.map((field) => (
             <FieldRenderer
               key={field.id}
@@ -243,9 +259,314 @@ function FillView({
             best of your knowledge. Your signature, IP address, and the time
             of signing are recorded for your record.
           </p>
-        </form>
+          </form>
+        </div>
       </div>
+    </KioskShell>
+  );
+}
+
+// ── Branded header ─────────────────────────────────────────────────
+//
+// Spa logo on the left, name on the right (or just the name if no
+// logo). Sits above the form so the patient sees who they're signing
+// for before anything else.
+
+function BrandedHeader({ submission }: { submission: PublicFormSubmission }) {
+  const logo = submission.tenant_logo_url?.trim();
+  const name = submission.tenant_name?.trim();
+  if (!logo && !name) {
+    return null;
+  }
+  return (
+    <header className="bg-white border-b border-stone-200/80">
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 h-16 sm:h-20 flex items-center gap-3">
+        {logo ? (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={logo}
+            alt={name || 'Spa logo'}
+            className="h-10 sm:h-12 w-auto max-w-[220px] object-contain"
+          />
+        ) : (
+          <span className="font-serif text-base sm:text-lg font-semibold tracking-tight text-stone-900">
+            {name}
+          </span>
+        )}
+      </div>
+    </header>
+  );
+}
+
+// ── Kiosk lock ─────────────────────────────────────────────────────
+//
+// Front-desk hands the iPad to a customer to fill + sign. The Lock
+// button puts the page into a hardened kiosk mode:
+//   - Goes fullscreen (Fullscreen API) — hides browser chrome on
+//     Safari + Chrome on tablets.
+//   - Re-enters fullscreen automatically if the user exits.
+//   - Blocks the back button by re-pushing the same history entry.
+//   - Surfaces a banner with an "Unlock" affordance.
+//
+// To unlock, ANY staff member at the tenant types their email +
+// password (verified by `/api/auth/verify-credentials/`, which does
+// NOT open a session — the customer's anonymous fill session keeps
+// going).
+//
+// Web kiosk is not bulletproof — a determined user can still open
+// iPad app switcher or use Guided Access escapes. For true lockdown
+// pair this with iOS's built-in Guided Access (Settings →
+// Accessibility → Guided Access) which restricts the iPad to a
+// single app entirely.
+
+function KioskShell({ children }: { children: React.ReactNode }) {
+  const [locked, setLocked] = useState(false);
+  const [unlockOpen, setUnlockOpen] = useState(false);
+
+  const enterFullscreen = useCallback(async () => {
+    try {
+      if (document.documentElement.requestFullscreen) {
+        await document.documentElement.requestFullscreen();
+      }
+    } catch {
+      // Fullscreen API can refuse (already fullscreen, user gesture
+      // requirement, iframe context, etc.) — silently degrade.
+    }
+  }, []);
+
+  const exitFullscreen = useCallback(async () => {
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        await document.exitFullscreen();
+      }
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Re-enter fullscreen any time the user escapes it while locked.
+  useEffect(() => {
+    if (!locked) return;
+    const onFullscreenChange = () => {
+      if (locked && !document.fullscreenElement) {
+        void enterFullscreen();
+      }
+    };
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    return () => document.removeEventListener('fullscreenchange', onFullscreenChange);
+  }, [locked, enterFullscreen]);
+
+  // Block the browser back button while locked. We push a sentinel
+  // entry on lock; any popstate (back/forward gesture) re-pushes it
+  // so the patient can't navigate away. Released on unlock.
+  useEffect(() => {
+    if (!locked) return;
+    window.history.pushState({ kioskLocked: true }, '');
+    const onPop = () => {
+      window.history.pushState({ kioskLocked: true }, '');
+    };
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  }, [locked]);
+
+  // Prompt before close/refresh while locked.
+  useEffect(() => {
+    if (!locked) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = '';
+    };
+    window.addEventListener('beforeunload', onBeforeUnload);
+    return () => window.removeEventListener('beforeunload', onBeforeUnload);
+  }, [locked]);
+
+  const onLock = () => {
+    setLocked(true);
+    void enterFullscreen();
+  };
+
+  const onUnlockSuccess = () => {
+    setLocked(false);
+    setUnlockOpen(false);
+    void exitFullscreen();
+  };
+
+  return (
+    <>
+      {locked ? <KioskBanner onRequestUnlock={() => setUnlockOpen(true)} /> : null}
+      <div className={cn(locked && 'pt-12')}>{children}</div>
+      {!locked ? <KioskLockFab onClick={onLock} /> : null}
+      <UnlockDialog
+        open={unlockOpen}
+        onOpenChange={setUnlockOpen}
+        onSuccess={onUnlockSuccess}
+      />
+    </>
+  );
+}
+
+function KioskBanner({ onRequestUnlock }: { onRequestUnlock: () => void }) {
+  return (
+    <div className="fixed inset-x-0 top-0 z-40 h-12 bg-stone-900 text-white flex items-center justify-between px-4 sm:px-6 shadow-md">
+      <div className="flex items-center gap-2 text-sm">
+        <Lock className="size-4" aria-hidden />
+        <span className="font-medium">Kiosk mode</span>
+        <span className="hidden sm:inline text-white/70">
+          · Pass the device to the patient to complete this form
+        </span>
+      </div>
+      <Button
+        type="button"
+        size="sm"
+        variant="outline"
+        onClick={onRequestUnlock}
+        className="bg-white/10 border-white/30 text-white hover:bg-white/20 hover:text-white"
+      >
+        <Unlock className="size-3.5" />
+        Unlock
+      </Button>
     </div>
+  );
+}
+
+function KioskLockFab({ onClick }: { onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title="Lock to kiosk mode — for staff use before handing the device to a patient"
+      className="fixed bottom-4 right-4 z-30 inline-flex items-center gap-2 rounded-full bg-stone-900 px-4 py-2.5 text-sm font-medium text-white shadow-lg hover:bg-stone-800 transition-colors"
+    >
+      <Lock className="size-3.5" />
+      Lock to kiosk
+    </button>
+  );
+}
+
+function UnlockDialog({
+  open,
+  onOpenChange,
+  onSuccess,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSuccess: () => void;
+}) {
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const verify = useVerifyCredentials();
+
+  const reset = () => {
+    setEmail('');
+    setPassword('');
+    setError(null);
+  };
+
+  useEffect(() => {
+    if (!open) {
+      // Wipe credentials when the dialog closes so they don't linger
+      // in memory for the next time it opens.
+      reset();
+    }
+  }, [open]);
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    setError(null);
+    verify.mutate(
+      { email: email.trim().toLowerCase(), password },
+      {
+        onSuccess: () => {
+          reset();
+          onSuccess();
+        },
+        onError: (err) => {
+          if (err instanceof ApiError && err.status === 401) {
+            setError('Invalid email or password.');
+          } else {
+            setError('Could not verify — please try again.');
+          }
+        },
+      },
+    );
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <div className="flex items-center gap-3">
+            <div className="inline-flex size-9 items-center justify-center rounded-md bg-stone-900 text-white">
+              <ShieldCheck className="size-4" />
+            </div>
+            <div>
+              <DialogTitle className="font-serif">Staff unlock</DialogTitle>
+              <DialogDescription>
+                Sign in with any staff account at this spa to unlock the page.
+              </DialogDescription>
+            </div>
+          </div>
+        </DialogHeader>
+
+        <form onSubmit={onSubmit} className="space-y-4 mt-2">
+          <Field>
+            <FieldLabel htmlFor="unlock_email">Staff email</FieldLabel>
+            <Input
+              id="unlock_email"
+              type="email"
+              autoComplete="username"
+              value={email}
+              onChange={(e) => setEmail(e.target.value)}
+              required
+              autoFocus
+              disabled={verify.isPending}
+            />
+          </Field>
+          <Field>
+            <FieldLabel htmlFor="unlock_password">Password</FieldLabel>
+            <Input
+              id="unlock_password"
+              type="password"
+              autoComplete="current-password"
+              value={password}
+              onChange={(e) => setPassword(e.target.value)}
+              required
+              disabled={verify.isPending}
+            />
+          </Field>
+          {error ? (
+            <div className="rounded-md border border-destructive/40 bg-destructive/[0.04] px-3 py-2 flex items-start gap-2 text-sm">
+              <CircleAlert className="size-4 shrink-0 text-destructive mt-0.5" />
+              <p className="text-foreground/90">{error}</p>
+            </div>
+          ) : null}
+          <DialogFooter className="flex-col-reverse sm:flex-row sm:items-center sm:justify-end gap-2">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={verify.isPending}
+              className="w-full sm:w-auto"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={verify.isPending || !email.trim() || !password}
+              className="w-full sm:w-auto"
+            >
+              {verify.isPending ? (
+                <Loader2 className="size-4 animate-spin" />
+              ) : (
+                <Unlock className="size-4" />
+              )}
+              Unlock
+            </Button>
+          </DialogFooter>
+        </form>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -401,8 +722,9 @@ function SignedView({ submission }: { submission: PublicFormSubmission }) {
     : 'Unknown';
 
   return (
-    <div className="min-h-screen bg-background py-6 sm:py-12 px-4">
-      <div className="max-w-2xl mx-auto">
+    <div className="min-h-screen bg-stone-50/60">
+      <BrandedHeader submission={submission} />
+      <div className="max-w-2xl mx-auto px-4 sm:px-6 py-6 sm:py-10">
         <header className="mb-6">
           <div className="rounded-md border border-emerald-500/30 bg-emerald-50/50 dark:bg-emerald-950/10 px-4 py-3 flex items-center gap-2.5">
             <CircleCheck className="size-5 shrink-0 text-emerald-600 dark:text-emerald-500" />

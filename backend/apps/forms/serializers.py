@@ -305,16 +305,21 @@ class PublicFormSubmissionSerializer(serializers.ModelSerializer):
     Returns the schema + status + (when completed) the answers — the
     same surface serves "client filling out the form" (status pending)
     and "operator viewing the signed copy via the same URL" (status
-    completed). Customer name is the only customer-PHI included so
-    the page can show "Hi {name}" on the fill flow.
+    completed).
 
-    Tenant + customer details beyond the name are deliberately
-    excluded — this endpoint is unauthenticated; minimum information
-    needed for the fill flow.
+    Patient PHI exposure: customer first name only (so the page can
+    say "Hi {name}").
+
+    Tenant branding (display name + logo) is included so the patient
+    sees the spa's brand at the top of the form — confirming they're
+    signing for the right business. Both fields are public (already
+    shown on the spa's `/book/<slug>` page) so there's no leak.
     """
 
     template_name = serializers.CharField(source='form_template.name', read_only=True)
     customer_first_name = serializers.CharField(source='customer.first_name', read_only=True)
+    tenant_name = serializers.CharField(source='tenant.name', read_only=True)
+    tenant_logo_url = serializers.CharField(source='tenant.logo_url', read_only=True, allow_blank=True)
 
     class Meta:
         model = FormSubmission
@@ -324,6 +329,8 @@ class PublicFormSubmissionSerializer(serializers.ModelSerializer):
             'template_version_at_assignment',
             'schema_snapshot',
             'customer_first_name',
+            'tenant_name',
+            'tenant_logo_url',
             'status',
             'answers',
             'signed_at',

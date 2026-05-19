@@ -23,13 +23,18 @@ Session-cookie auth via Django's session framework. CSRF protection
 enforced by DRF's SessionAuthentication on POST/PUT/PATCH/DELETE.
 """
 
-from django.contrib.auth import authenticate, login, logout
+from django.contrib.auth import authenticate, login, logout, update_session_auth_hash
+from django.contrib.auth.password_validation import validate_password
+from django.core.exceptions import ValidationError as DjangoValidationError
 from django.utils.decorators import method_decorator
 from django.views.decorators.csrf import ensure_csrf_cookie
 from rest_framework import status
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
+
+from apps.audit.models import AuditLog
+from apps.audit.services import record
 
 
 def _serialize_user(user):
@@ -191,3 +196,122 @@ class MeView(APIView):
 
     def get(self, request):
         return Response({'user': _serialize_user(request.user)})
+
+
+class ChangePasswordView(APIView):
+    """`POST /api/auth/change-password/` — any signed-in user changes
+    their own password. All tenant roles (owner / manager / front_desk
+    / provider / bookkeeper / marketing) plus platform admins.
+
+    Requires the **current** password to defeat a "stolen session"
+    attack (an attacker with a hijacked session cookie shouldn't be
+    able to silently lock the real owner out of the account).
+
+    Django's password validators run on `new_password` — minimum
+    length, common-passwords list, etc. — so weak choices get a
+    structured error pointing at the offending rule.
+
+    The session ID is rotated post-save via
+    `update_session_auth_hash` so the current browser stays logged
+    in while every other open session is killed (Django's default
+    `SESSION_KEY_SALT` behavior). That mirrors what every serious
+    SaaS does: change your password → everyone else gets booted.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        current = request.data.get('current_password') or ''
+        new_password = request.data.get('new_password') or ''
+        confirm = request.data.get('confirm_password') or ''
+
+        if not current or not new_password:
+            return Response(
+                {'detail': 'Current password and new password are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if confirm and confirm != new_password:
+            return Response(
+                {'confirm_password': "Doesn't match the new password."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if not request.user.check_password(current):
+            return Response(
+                {'current_password': 'Incorrect current password.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        if new_password == current:
+            return Response(
+                {'new_password': 'New password must be different from the current one.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        try:
+            validate_password(new_password, user=request.user)
+        except DjangoValidationError as exc:
+            return Response(
+                {'new_password': list(exc.messages)},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        request.user.set_password(new_password)
+        request.user.save(update_fields=['password'])
+        # Keep the current browser session valid through the password
+        # rotation. Other sessions get invalidated automatically.
+        update_session_auth_hash(request, request.user)
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='user',
+            resource_id=request.user.id,
+            request=request,
+            metadata={'fields_changed': ['password']},
+        )
+        return Response(status=status.HTTP_204_NO_CONTENT)
+
+
+class VerifyCredentialsView(APIView):
+    """`POST /api/auth/verify-credentials/` — does this email +
+    password belong to a real, active tenant member?
+
+    Used by the kiosk-mode unlock dialog on the public form-sign
+    page (`/sign/[token]`). Front-desk hands the iPad to a customer,
+    locks the page; to unlock, ANY staff member at the tenant logs
+    in via this endpoint. We deliberately do NOT mutate the request
+    session — the customer's anonymous fill session keeps going,
+    we just answered "yes, that's a valid staff credential."
+
+    Strict gate:
+      1. Credentials must validate against Django's auth backend.
+      2. User must have at least one active TenantMembership.
+      3. Platform admins are rejected (they're not "staff" at any
+         tenant).
+
+    Generic 401 on all failures — same posture as /login/, no
+    information leak about which emails exist.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        email = (request.data.get('email') or '').strip().lower()
+        password = request.data.get('password') or ''
+        if not email or not password:
+            return Response(
+                {'detail': 'Email and password are required.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        user = authenticate(request, username=email, password=password)
+        generic = Response(
+            {'detail': 'Invalid email or password.'},
+            status=status.HTTP_401_UNAUTHORIZED,
+        )
+        if user is None:
+            return generic
+        if user.is_platform_admin:
+            return generic
+        if not user.memberships.filter(is_active=True).exists():
+            return generic
+
+        return Response({'ok': True, 'email': user.email})

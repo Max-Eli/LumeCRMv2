@@ -7,7 +7,15 @@ from django.urls import path
 
 from apps.tenants.views import InvitationAcceptView, InvitationLookupView
 
-from .views import CSRFView, LoginView, LogoutView, MeView, PlatformLoginView
+from .views import (
+    CSRFView,
+    ChangePasswordView,
+    LoginView,
+    LogoutView,
+    MeView,
+    PlatformLoginView,
+    VerifyCredentialsView,
+)
 
 urlpatterns = [
     path('csrf/', CSRFView.as_view(), name='auth-csrf'),
@@ -15,6 +23,10 @@ urlpatterns = [
     path('platform/login/', PlatformLoginView.as_view(), name='auth-platform-login'),
     path('logout/', LogoutView.as_view(), name='auth-logout'),
     path('me/', MeView.as_view(), name='auth-me'),
+    path('change-password/', ChangePasswordView.as_view(), name='auth-change-password'),
+    # Used by the kiosk-mode unlock on /sign/[token]. Doesn't open a
+    # session — just answers "is this a valid staff credential?".
+    path('verify-credentials/', VerifyCredentialsView.as_view(), name='auth-verify-credentials'),
     # Public invitation flow — the lookup endpoint lets the accept
     # page show "you've been invited to join Acme Spa" before the
     # recipient sets a password; accept creates the user + membership

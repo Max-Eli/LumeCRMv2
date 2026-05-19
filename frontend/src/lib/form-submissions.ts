@@ -65,6 +65,11 @@ export interface PublicFormSubmission {
   template_version_at_assignment: number;
   schema_snapshot: FormSchema;
   customer_first_name: string;
+  /** Tenant display name — surfaced at the top of the sign page so
+   *  the patient confirms they're signing for the right business. */
+  tenant_name: string;
+  /** Tenant logo URL. Empty string when unset. */
+  tenant_logo_url: string;
   status: SubmissionStatus;
   answers: Record<string, unknown>;
   signed_at: string | null;
