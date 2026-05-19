@@ -96,9 +96,16 @@ class ServiceSerializer(serializers.ModelSerializer):
         if not obj.hero_photo:
             return None
         try:
-            return obj.hero_photo.url
+            url = obj.hero_photo.url
         except (ValueError, OSError):
             return None
+        # Build an absolute URL so the booking page (different origin
+        # in dev) can load the file. S3 signed URLs are already
+        # absolute and pass through `build_absolute_uri` unchanged.
+        request = self.context.get('request')
+        if request is not None:
+            return request.build_absolute_uri(url)
+        return url
 
 
 class ServiceProtocolSerializer(serializers.ModelSerializer):

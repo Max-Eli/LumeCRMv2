@@ -115,9 +115,19 @@ class BookableServiceSerializer(serializers.ModelSerializer):
         if not obj.hero_photo:
             return None
         try:
-            return obj.hero_photo.url
+            url = obj.hero_photo.url
         except (ValueError, OSError):
             return None
+        # Make the URL absolute. In dev `url` is a path like
+        # `/media/…` which is relative to the API host; the booking
+        # page is served from a different origin so the <img> would
+        # 404 against the frontend host. In prod the S3 storage
+        # already returns an absolute signed URL — `build_absolute_uri`
+        # leaves those untouched.
+        request = self.context.get('request')
+        if request is not None:
+            return request.build_absolute_uri(url)
+        return url
 
 
 class EligibleProviderSerializer(serializers.Serializer):
