@@ -22,14 +22,18 @@ import {
   ClipboardCopy,
   DollarSign,
   FileText,
+  Image as ImageIcon,
+  Loader2,
   MapPin,
   Receipt,
   Settings2,
   Sparkles,
+  Trash2,
+  Upload,
 } from 'lucide-react';
 import Link from 'next/link';
 import { usePathname, useSearchParams } from 'next/navigation';
-import { use, useEffect, useState } from 'react';
+import { use, useEffect, useRef, useState } from 'react';
 import { useForm } from 'react-hook-form';
 import { toast } from 'sonner';
 import { z } from 'zod';
@@ -54,9 +58,11 @@ import {
   type Service,
   centsFromDollars,
   dollarsFromCents,
+  useDeleteServicePhoto,
   useService,
   useServiceCategories,
   useUpdateService,
+  useUploadServicePhoto,
 } from '@/lib/services';
 import { cn } from '@/lib/utils';
 
@@ -439,6 +445,8 @@ function GeneralTab({ service }: { service: Service }) {
             </div>
           </Section>
 
+          <HeroPhotoSection service={service} />
+
           <Section
             title="Duration"
             description="How long this service blocks the calendar, plus optional cleanup / setup time held off the bookable schedule."
@@ -712,5 +720,131 @@ function CheckboxRow({
         ) : null}
       </div>
     </label>
+  );
+}
+
+// ── Hero photo section ───────────────────────────────────────────────────
+//
+// Self-contained: owns its own file input + mutations. Lives outside
+// the React Hook Form because uploads are multipart and happen
+// immediately on file selection — no Save button required.
+
+const HERO_PHOTO_MAX_BYTES = 5 * 1024 * 1024;
+
+function HeroPhotoSection({ service }: { service: Service }) {
+  const inputRef = useRef<HTMLInputElement>(null);
+  const upload = useUploadServicePhoto(service.id);
+  const remove = useDeleteServicePhoto(service.id);
+  const busy = upload.isPending || remove.isPending;
+  const photoUrl = service.hero_photo_url;
+
+  const onPick = () => inputRef.current?.click();
+
+  const onFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // allow re-selecting the same file later
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Please choose an image file (JPG, PNG, WebP).');
+      return;
+    }
+    if (file.size > HERO_PHOTO_MAX_BYTES) {
+      toast.error('Photo must be 5 MB or smaller.');
+      return;
+    }
+    upload.mutate(file, {
+      onSuccess: () => toast.success('Photo updated'),
+      onError: (err) => {
+        if (err instanceof ApiError && err.body && typeof err.body === 'object') {
+          const body = err.body as Record<string, unknown>;
+          const detail = body.photo ?? body.detail;
+          toast.error(typeof detail === 'string' ? detail : 'Upload failed. Please try again.');
+        } else {
+          toast.error('Upload failed. Please try again.');
+        }
+      },
+    });
+  };
+
+  const onRemove = () => {
+    if (!photoUrl) return;
+    remove.mutate(undefined, {
+      onSuccess: () => toast.success('Photo removed'),
+      onError: () => toast.error('Could not remove the photo. Please try again.'),
+    });
+  };
+
+  return (
+    <Section
+      title="Hero photo"
+      description="Optional image shown at the top of this service's card on your public booking page. Use a clean, high-quality photo (1200×750 or similar). Up to 5 MB."
+      icon={<ImageIcon className="size-4" />}
+    >
+      <input
+        ref={inputRef}
+        type="file"
+        accept="image/png,image/jpeg,image/webp"
+        className="hidden"
+        onChange={onFile}
+      />
+      {photoUrl ? (
+        <div className="space-y-3">
+          <div className="relative aspect-[16/10] w-full max-w-md overflow-hidden rounded-lg border bg-muted/30">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img
+              src={photoUrl}
+              alt=""
+              className={cn(
+                'absolute inset-0 size-full object-cover transition-opacity',
+                busy && 'opacity-40',
+              )}
+            />
+            {busy ? (
+              <div className="absolute inset-0 flex items-center justify-center">
+                <Loader2 className="size-5 animate-spin text-foreground/70" />
+              </div>
+            ) : null}
+          </div>
+          <div className="flex items-center gap-2">
+            <Button type="button" variant="outline" size="sm" onClick={onPick} disabled={busy}>
+              <Upload className="size-3.5" />
+              Replace
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={onRemove}
+              disabled={busy}
+              className="text-destructive hover:text-destructive"
+            >
+              <Trash2 className="size-3.5" />
+              Remove
+            </Button>
+          </div>
+        </div>
+      ) : (
+        <button
+          type="button"
+          onClick={onPick}
+          disabled={busy}
+          className={cn(
+            'group flex aspect-[16/10] w-full max-w-md flex-col items-center justify-center gap-2 rounded-lg border-2 border-dashed bg-muted/20 text-muted-foreground transition-colors',
+            'hover:border-foreground/30 hover:bg-muted/40 hover:text-foreground',
+            'disabled:opacity-60 disabled:cursor-not-allowed',
+          )}
+        >
+          {busy ? (
+            <Loader2 className="size-6 animate-spin" />
+          ) : (
+            <Upload className="size-6" />
+          )}
+          <span className="text-sm font-medium">
+            {busy ? 'Uploading…' : 'Upload a photo'}
+          </span>
+          <span className="text-xs">JPG, PNG, or WebP · up to 5 MB</span>
+        </button>
+      )}
+    </Section>
   );
 }

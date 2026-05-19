@@ -92,10 +92,15 @@ class BookableServiceSerializer(serializers.ModelSerializer):
     internal scheduling and stays out of public payloads. `price_cents`
     is exposed so the page can render "from $X" style copy; tax is
     layered on at booking confirmation, not here.
+
+    `hero_photo_url` is the tenant-uploaded marketing image (optional).
+    Served from the same media bucket; the public catalog renders it
+    at the top of each service card when present.
     """
 
     category_name = serializers.CharField(source='category.name', default='', read_only=True)
     category_color = serializers.CharField(source='category.color', default='', read_only=True)
+    hero_photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Service
@@ -103,7 +108,16 @@ class BookableServiceSerializer(serializers.ModelSerializer):
             'id', 'name', 'description',
             'duration_minutes', 'price_cents',
             'category_name', 'category_color',
+            'hero_photo_url',
         ]
+
+    def get_hero_photo_url(self, obj: Service) -> str | None:
+        if not obj.hero_photo:
+            return None
+        try:
+            return obj.hero_photo.url
+        except (ValueError, OSError):
+            return None
 
 
 class EligibleProviderSerializer(serializers.Serializer):

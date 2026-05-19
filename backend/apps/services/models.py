@@ -105,6 +105,17 @@ class Service(TenantedModel):
     )
     description = models.TextField(blank=True)
 
+    # Marketing hero image shown on the service card in the public
+    # online-booking flow. Optional — services without a photo render
+    # a clean text-only card. Not PHI (tenant marketing asset), but
+    # stored in the same KMS-encrypted media bucket as everything else
+    # for simplicity. Served as a signed URL.
+    hero_photo = models.ImageField(
+        upload_to='services/hero/%Y/%m/',
+        null=True, blank=True,
+        help_text='Optional hero image shown on the public booking page.',
+    )
+
     # Provenance — set when this service was created by an importer
     # (e.g. Zenoti migration). `external_id` is the upstream system's
     # unique identifier for the service; the importer uses

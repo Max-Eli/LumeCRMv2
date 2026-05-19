@@ -16,7 +16,9 @@ list call (not per individual service in the result, which would flood the log).
 
 from django.db.models import Q
 from rest_framework import status, viewsets
-from rest_framework.exceptions import PermissionDenied
+from rest_framework.decorators import action
+from rest_framework.exceptions import PermissionDenied, ValidationError
+from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
@@ -133,6 +135,70 @@ class ServiceViewSet(viewsets.ModelViewSet):
             metadata={'name': instance.name},
         )
         instance.delete()
+
+    # ── Hero photo upload (multipart) ───────────────────────────────
+    #
+    # Kept on its own endpoint so the main service form stays JSON-
+    # only (the React Hook Form on the edit page doesn't have to juggle
+    # multipart). POST sets the photo, DELETE clears it.
+    #
+    # 5 MB cap is enforced in code — Django's request body size limit
+    # is set higher globally and we'd rather return a friendly 400 than
+    # a 413 from the load balancer. Image-type validation is done by
+    # Django's ImageField on .save() (Pillow opens + verifies the file).
+
+    PHOTO_MAX_BYTES = 5 * 1024 * 1024
+
+    @action(
+        detail=True,
+        methods=['post', 'delete'],
+        url_path='photo',
+        parser_classes=[MultiPartParser, FormParser],
+    )
+    def photo(self, request, *args, **kwargs):
+        instance: Service = self.get_object()
+        if request.method == 'DELETE':
+            if instance.hero_photo:
+                instance.hero_photo.delete(save=False)
+                instance.hero_photo = None
+                instance.save(update_fields=['hero_photo', 'updated_at'])
+                record(
+                    action=AuditLog.Action.UPDATE,
+                    resource_type='service',
+                    resource_id=instance.id,
+                    request=request,
+                    metadata={'fields_changed': ['hero_photo'], 'cleared': True},
+                )
+            return Response(self.get_serializer(instance).data)
+
+        file = request.FILES.get('photo')
+        if file is None:
+            raise ValidationError({'photo': 'No file uploaded under the `photo` form field.'})
+        if file.size > self.PHOTO_MAX_BYTES:
+            raise ValidationError({
+                'photo': f'Photo must be 5 MB or smaller (uploaded: {file.size // 1024} KB).',
+            })
+
+        # Replace existing photo cleanly — old object is deleted from
+        # storage so we don't leak files in the bucket.
+        if instance.hero_photo:
+            instance.hero_photo.delete(save=False)
+        instance.hero_photo = file
+        try:
+            instance.save(update_fields=['hero_photo', 'updated_at'])
+        except Exception as exc:
+            # Pillow raises on invalid image content during ImageField
+            # validation; surface as a 400 instead of a 500.
+            raise ValidationError({'photo': f'Could not save photo: {exc}'}) from exc
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='service',
+            resource_id=instance.id,
+            request=request,
+            metadata={'fields_changed': ['hero_photo']},
+        )
+        return Response(self.get_serializer(instance).data, status=status.HTTP_200_OK)
 
 
 class ServiceProtocolView(APIView):

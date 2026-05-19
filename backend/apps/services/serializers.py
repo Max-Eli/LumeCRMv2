@@ -59,6 +59,11 @@ class ServiceSerializer(serializers.ModelSerializer):
         source='category',
     )
     price_dollars = serializers.CharField(read_only=True)
+    # `hero_photo_url` is a read-only convenience exposing the storage's
+    # public/signed URL. Upload + delete happen through the dedicated
+    # `/api/services/{id}/photo/` action so the main service form stays
+    # JSON-only (no multipart juggling on every save).
+    hero_photo_url = serializers.SerializerMethodField()
 
     class Meta:
         model = Service
@@ -78,10 +83,22 @@ class ServiceSerializer(serializers.ModelSerializer):
             'is_bookable_online',
             'is_active',
             'sort_order',
+            'hero_photo_url',
             'created_at',
             'updated_at',
         ]
-        read_only_fields = ['id', 'category', 'price_dollars', 'created_at', 'updated_at']
+        read_only_fields = [
+            'id', 'category', 'price_dollars',
+            'hero_photo_url', 'created_at', 'updated_at',
+        ]
+
+    def get_hero_photo_url(self, obj: Service) -> str | None:
+        if not obj.hero_photo:
+            return None
+        try:
+            return obj.hero_photo.url
+        except (ValueError, OSError):
+            return None
 
 
 class ServiceProtocolSerializer(serializers.ModelSerializer):

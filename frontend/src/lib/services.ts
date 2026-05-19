@@ -55,6 +55,10 @@ export interface Service {
   is_bookable_online: boolean;
   is_active: boolean;
   sort_order: number;
+  /** Public URL for the hero photo shown on the booking page. Null
+   *  when no photo is uploaded. Read-only — upload via
+   *  `useUploadServicePhoto`, clear via `useDeleteServicePhoto`. */
+  hero_photo_url: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -186,6 +190,36 @@ export function useUpdateService(id: number) {
   const qc = useQueryClient();
   return useMutation<Service, Error, UpdateServiceInput>({
     mutationFn: (input) => api.patch<Service>(`/api/services/${id}/`, input),
+    onSuccess: (updated) => {
+      qc.setQueryData(serviceKey(updated.id), updated);
+      qc.invalidateQueries({ queryKey: SERVICES_KEY });
+    },
+  });
+}
+
+/** Upload (or replace) the hero photo for a service. Returns the
+ *  refreshed Service payload so the page can re-render with the new
+ *  `hero_photo_url` immediately. */
+export function useUploadServicePhoto(id: number) {
+  const qc = useQueryClient();
+  return useMutation<Service, Error, File>({
+    mutationFn: (file) => {
+      const form = new FormData();
+      form.append('photo', file);
+      return api.upload<Service>(`/api/services/${id}/photo/`, form);
+    },
+    onSuccess: (updated) => {
+      qc.setQueryData(serviceKey(updated.id), updated);
+      qc.invalidateQueries({ queryKey: SERVICES_KEY });
+    },
+  });
+}
+
+/** Clear the hero photo. */
+export function useDeleteServicePhoto(id: number) {
+  const qc = useQueryClient();
+  return useMutation<Service, Error, void>({
+    mutationFn: () => api.delete<Service>(`/api/services/${id}/photo/`),
     onSuccess: (updated) => {
       qc.setQueryData(serviceKey(updated.id), updated);
       qc.invalidateQueries({ queryKey: SERVICES_KEY });

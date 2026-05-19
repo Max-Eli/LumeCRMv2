@@ -211,6 +211,12 @@ USE_TZ = True
 STATIC_URL = 'static/'
 STATIC_ROOT = BASE_DIR / 'staticfiles'
 
+# Media-files configuration. Prod overrides STORAGES['default'] to
+# S3-with-KMS (see settings/prod.py); these defaults serve dev uploads
+# from the local filesystem so ImageField works without AWS creds.
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 

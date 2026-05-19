@@ -100,6 +100,9 @@ export interface BookableService {
   price_cents: number;
   category_name: string;
   category_color: string;
+  /** Optional tenant-uploaded marketing image. Rendered at the top
+   *  of each service card on the public catalog. */
+  hero_photo_url: string | null;
 }
 
 export interface EligibleProvider {

@@ -357,44 +357,58 @@ function ServiceCard({
   primaryColor: string;
   onPick: () => void;
 }) {
+  const hasPhoto = !!service.hero_photo_url;
   return (
     <button
       type="button"
       onClick={onPick}
-      className="group w-full h-full text-left rounded-2xl border border-stone-200 bg-white p-5 sm:p-6 transition-all hover:border-stone-300 hover:shadow-[0_4px_24px_-12px_rgba(28,25,23,0.18)] hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-900 focus-visible:ring-offset-2"
+      className="group w-full h-full text-left rounded-2xl border border-stone-200 bg-white overflow-hidden transition-all hover:border-stone-300 hover:shadow-[0_4px_24px_-12px_rgba(28,25,23,0.18)] hover:-translate-y-0.5 focus:outline-none focus-visible:ring-2 focus-visible:ring-stone-900 focus-visible:ring-offset-2"
     >
-      <div className="flex items-start gap-3">
-        <div className="min-w-0 flex-1">
-          <h3 className="font-medium text-stone-900 text-[15px] sm:text-base leading-tight">
-            {service.name}
-          </h3>
-          {service.description ? (
-            <p className="text-[13px] text-stone-600 mt-2 leading-relaxed line-clamp-2">
-              {service.description}
-            </p>
+      {hasPhoto ? (
+        <div className="relative aspect-[16/10] w-full overflow-hidden bg-stone-100">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={service.hero_photo_url ?? ''}
+            alt=""
+            className="absolute inset-0 size-full object-cover transition-transform duration-500 group-hover:scale-[1.03]"
+            loading="lazy"
+          />
+        </div>
+      ) : null}
+      <div className="p-5 sm:p-6">
+        <div className="flex items-start gap-3">
+          <div className="min-w-0 flex-1">
+            <h3 className="font-medium text-stone-900 text-[15px] sm:text-base leading-tight">
+              {service.name}
+            </h3>
+            {service.description ? (
+              <p className="text-[13px] text-stone-600 mt-2 leading-relaxed line-clamp-2">
+                {service.description}
+              </p>
+            ) : null}
+          </div>
+          <ChevronRight
+            className="size-4 text-stone-400 mt-0.5 shrink-0 transition-all group-hover:text-stone-900 group-hover:translate-x-0.5"
+            aria-hidden
+          />
+        </div>
+        <div className="mt-4 sm:mt-5 flex items-center gap-3 text-[13px]">
+          <span className="inline-flex items-center gap-1.5 text-stone-500">
+            <Clock className="size-3.5" aria-hidden />
+            <span className="tabular-nums">{formatDuration(service.duration_minutes)}</span>
+          </span>
+          {service.price_cents > 0 ? (
+            <>
+              <span className="text-stone-300" aria-hidden>·</span>
+              <span
+                className="font-semibold tabular-nums"
+                style={{ color: primaryColor }}
+              >
+                {formatPriceCents(service.price_cents)}
+              </span>
+            </>
           ) : null}
         </div>
-        <ChevronRight
-          className="size-4 text-stone-400 mt-0.5 shrink-0 transition-all group-hover:text-stone-900 group-hover:translate-x-0.5"
-          aria-hidden
-        />
-      </div>
-      <div className="mt-4 sm:mt-5 flex items-center gap-3 text-[13px]">
-        <span className="inline-flex items-center gap-1.5 text-stone-500">
-          <Clock className="size-3.5" aria-hidden />
-          <span className="tabular-nums">{formatDuration(service.duration_minutes)}</span>
-        </span>
-        {service.price_cents > 0 ? (
-          <>
-            <span className="text-stone-300" aria-hidden>·</span>
-            <span
-              className="font-semibold tabular-nums"
-              style={{ color: primaryColor }}
-            >
-              {formatPriceCents(service.price_cents)}
-            </span>
-          </>
-        ) : null}
       </div>
     </button>
   );

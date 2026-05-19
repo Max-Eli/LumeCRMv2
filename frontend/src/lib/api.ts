@@ -51,9 +51,13 @@ function getCookie(name: string): string | null {
 async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const method = (init.method ?? 'GET').toUpperCase();
 
+  // For FormData bodies the browser sets `Content-Type` with the
+  // correct multipart boundary — overriding it breaks the upload.
+  const isFormData = typeof FormData !== 'undefined' && init.body instanceof FormData;
+
   const headers: Record<string, string> = {
-    'Content-Type': 'application/json',
     Accept: 'application/json',
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(init.headers as Record<string, string> | undefined),
   };
 
@@ -104,4 +108,9 @@ export const api = {
       body: body !== undefined ? JSON.stringify(body) : undefined,
     }),
   delete: <T = unknown>(path: string) => request<T>(path, { method: 'DELETE' }),
+  /** POST a multipart/form-data body (e.g. file uploads). The caller
+   *  builds the FormData; the request wrapper leaves Content-Type
+   *  unset so the browser supplies the multipart boundary. */
+  upload: <T = unknown>(path: string, form: FormData) =>
+    request<T>(path, { method: 'POST', body: form }),
 };
