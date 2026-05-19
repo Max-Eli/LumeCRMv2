@@ -38,6 +38,7 @@ import {
   useProductCategories,
   useProducts,
 } from '@/lib/products';
+import { useDebounce } from '@/lib/use-debounce';
 import { cn } from '@/lib/utils';
 
 type StateFilter = 'all' | 'active' | 'inactive' | 'low-stock';
@@ -47,12 +48,13 @@ export default function ProductsListPage() {
   const canEdit = me?.role === 'owner' || me?.role === 'manager';
   const router = useRouter();
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 250);
   const [filter, setFilter] = useState<StateFilter>('all');
   const [categoryId, setCategoryId] = useState<number | null>(null);
 
   const { data: categories } = useProductCategories();
   const { data, isLoading, error } = useProducts({
-    q: search,
+    q: debouncedSearch,
     categoryId: categoryId ?? undefined,
     activeOnly:
       filter === 'active' ? true : filter === 'inactive' ? false : undefined,
@@ -75,7 +77,7 @@ export default function ProductsListPage() {
   }, [all.data]);
 
   return (
-    <div className="px-8 py-8 space-y-6">
+    <div className="px-4 sm:px-8 py-4 sm:py-8 space-y-4 sm:space-y-6">
       <PageHeader
         title="Products"
         description="Retail items you sell over the counter — skincare, supplements, gift cards, intake fees."
@@ -214,8 +216,8 @@ function ProductsTable({
   onClick: (id: number) => void;
 }) {
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
-      <Table>
+    <div className="rounded-lg border bg-card overflow-x-auto">
+      <Table className="min-w-[640px]">
         <TableHeader>
           <TableRow className="bg-muted/30 hover:bg-muted/30">
             <TableHead className="w-[110px]">SKU</TableHead>

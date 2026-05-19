@@ -49,7 +49,7 @@ export default function CategoriesPage() {
   const visibleCount = filtered.length;
 
   return (
-    <div className="px-10 py-10 max-w-7xl">
+    <div className="px-4 sm:px-10 py-4 sm:py-10 max-w-7xl">
       <PageHeader
         title="Categories"
         description={
@@ -107,8 +107,8 @@ function CategoriesTable({
   onRowClick: (id: number) => void;
 }) {
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
-      <Table>
+    <div className="rounded-lg border bg-card overflow-x-auto">
+      <Table className="min-w-[560px]">
         <TableHeader>
           <TableRow className="bg-muted/30 hover:bg-muted/30">
             <TableHead className="w-[40%]">Category</TableHead>

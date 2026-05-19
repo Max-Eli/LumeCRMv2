@@ -15,6 +15,7 @@
 'use client';
 
 import {
+  ChevronRight,
   ListFilter,
   Plus,
   Search,
@@ -43,6 +44,7 @@ import {
   useServiceCategories,
   useServices,
 } from '@/lib/services';
+import { useDebounce } from '@/lib/use-debounce';
 
 interface ServiceRow {
   id: number;
@@ -76,14 +78,15 @@ export default function ServicesListPage() {
 function AllServicesView() {
   const router = useRouter();
   const [search, setSearch] = useState('');
-  const { data: services, isLoading } = useServices({ q: search });
+  const debouncedSearch = useDebounce(search, 250);
+  const { data: services, isLoading } = useServices({ q: debouncedSearch });
   const count = services?.length ?? 0;
 
   return (
-    <div className="px-10 py-10">
+    <div className="px-4 sm:px-10 py-4 sm:py-10">
       {/* Sticky strip: title + actions + search bar pinned to the top
           while the (potentially 300+) services table scrolls below. */}
-      <div className="sticky top-0 z-10 -mx-10 -mt-10 px-10 pt-10 pb-4 bg-background border-b border-border">
+      <div className="sticky top-0 z-10 -mx-4 sm:-mx-10 -mt-4 sm:-mt-10 px-4 sm:px-10 pt-4 sm:pt-10 pb-3 sm:pb-4 bg-background border-b border-border">
         <PageHeader
           title="Services"
           description={`${count} service${count === 1 ? '' : 's'} across every category`}
@@ -137,9 +140,10 @@ function AllServicesView() {
 function CategoryServicesView({ categoryId }: { categoryId: number }) {
   const router = useRouter();
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 250);
   const { data: categories } = useServiceCategories();
   const category = categories?.find((c) => c.id === categoryId);
-  const { data: services, isLoading } = useServices({ q: search, categoryId });
+  const { data: services, isLoading } = useServices({ q: debouncedSearch, categoryId });
   const count = services?.length ?? 0;
 
   return (
@@ -247,7 +251,57 @@ function ServicesTable({
   onRowClick: (id: number) => void;
 }) {
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
+    <>
+      {/* Mobile: card list — the desktop table's 5 columns can't fit
+          on a 375px phone. Cards collapse name + description on top
+          and category · duration · price · status on the bottom. */}
+      <ul className="sm:hidden divide-y rounded-lg border bg-card overflow-hidden">
+        {services.map((s) => (
+          <li key={s.id}>
+            <button
+              type="button"
+              onClick={() => onRowClick(s.id)}
+              className="w-full text-left flex items-start gap-3 px-4 py-3 hover:bg-muted/40 active:bg-muted/60 transition-colors"
+            >
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="font-medium text-sm truncate">{s.name}</p>
+                  <StatusBadge tone={s.is_active ? 'success' : 'neutral'}>
+                    {s.is_active ? 'active' : 'inactive'}
+                  </StatusBadge>
+                </div>
+                {s.description ? (
+                  <p className="text-xs text-muted-foreground mt-1 line-clamp-2">
+                    {s.description}
+                  </p>
+                ) : null}
+                <div className="flex items-center gap-2 mt-1.5 text-xs text-muted-foreground flex-wrap">
+                  {s.category ? (
+                    <Badge
+                      variant="outline"
+                      style={{ borderColor: `${s.category.color}66`, color: s.category.color }}
+                      className="font-normal text-[10.5px] px-1.5 py-0"
+                    >
+                      {s.category.name}
+                    </Badge>
+                  ) : null}
+                  <span className="tabular-nums">{s.duration_minutes}m</span>
+                  <span className="text-muted-foreground/40">·</span>
+                  <span className="font-mono font-medium tabular-nums text-foreground">
+                    {s.price_dollars}
+                  </span>
+                  {!s.is_bookable_online ? (
+                    <span className="text-[10px] uppercase tracking-wide">Phone only</span>
+                  ) : null}
+                </div>
+              </div>
+              <ChevronRight className="size-4 text-muted-foreground/60 shrink-0 mt-1" aria-hidden />
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      <div className="hidden sm:block rounded-lg border bg-card overflow-hidden">
       <Table>
         <TableHeader>
           <TableRow className="bg-muted/30 hover:bg-muted/30">
@@ -309,6 +363,7 @@ function ServicesTable({
           ))}
         </TableBody>
       </Table>
-    </div>
+      </div>
+    </>
   );
 }

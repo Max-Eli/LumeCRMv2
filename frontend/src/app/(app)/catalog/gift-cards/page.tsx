@@ -45,6 +45,7 @@ import {
   useGiftCards,
   useVoidGiftCard,
 } from '@/lib/giftcards';
+import { useDebounce } from '@/lib/use-debounce';
 import { cn } from '@/lib/utils';
 
 type StateFilter = 'all' | GiftCardStatus;
@@ -54,10 +55,11 @@ export default function GiftCardsListPage() {
   const canVoid = me?.role === 'owner' || me?.role === 'manager';
   const router = useRouter();
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 250);
   const [filter, setFilter] = useState<StateFilter>('all');
 
   const { data, isLoading, error } = useGiftCards({
-    q: search || undefined,
+    q: debouncedSearch || undefined,
     status: filter === 'all' ? undefined : filter,
   });
 
@@ -75,7 +77,7 @@ export default function GiftCardsListPage() {
   }, [all.data]);
 
   return (
-    <div className="px-8 py-8 space-y-6">
+    <div className="px-4 sm:px-8 py-4 sm:py-8 space-y-4 sm:space-y-6">
       <PageHeader
         title="Gift cards"
         description="Issued cards. Sell new cards from an OPEN invoice (Sell a gift card panel). Look up balances at checkout via the redeem panel on the customer's invoice."
@@ -234,8 +236,8 @@ function CardsTable({
   onClick: (id: number) => void;
 }) {
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
-      <Table>
+    <div className="rounded-lg border bg-card overflow-x-auto">
+      <Table className="min-w-[720px]">
         <TableHeader>
           <TableRow className="bg-muted/30 hover:bg-muted/30">
             <TableHead className="w-[160px]">Code</TableHead>

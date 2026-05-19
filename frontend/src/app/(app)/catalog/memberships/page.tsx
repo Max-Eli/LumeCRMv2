@@ -38,6 +38,7 @@ import {
   BILLING_INTERVAL_LABELS,
   useMembershipPlans,
 } from '@/lib/subscriptions';
+import { useDebounce } from '@/lib/use-debounce';
 import { cn } from '@/lib/utils';
 
 type StateFilter = 'all' | 'active' | 'inactive';
@@ -47,9 +48,10 @@ export default function MembershipPlansListPage() {
   const canEdit = me?.role === 'owner' || me?.role === 'manager';
   const router = useRouter();
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 250);
   const [filter, setFilter] = useState<StateFilter>('all');
   const { data, isLoading, error } = useMembershipPlans({
-    q: search,
+    q: debouncedSearch,
     activeOnly:
       filter === 'active' ? true : filter === 'inactive' ? false : undefined,
   });
@@ -63,7 +65,7 @@ export default function MembershipPlansListPage() {
   ).length;
 
   return (
-    <div className="px-8 py-8 space-y-6">
+    <div className="px-4 sm:px-8 py-4 sm:py-8 space-y-4 sm:space-y-6">
       <PageHeader
         title="Memberships"
         description="Recurring-billing plans for regular clients. Bundle services + member-only pricing into a monthly or annual rate."
@@ -157,8 +159,8 @@ function PlansTable({
   onClick: (id: number) => void;
 }) {
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
-      <Table>
+    <div className="rounded-lg border bg-card overflow-x-auto">
+      <Table className="min-w-[720px]">
         <TableHeader>
           <TableRow className="bg-muted/30 hover:bg-muted/30">
             <TableHead className="w-[110px]">SKU</TableHead>

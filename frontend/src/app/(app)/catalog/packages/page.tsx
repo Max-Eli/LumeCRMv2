@@ -31,6 +31,7 @@ import {
 } from '@/components/ui/table';
 import { useCurrentMembership } from '@/lib/auth';
 import { type Package, usePackages } from '@/lib/packages';
+import { useDebounce } from '@/lib/use-debounce';
 import { cn } from '@/lib/utils';
 
 type StateFilter = 'all' | 'active' | 'inactive';
@@ -40,9 +41,10 @@ export default function PackagesListPage() {
   const canEdit = me?.role === 'owner' || me?.role === 'manager';
   const router = useRouter();
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 250);
   const [filter, setFilter] = useState<StateFilter>('all');
   const { data, isLoading, error } = usePackages({
-    q: search,
+    q: debouncedSearch,
     activeOnly:
       filter === 'active' ? true : filter === 'inactive' ? false : undefined,
   });
@@ -58,7 +60,7 @@ export default function PackagesListPage() {
   }, [all.data]);
 
   return (
-    <div className="px-8 py-8 space-y-6">
+    <div className="px-4 sm:px-8 py-4 sm:py-8 space-y-4 sm:space-y-6">
       <PageHeader
         title="Packages"
         description="Pre-paid service bundles. Customer pays once, draws down credits across multiple visits."
@@ -155,8 +157,8 @@ function PackagesTable({
   onClick: (id: number) => void;
 }) {
   return (
-    <div className="rounded-lg border bg-card overflow-hidden">
-      <Table>
+    <div className="rounded-lg border bg-card overflow-x-auto">
+      <Table className="min-w-[720px]">
         <TableHeader>
           <TableRow className="bg-muted/30 hover:bg-muted/30">
             <TableHead className="w-[110px]">SKU</TableHead>
