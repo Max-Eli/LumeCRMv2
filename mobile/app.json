@@ -8,7 +8,6 @@
     "scheme": "lumecrm",
     "userInterfaceStyle": "light",
     "ios": {
-      "icon": "./assets/expo.icon",
       "bundleIdentifier": "com.lumecrm.staff"
     },
     "android": {
@@ -16,8 +15,7 @@
       "adaptiveIcon": {
         "backgroundColor": "#F3F4F5",
         "foregroundImage": "./assets/images/android-icon-foreground.png",
-        "backgroundImage": "./assets/images/android-icon-background.png",
-        "monochromeImage": "./assets/images/android-icon-monochrome.png"
+        "monochromeImage": "./assets/images/android-icon-foreground.png"
       },
       "predictiveBackGestureEnabled": false
     },
@@ -31,10 +29,8 @@
         "expo-splash-screen",
         {
           "backgroundColor": "#F3F4F5",
-          "android": {
-            "image": "./assets/images/splash-icon.png",
-            "imageWidth": 76
-          }
+          "image": "./assets/images/splash-icon.png",
+          "imageWidth": 140
         }
       ],
       "expo-secure-store"
