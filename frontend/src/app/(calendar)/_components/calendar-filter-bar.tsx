@@ -58,18 +58,36 @@ export function CalendarFilterBar({
   const focused = new Date(`${date}T00:00:00`);
   const todayStr = todayISO();
   const isToday = date === todayStr;
-  const headlineLong = focused.toLocaleDateString('en-US', {
-    weekday: 'long',
-    month: 'long',
-    day: 'numeric',
-    year: 'numeric',
-  });
 
-  const shift = (days: number) => {
+  // Headline + prev/next step adapt to the active view:
+  //   day   → "Monday, May 19, 2026"   · step ±1 day
+  //   week  → "May 18 – 24, 2026"       · step ±7 days
+  //   month → "May 2026"                · step ±1 month
+  const headlineLong =
+    view === 'month'
+      ? focused.toLocaleDateString('en-US', { month: 'long', year: 'numeric' })
+      : view === 'week'
+        ? formatWeekRange(focused)
+        : focused.toLocaleDateString('en-US', {
+            weekday: 'long',
+            month: 'long',
+            day: 'numeric',
+            year: 'numeric',
+          });
+
+  const shift = (direction: -1 | 1) => {
     const next = new Date(focused);
-    next.setDate(next.getDate() + days);
+    if (view === 'month') {
+      next.setMonth(next.getMonth() + direction);
+    } else if (view === 'week') {
+      next.setDate(next.getDate() + direction * 7);
+    } else {
+      next.setDate(next.getDate() + direction);
+    }
     onChangeDate(toISODate(next));
   };
+
+  const stepLabel = view === 'month' ? 'month' : view === 'week' ? 'week' : 'day';
 
   return (
     <div className="shrink-0 border-b bg-background">
@@ -89,7 +107,7 @@ export function CalendarFilterBar({
               type="button"
               onClick={() => shift(-1)}
               className="inline-flex size-8 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              aria-label="Previous day"
+              aria-label={`Previous ${stepLabel}`}
             >
               <ChevronLeft className="size-4" />
             </button>
@@ -97,13 +115,17 @@ export function CalendarFilterBar({
               type="button"
               onClick={() => shift(1)}
               className="inline-flex size-8 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              aria-label="Next day"
+              aria-label={`Next ${stepLabel}`}
             >
               <ChevronRight className="size-4" />
             </button>
           </div>
           <DatePicker value={date} onChange={onChangeDate} ariaLabel="Select date" />
-          <span className="font-serif text-base font-medium tracking-tight ml-2 hidden md:inline">
+          {/* Headline: full long form on desktop. On mobile it's the
+              only on-screen indicator of which week/month you're in
+              (the grid itself doesn't repeat the month name), so it
+              shows there too — truncating if the row gets tight. */}
+          <span className="font-serif text-sm sm:text-base font-medium tracking-tight ml-1 sm:ml-2 truncate">
             {headlineLong}
           </span>
         </div>
@@ -138,19 +160,16 @@ export function CalendarFilterBar({
             <span className="hidden sm:inline">Hide cancelled</span>
           </button>
 
-          {/* DisplayMode toggle (grid vs list) is desktop-only now —
-              mobile ALWAYS renders the list view because the time-
-              grid is unusable below 768px (operator decision; the
-              calendar/page.tsx wrapper forces the list at this
-              breakpoint via CSS-only). Hiding the toggle prevents
-              clicks that would otherwise have no visible effect.
-              ViewToggle (Day/Week/Month) stays desktop-only too —
-              Week + Month aren't built yet, so showing disabled
-              buttons on a phone is clutter, not signal. */}
+          {/* DisplayMode toggle (grid vs list) stays desktop-only —
+              mobile day view ALWAYS renders the list because the
+              time-grid is unusable below 768px. ViewToggle
+              (Day/Week/Month) shows on every size now that week +
+              month views are built — they're the mobile-friendly
+              calendar surfaces. */}
           <div className="hidden md:flex items-center">
             <DisplayModeToggle value={displayMode} onChange={onChangeDisplayMode} />
           </div>
-          <div className="hidden sm:flex items-center">
+          <div className="flex items-center">
             <ViewToggle value={view} onChange={onChangeView} />
           </div>
         </div>
@@ -209,20 +228,17 @@ function ViewToggle({
     <div role="group" className="inline-flex rounded-md border bg-card overflow-hidden">
       {(['day', 'week', 'month'] as const).map((v) => {
         const active = v === value;
-        const enabled = v === 'day';
         return (
           <button
             key={v}
             type="button"
-            disabled={!enabled}
-            onClick={() => enabled && onChange(v)}
+            onClick={() => onChange(v)}
+            aria-pressed={active}
             className={cn(
-              'px-3 h-8 text-xs uppercase tracking-wide capitalize transition-colors',
+              'px-2.5 sm:px-3 h-8 text-xs uppercase tracking-wide capitalize transition-colors',
               active
                 ? 'bg-foreground text-background'
-                : enabled
-                  ? 'text-muted-foreground hover:bg-muted hover:text-foreground'
-                  : 'text-muted-foreground/40 cursor-not-allowed',
+                : 'text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
           >
             {v}
@@ -349,4 +365,21 @@ function toISODate(d: Date): string {
   const mm = String(d.getMonth() + 1).padStart(2, '0');
   const dd = String(d.getDate()).padStart(2, '0');
   return `${yyyy}-${mm}-${dd}`;
+}
+
+/** "May 18 – 24, 2026" for the Sunday-anchored week containing
+ *  `focused`. Collapses the month when the week doesn't straddle one
+ *  ("May 28 – Jun 3, 2026" when it does). */
+function formatWeekRange(focused: Date): string {
+  const start = new Date(focused);
+  start.setDate(start.getDate() - start.getDay());
+  const end = new Date(start);
+  end.setDate(end.getDate() + 6);
+  const sameMonth = start.getMonth() === end.getMonth();
+  const startStr = start.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  const endStr = end.toLocaleDateString('en-US', {
+    month: sameMonth ? undefined : 'short',
+    day: 'numeric',
+  });
+  return `${startStr} – ${endStr}, ${end.getFullYear()}`;
 }

@@ -143,6 +143,32 @@ export function useUpcomingOnlineBookings() {
   });
 }
 
+/** Appointments overlapping a date range — used by the calendar's
+ *  week + month views. `startISO` / `endISO` are ISO-8601 datetimes;
+ *  the backend returns every appointment that overlaps the window
+ *  (`start_time < end` AND `end_time > start`).
+ *
+ *  The query key uses the date-only slices so navigating within the
+ *  same month/week doesn't churn the cache. */
+export function useAppointmentsRange(
+  startISO: string | undefined,
+  endISO: string | undefined,
+) {
+  return useQuery<Appointment[]>({
+    queryKey: [
+      ...APPOINTMENTS_KEY,
+      'range',
+      startISO?.slice(0, 10) ?? null,
+      endISO?.slice(0, 10) ?? null,
+    ],
+    queryFn: () =>
+      api.get<Appointment[]>(
+        `/api/appointments/?start=${encodeURIComponent(startISO!)}&end=${encodeURIComponent(endISO!)}`,
+      ),
+    enabled: !!startISO && !!endISO,
+  });
+}
+
 /** Fetch a single appointment by ID. */
 export function useAppointment(id: number | undefined) {
   return useQuery<Appointment>({

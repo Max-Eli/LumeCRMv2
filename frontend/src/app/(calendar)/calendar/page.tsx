@@ -34,10 +34,16 @@ import {
 } from '../_components/day-view';
 import { DayStatsFooter } from '../_components/day-stats-footer';
 import { ListView } from '../_components/list-view';
+import { MonthView } from '../_components/month-view';
 import { NewAppointmentSheet } from '../_components/new-appointment-sheet';
 import { RightToolRail, TOOLS, type CalendarTool } from '../_components/right-tool-rail';
 import { ToolPanel } from '../_components/tool-panel';
-import { useAppointment, useAppointmentsForDate } from '@/lib/appointments';
+import { WeekView } from '../_components/week-view';
+import {
+  useAppointment,
+  useAppointmentsForDate,
+  useAppointmentsRange,
+} from '@/lib/appointments';
 import { useCurrentMembership, useUser } from '@/lib/auth';
 import { useActiveLocation } from '@/lib/locations';
 import { useBookableMemberships } from '@/lib/memberships';
@@ -132,9 +138,25 @@ export default function CalendarPage() {
 
   // ── Data ────────────────────────────────────────────────────────────────
   const { data: providers, isLoading: loadingProviders } = useBookableMemberships();
-  const { data: appointments, isLoading: loadingAppts, error } = useAppointmentsForDate(date);
   const { data: currentUser } = useUser();
   const currentMembership = useCurrentMembership();
+
+  // Day view fetches the single-day window; week + month fetch a
+  // range. Both hooks are always called (React rules-of-hooks) — the
+  // inactive one is disabled via an `undefined` arg so it doesn't
+  // fetch. `appointments` then resolves from whichever is active.
+  const { rangeStart, rangeEnd } = useMemo(
+    () => computeRange(view, date),
+    [view, date],
+  );
+  const dayQuery = useAppointmentsForDate(view === 'day' ? date : undefined);
+  const rangeQuery = useAppointmentsRange(
+    view === 'day' ? undefined : rangeStart,
+    view === 'day' ? undefined : rangeEnd,
+  );
+  const appointments = view === 'day' ? dayQuery.data : rangeQuery.data;
+  const loadingAppts = view === 'day' ? dayQuery.isLoading : rangeQuery.isLoading;
+  const error = view === 'day' ? dayQuery.error : rangeQuery.error;
 
   // Provider-role default: when a "provider" role user opens the
   // calendar for the first time in this session, narrow the provider
@@ -355,15 +377,34 @@ export default function CalendarPage() {
             <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">
               Loading calendar…
             </div>
+          ) : view === 'month' ? (
+            <MonthView
+              date={date}
+              timezone={tenantTimezone}
+              appointments={filteredAppointments}
+              onSelectDay={(d) => {
+                setDate(d);
+                setView('day');
+              }}
+            />
+          ) : view === 'week' ? (
+            <WeekView
+              date={date}
+              timezone={tenantTimezone}
+              appointments={filteredAppointments}
+              onSelectDay={(d) => {
+                setDate(d);
+                setView('day');
+              }}
+            />
           ) : (
             <>
-              {/* Mobile-first: ListView is ALWAYS shown on phones
-                  (the time-grid breaks down below 768px no matter
-                  how cleverly we columnize). On desktop, ListView
-                  honors the operator's display-mode toggle.
-                  Implementation is pure-CSS so there's no
-                  hydration-mismatch risk from a client-only
-                  useMediaQuery flip. */}
+              {/* Day view — mobile-first: ListView is ALWAYS shown on
+                  phones (the time-grid breaks down below 768px no
+                  matter how cleverly we columnize). On desktop,
+                  ListView honors the operator's display-mode toggle.
+                  Pure-CSS responsive so there's no hydration-mismatch
+                  risk from a client-only useMediaQuery flip. */}
               <div
                 className={cn(
                   'flex-1 min-h-0 flex flex-col',
@@ -531,5 +572,40 @@ function clamp(value: number, min: number, max: number): number {
 function weekdayKey(dateStr: string): string {
   const d = new Date(`${dateStr}T00:00:00`);
   return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][d.getDay()];
+}
+
+/** ISO datetime window for a calendar view.
+ *
+ *   - day:   the day query handles its own window — returns nulls.
+ *   - week:  Sunday 00:00 → following Sunday 00:00.
+ *   - month: the visible 6-week grid (Sunday on/before the 1st →
+ *            42 days later) so a month view's leading / trailing
+ *            days from adjacent months still show their appointments.
+ *
+ *  Boundaries are computed in the browser's local time and serialized
+ *  with `toISOString()`; the backend treats `start`/`end` as plain
+ *  ISO-8601 instants, so a few hours of timezone drift at the very
+ *  edge of the window is harmless (the grid cells re-bucket by each
+ *  appointment's own local date anyway). */
+function computeRange(
+  view: 'day' | 'week' | 'month',
+  dateStr: string,
+): { rangeStart?: string; rangeEnd?: string } {
+  if (view === 'day') return {};
+  const focus = new Date(`${dateStr}T00:00:00`);
+  if (view === 'week') {
+    const start = new Date(focus);
+    start.setDate(start.getDate() - start.getDay());
+    const end = new Date(start);
+    end.setDate(end.getDate() + 7);
+    return { rangeStart: start.toISOString(), rangeEnd: end.toISOString() };
+  }
+  // month
+  const firstOfMonth = new Date(focus.getFullYear(), focus.getMonth(), 1);
+  const start = new Date(firstOfMonth);
+  start.setDate(start.getDate() - start.getDay());
+  const end = new Date(start);
+  end.setDate(end.getDate() + 42);
+  return { rangeStart: start.toISOString(), rangeEnd: end.toISOString() };
 }
 
