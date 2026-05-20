@@ -286,6 +286,21 @@ export function useCustomerAppointments(customerId: number) {
   });
 }
 
+/** Upcoming appointments booked through the public online flow —
+ *  the staff review queue. */
+export function useUpcomingOnlineBookings() {
+  const { authedFetch } = useAuth();
+  const nowIso = new Date().toISOString();
+  return useQuery({
+    queryKey: ['appointments', 'online', nowIso.slice(0, 16)],
+    queryFn: () =>
+      authedFetch<Appointment[]>(
+        `/api/appointments/?source=online&start=${encodeURIComponent(nowIso)}`,
+      ),
+    staleTime: 30000,
+  });
+}
+
 /** A single appointment by id. */
 export function useAppointment(id: number) {
   const { authedFetch } = useAuth();

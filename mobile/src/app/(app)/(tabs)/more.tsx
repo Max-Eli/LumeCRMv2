@@ -85,6 +85,26 @@ export default function MoreScreen() {
           <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
         </Pressable>
 
+        <Pressable
+          onPress={() => router.push('/waitlist')}
+          accessibilityRole="button"
+          style={styles.navRow}
+        >
+          <Feather name="list" size={18} color={colors.foreground} />
+          <Text style={styles.navText}>Waitlist</Text>
+          <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+        </Pressable>
+
+        <Pressable
+          onPress={() => router.push('/online-bookings')}
+          accessibilityRole="button"
+          style={styles.navRow}
+        >
+          <Feather name="globe" size={18} color={colors.foreground} />
+          <Text style={styles.navText}>Online bookings</Text>
+          <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+        </Pressable>
+
         <Button
           label="Sign out"
           variant="secondary"
