@@ -97,6 +97,21 @@ export function mobileLogout(accessToken: string, refresh: string): Promise<void
   }));
 }
 
+/** `POST /api/auth/verify-credentials/` — confirm an email + password
+ *  belong to an active staff member, without opening a session. Used
+ *  by the consent-form kiosk unlock. Resolves `true` on success. */
+export async function verifyCredentials(
+  email: string,
+  password: string,
+): Promise<boolean> {
+  try {
+    await request('/api/auth/verify-credentials/', jsonPost({ email, password }));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /** `GET /api/public/branding/` — resolve a workspace by slug.
  *
  *  Public + unauthenticated. The tenant is resolved server-side from
