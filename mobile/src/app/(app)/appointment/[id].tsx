@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { AppointmentActions } from '@/components/appointment-actions';
 import { AppointmentCharting } from '@/components/appointment-charting';
 import { AppointmentForms } from '@/components/appointment-forms';
+import { AppointmentInvoice } from '@/components/appointment-invoice';
 import { Skeleton } from '@/components/ui/skeleton';
 import { StatusPill } from '@/components/ui/status-pill';
 import { colors, fonts, fontSize, radius, spacing } from '@/constants/theme';
@@ -117,6 +118,8 @@ export default function AppointmentDetailScreen() {
           </View>
 
           <AppointmentActions appointment={appt} />
+
+          <AppointmentInvoice appointment={appt} />
 
           <AppointmentCharting appointment={appt} />
 
