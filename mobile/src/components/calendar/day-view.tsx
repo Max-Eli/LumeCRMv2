@@ -1,14 +1,36 @@
 import { Feather } from '@expo/vector-icons';
 import { router } from 'expo-router';
-import { FlatList, Pressable, RefreshControl, StyleSheet, Text, View } from 'react-native';
+import {
+  FlatList,
+  Pressable,
+  RefreshControl,
+  StyleSheet,
+  Text,
+  useWindowDimensions,
+  View,
+} from 'react-native';
 
 import { AppointmentCard } from '@/components/appointment-card';
+import { DayGridView } from '@/components/calendar/day-grid-view';
 import { Skeleton } from '@/components/ui/skeleton';
 import { colors, fonts, fontSize, radius, spacing } from '@/constants/theme';
 import { useAppointmentsForDate } from '@/lib/appointments';
 
-/** The list of one day's appointments, sorted by start time. */
+/** At this width and above (iPad landscape), the day view switches to
+ *  the desktop-style provider-column grid. */
+const WIDE_BREAKPOINT = 840;
+
+/** One day's schedule — a provider-column grid on a wide screen, a
+ *  simple appointment list on a phone. */
 export function DayView({ date }: { date: string }) {
+  const { width } = useWindowDimensions();
+  if (width >= WIDE_BREAKPOINT) {
+    return <DayGridView date={date} />;
+  }
+  return <DayList date={date} />;
+}
+
+function DayList({ date }: { date: string }) {
   const { data, isLoading, isError, refetch, isRefetching } =
     useAppointmentsForDate(date);
 

@@ -10,139 +10,17 @@ import {
   weekDays,
   type Appointment,
 } from '@/lib/appointments';
+import {
+  computeHourWindow,
+  FALLBACK_COLOR,
+  GUTTER_PX,
+  HOUR_PX,
+  hourLabel,
+  packDay,
+  type Cell,
+} from '@/lib/calendar-pack';
 
-const GUTTER = 44;
-const HOUR_PX = 60;
-const DEFAULT_START_HOUR = 8;
-const DEFAULT_END_HOUR = 20;
-const MAX_COLS = 3;
 const WEEKDAY = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
-const FALLBACK_COLOR = '#71717a';
-
-interface ApptCell {
-  kind: 'appt';
-  appt: Appointment;
-  topMin: number;
-  durationMin: number;
-  col: number;
-  cols: number;
-}
-interface OverflowCell {
-  kind: 'overflow';
-  topMin: number;
-  durationMin: number;
-  col: number;
-  cols: number;
-  count: number;
-}
-type Cell = ApptCell | OverflowCell;
-
-/** Local minutes-from-midnight of an ISO timestamp. */
-function minutesOf(iso: string): number {
-  const d = new Date(iso);
-  return d.getHours() * 60 + d.getMinutes();
-}
-
-function hourLabel(h: number): string {
-  if (h === 0 || h === 24) return '12 AM';
-  if (h === 12) return '12 PM';
-  return h < 12 ? `${h} AM` : `${h - 12} PM`;
-}
-
-/** Overlap packing — clusters of mutually-overlapping appointments are
- *  packed side-by-side, capped at 3 columns; anything past the cap
- *  collapses into a single "+N" tile. Ported from the web week view. */
-function packDay(appts: Appointment[]): Cell[] {
-  const items = appts
-    .map((appt) => {
-      const topMin = minutesOf(appt.start_time);
-      const endMin = minutesOf(appt.end_time);
-      return { appt, topMin, endMin: Math.max(endMin, topMin + 5) };
-    })
-    .sort((a, b) => a.topMin - b.topMin || a.endMin - b.endMin);
-
-  const result: Cell[] = [];
-  let cluster: typeof items = [];
-  let clusterEnd = -1;
-
-  const flush = () => {
-    if (cluster.length === 0) return;
-    const columnEnds: number[] = [];
-    const colOf = new Map<Appointment, number>();
-    for (const it of cluster) {
-      let placed = -1;
-      for (let c = 0; c < columnEnds.length; c++) {
-        if (it.topMin >= columnEnds[c]) {
-          placed = c;
-          break;
-        }
-      }
-      if (placed === -1) {
-        placed = columnEnds.length;
-        columnEnds.push(it.endMin);
-      } else {
-        columnEnds[placed] = it.endMin;
-      }
-      colOf.set(it.appt, placed);
-    }
-    const neededCols = columnEnds.length;
-
-    if (neededCols <= MAX_COLS) {
-      for (const it of cluster) {
-        result.push({
-          kind: 'appt',
-          appt: it.appt,
-          topMin: it.topMin,
-          durationMin: it.endMin - it.topMin,
-          col: colOf.get(it.appt) ?? 0,
-          cols: neededCols,
-        });
-      }
-    } else {
-      const visibleCol = MAX_COLS - 1;
-      const overflow: typeof items = [];
-      for (const it of cluster) {
-        const c = colOf.get(it.appt) ?? 0;
-        if (c < visibleCol) {
-          result.push({
-            kind: 'appt',
-            appt: it.appt,
-            topMin: it.topMin,
-            durationMin: it.endMin - it.topMin,
-            col: c,
-            cols: MAX_COLS,
-          });
-        } else {
-          overflow.push(it);
-        }
-      }
-      if (overflow.length > 0) {
-        const ovTop = Math.min(...overflow.map((o) => o.topMin));
-        const ovEnd = Math.max(...overflow.map((o) => o.endMin));
-        result.push({
-          kind: 'overflow',
-          topMin: ovTop,
-          durationMin: ovEnd - ovTop,
-          col: visibleCol,
-          cols: MAX_COLS,
-          count: overflow.length,
-        });
-      }
-    }
-    cluster = [];
-  };
-
-  for (const it of items) {
-    if (cluster.length > 0 && it.topMin >= clusterEnd) {
-      flush();
-      clusterEnd = -1;
-    }
-    cluster.push(it);
-    clusterEnd = Math.max(clusterEnd, it.endMin);
-  }
-  flush();
-  return result;
-}
 
 /** Seven-day time grid, ported from the web calendar's week view. */
 export function WeekView({
@@ -162,17 +40,7 @@ export function WeekView({
     if (a.status !== 'cancelled' && byDay.has(d)) byDay.get(d)!.push(a);
   }
 
-  // Window: business hours, widened to cover any outlier appointment.
-  let lo = DEFAULT_START_HOUR;
-  let hi = DEFAULT_END_HOUR;
-  for (const a of appts) {
-    const s = new Date(a.start_time);
-    const e = new Date(a.end_time);
-    lo = Math.min(lo, s.getHours());
-    hi = Math.max(hi, e.getMinutes() > 0 ? e.getHours() + 1 : e.getHours());
-  }
-  const startHour = Math.max(0, lo);
-  const endHour = Math.min(24, Math.max(hi, startHour + 1));
+  const { startHour, endHour } = computeHourWindow(appts);
   const startMin = startHour * 60;
   const bodyHeight = (endHour - startHour) * HOUR_PX;
   const hours = Array.from({ length: endHour - startHour + 1 }, (_, i) => i);
@@ -185,7 +53,7 @@ export function WeekView({
   return (
     <View style={styles.container}>
       <View style={styles.headerRow}>
-        <View style={{ width: GUTTER }} />
+        <View style={{ width: GUTTER_PX }} />
         {days.map((d, i) => {
           const current = isToday(d);
           const count = (byDay.get(d) ?? []).length;
@@ -225,11 +93,11 @@ export function WeekView({
         showsVerticalScrollIndicator={false}
       >
         <View style={styles.body}>
-          <View style={{ width: GUTTER }}>
+          <View style={{ width: GUTTER_PX }}>
             {hours.map((i) => (
               <Text
                 key={i}
-                style={[styles.hourLabel, { top: i * HOUR_PX - 6 }]}
+                style={[styles.hourLabel, { top: Math.max(0, i * HOUR_PX - 6) }]}
               >
                 {i === 0 ? '' : hourLabel(startHour + i)}
               </Text>
@@ -238,10 +106,7 @@ export function WeekView({
 
           <View style={styles.grid}>
             {hours.map((i) => (
-              <View
-                key={i}
-                style={[styles.hourLine, { top: i * HOUR_PX }]}
-              />
+              <View key={i} style={[styles.hourLine, { top: i * HOUR_PX }]} />
             ))}
 
             <View style={styles.columns}>
@@ -260,9 +125,7 @@ export function WeekView({
                         onOverflow={() => onPickDay(d)}
                       />
                     ))}
-                    {current &&
-                    nowOffset >= 0 &&
-                    nowOffset <= bodyHeight ? (
+                    {current && nowOffset >= 0 && nowOffset <= bodyHeight ? (
                       <View style={[styles.nowLine, { top: nowOffset }]}>
                         <View style={styles.nowDot} />
                       </View>
@@ -325,10 +188,7 @@ function WeekCell({
       style={[
         styles.block,
         position,
-        {
-          backgroundColor: `${color}26`,
-          borderLeftColor: color,
-        },
+        { backgroundColor: `${color}26`, borderLeftColor: color },
         cancelled && styles.blockCancelled,
       ]}
     >
@@ -345,21 +205,14 @@ function WeekCell({
 }
 
 const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: colors.card,
-  },
+  container: { flex: 1, backgroundColor: colors.card },
   headerRow: {
     flexDirection: 'row',
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
     paddingVertical: 4,
   },
-  dayHead: {
-    flex: 1,
-    alignItems: 'center',
-    gap: 1,
-  },
+  dayHead: { flex: 1, alignItems: 'center', gap: 1 },
   dowLetter: {
     fontFamily: fonts.sans,
     fontSize: 10,
@@ -374,28 +227,20 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  dateBadgeToday: {
-    backgroundColor: colors.foreground,
-  },
+  dateBadgeToday: { backgroundColor: colors.foreground },
   dateNum: {
     fontFamily: fonts.sans,
     fontSize: fontSize.xs,
     color: colors.foreground,
   },
-  dateNumToday: {
-    color: colors.background,
-    fontWeight: '700',
-  },
+  dateNumToday: { color: colors.background, fontWeight: '700' },
   dayCount: {
     fontFamily: fonts.sans,
     fontSize: 9,
     color: colors.mutedForeground,
     height: 12,
   },
-  body: {
-    flex: 1,
-    flexDirection: 'row',
-  },
+  body: { flex: 1, flexDirection: 'row' },
   hourLabel: {
     position: 'absolute',
     right: 4,
@@ -403,9 +248,7 @@ const styles = StyleSheet.create({
     fontSize: 10,
     color: colors.mutedForeground,
   },
-  grid: {
-    flex: 1,
-  },
+  grid: { flex: 1 },
   hourLine: {
     position: 'absolute',
     left: 0,
@@ -413,26 +256,16 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: colors.border,
   },
-  columns: {
-    flex: 1,
-    flexDirection: 'row',
-  },
-  dayCol: {
-    flex: 1,
-  },
-  dayColBorder: {
-    borderRightWidth: 1,
-    borderRightColor: colors.border,
-  },
+  columns: { flex: 1, flexDirection: 'row' },
+  dayCol: { flex: 1 },
+  dayColBorder: { borderRightWidth: 1, borderRightColor: colors.border },
   block: {
     position: 'absolute',
     borderRadius: 4,
     borderLeftWidth: 3,
     overflow: 'hidden',
   },
-  blockCancelled: {
-    opacity: 0.55,
-  },
+  blockCancelled: { opacity: 0.55 },
   blockText: {
     fontFamily: fonts.sans,
     fontSize: 10,
@@ -441,9 +274,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 3,
     paddingTop: 1,
   },
-  blockTextCancelled: {
-    textDecorationLine: 'line-through',
-  },
+  blockTextCancelled: { textDecorationLine: 'line-through' },
   overflow: {
     position: 'absolute',
     borderRadius: 4,
@@ -463,7 +294,7 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    height: 1,
+    height: 2,
     backgroundColor: '#ef4444',
   },
   nowDot: {
@@ -475,10 +306,7 @@ const styles = StyleSheet.create({
     borderRadius: radius.pill,
     backgroundColor: '#ef4444',
   },
-  errorBanner: {
-    paddingVertical: 6,
-    alignItems: 'center',
-  },
+  errorBanner: { paddingVertical: 6, alignItems: 'center' },
   errorText: {
     fontFamily: fonts.sans,
     fontSize: fontSize.xs,
