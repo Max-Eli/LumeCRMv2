@@ -11,6 +11,7 @@ Sensitive values come from the env (Secrets Manager → ECS env in prod,
 """
 
 import os
+from datetime import timedelta
 from pathlib import Path
 
 import environ
@@ -47,6 +48,7 @@ INSTALLED_APPS = [
 
     # Third-party
     'rest_framework',
+    'rest_framework_simplejwt.token_blacklist',
     'corsheaders',
     'drf_spectacular',
 
@@ -104,11 +106,23 @@ from corsheaders.defaults import default_headers as _default_cors_headers
 CORS_ALLOW_HEADERS = (*_default_cors_headers, 'x-tenant-slug')
 
 
-# DRF defaults: session-cookie auth, require auth by default. Endpoints
-# that should be public (login, csrf) opt into AllowAny explicitly.
+# Auth: the web CRM uses session cookies; the staff mobile app uses JWT
+# bearer tokens (see ADR 0031). Both classes are active — DRF tries them
+# in order and takes the first that resolves a user.
+#
+# SessionAuthentication is kept FIRST deliberately: DRF derives the
+# 401-vs-403 status for an unauthenticated request from
+# `authenticators[0].authenticate_header()`. SessionAuthentication
+# returns none there, so browser requests keep their existing 403
+# behaviour exactly — the JWT class advertises a `Bearer` challenge and
+# would otherwise flip every unauthenticated response to 401.
+# MobileJWTAuthentication runs second and picks up Bearer-token requests
+# (it returns None when there's no Bearer header). Public endpoints opt
+# into AllowAny.
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework.authentication.SessionAuthentication',
+        'apps.users.authentication.MobileJWTAuthentication',
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -123,6 +137,21 @@ REST_FRAMEWORK = {
         'booking_submit': '10/hour',
         'booking_reschedule': '20/hour',
     },
+}
+
+# JWT settings for the staff mobile app (apps/users/mobile.py + ADR 0031).
+# Short-lived access tokens; refresh tokens rotate on every use and the
+# spent token is blacklisted, so a stolen refresh token is single-use.
+# A 7-day refresh window means a lost device's session lapses within a
+# week even without an explicit remote logout — the on-device app-lock
+# is the primary control, this is defence in depth.
+SIMPLE_JWT = {
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
+    'ROTATE_REFRESH_TOKENS': True,
+    'BLACKLIST_AFTER_ROTATION': True,
+    'UPDATE_LAST_LOGIN': True,
+    'AUTH_HEADER_TYPES': ('Bearer',),
 }
 
 # OpenAPI schema generation. Swagger UI: /api/docs/, ReDoc: /api/redoc/

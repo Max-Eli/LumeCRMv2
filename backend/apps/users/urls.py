@@ -1,12 +1,16 @@
 """Auth URL routes.
 
-Two separate login surfaces, deliberately disjoint — see views.py.
+Three login surfaces, deliberately disjoint:
+  - tenant + platform session-cookie auth — see views.py
+  - the JWT `mobile/` surface for the staff app — see mobile.py + ADR 0031
 """
 
 from django.urls import path
+from rest_framework_simplejwt.views import TokenRefreshView
 
 from apps.tenants.views import InvitationAcceptView, InvitationLookupView
 
+from .mobile import MobileLoginView, MobileLogoutView
 from .views import (
     CSRFView,
     ChangePasswordView,
@@ -27,6 +31,11 @@ urlpatterns = [
     # Used by the kiosk-mode unlock on /sign/[token]. Doesn't open a
     # session — just answers "is this a valid staff credential?".
     path('verify-credentials/', VerifyCredentialsView.as_view(), name='auth-verify-credentials'),
+    # Staff mobile app — JWT bearer-token auth (ADR 0031). The web
+    # surface above is untouched; these are purely additive.
+    path('mobile/login/', MobileLoginView.as_view(), name='mobile-login'),
+    path('mobile/refresh/', TokenRefreshView.as_view(), name='mobile-refresh'),
+    path('mobile/logout/', MobileLogoutView.as_view(), name='mobile-logout'),
     # Public invitation flow — the lookup endpoint lets the accept
     # page show "you've been invited to join Acme Spa" before the
     # recipient sets a password; accept creates the user + membership

@@ -272,3 +272,121 @@ class IdleSessionTimeoutTests(TestCase):
         with patch('apps.users.middleware.time.time', return_value=time.time() + 120):
             response = client.get('/healthz/live')
         self.assertEqual(response.status_code, 200)
+
+
+class MobileAuthTests(TestCase):
+    """The JWT `mobile/` auth surface for the staff app (ADR 0030).
+
+    Covers token issuance, the platform-admin / no-membership gates,
+    bearer-token request auth, the cross-tenant fail-closed guarantee,
+    refresh, and logout-blacklisting.
+    """
+
+    def _login(self, client, email, password='test-password'):
+        return client.post(
+            reverse('mobile-login'),
+            data={'email': email, 'password': password},
+            format='json',
+        )
+
+    def _make_active_tenant_user(self, email, slug):
+        """A staff user owning an ACTIVE tenant. `TenantMiddleware` only
+        resolves ACTIVE tenants from the `X-Tenant-Slug` header, so any
+        test that exercises tenant resolution needs the tenant active."""
+        user = User.objects.create_user(email=email, password='test-password')
+        create_tenant_with_defaults(
+            name=slug.title(), slug=slug, owner_user=user,
+            status=Tenant.Status.ACTIVE,
+        )
+        return user
+
+    def test_login_returns_token_pair_and_user(self):
+        _make_tenant_user('staff@example.com', 'mobilespa')
+        response = self._login(APIClient(), 'staff@example.com')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('access', response.data)
+        self.assertIn('refresh', response.data)
+        self.assertEqual(len(response.data['user']['memberships']), 1)
+
+    def test_login_rejects_platform_admin(self):
+        _make_platform_admin('admin@xn--lumcrm-5ua.com')
+        response = self._login(APIClient(), 'admin@xn--lumcrm-5ua.com')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+        self.assertEqual(response.data['code'], 'platform_admin_account')
+
+    def test_login_rejects_bad_password(self):
+        _make_tenant_user('staff@example.com', 'badpwspa')
+        response = self._login(APIClient(), 'staff@example.com', password='wrong')
+        self.assertEqual(response.status_code, status.HTTP_401_UNAUTHORIZED)
+
+    def test_login_rejects_account_with_no_membership(self):
+        User.objects.create_user(email='orphan@example.com', password='test-password')
+        response = self._login(APIClient(), 'orphan@example.com')
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+        self.assertEqual(response.data['code'], 'no_membership')
+
+    def test_access_token_authenticates_an_api_request(self):
+        self._make_active_tenant_user('staff@example.com', 'tokenspa')
+        access = self._login(APIClient(), 'staff@example.com').data['access']
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        response = client.get(reverse('auth-me'), HTTP_X_TENANT_SLUG='tokenspa')
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertEqual(response.data['user']['email'], 'staff@example.com')
+
+    def test_request_for_a_tenant_the_user_doesnt_belong_to_is_rejected(self):
+        """The mobile equivalent of the web's subdomain isolation: a
+        valid token addressed at the wrong workspace fails closed."""
+        self._make_active_tenant_user('staff@example.com', 'homespa')
+        other_owner = User.objects.create_user(
+            email='other@example.com', password='test-password',
+        )
+        create_tenant_with_defaults(
+            name='Other Spa', slug='otherspa', owner_user=other_owner,
+            status=Tenant.Status.ACTIVE,
+        )
+        access = self._login(APIClient(), 'staff@example.com').data['access']
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        response = client.get(reverse('auth-me'), HTTP_X_TENANT_SLUG='otherspa')
+        # Denied. DRF downgrades the auth-class rejection to 403 because
+        # SessionAuthentication (authenticators[0]) advertises no
+        # challenge header — the request is refused either way.
+        self.assertEqual(response.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_request_without_tenant_header_still_authenticates(self):
+        """No `X-Tenant-Slug` → no tenant to scope against → the token
+        still identifies the user (used by tenant-agnostic calls)."""
+        _make_tenant_user('staff@example.com', 'noheaderspa')
+        access = self._login(APIClient(), 'staff@example.com').data['access']
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        response = client.get(reverse('auth-me'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+
+    def test_refresh_returns_a_new_access_token(self):
+        _make_tenant_user('staff@example.com', 'refreshspa')
+        refresh = self._login(APIClient(), 'staff@example.com').data['refresh']
+        response = APIClient().post(
+            reverse('mobile-refresh'), data={'refresh': refresh}, format='json',
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        self.assertIn('access', response.data)
+
+    def test_logout_blacklists_the_refresh_token(self):
+        _make_tenant_user('staff@example.com', 'logoutspa')
+        login = self._login(APIClient(), 'staff@example.com')
+        access, refresh = login.data['access'], login.data['refresh']
+
+        client = APIClient()
+        client.credentials(HTTP_AUTHORIZATION=f'Bearer {access}')
+        logout = client.post(
+            reverse('mobile-logout'), data={'refresh': refresh}, format='json',
+        )
+        self.assertEqual(logout.status_code, status.HTTP_204_NO_CONTENT)
+
+        # The blacklisted refresh token can no longer mint an access token.
+        retry = APIClient().post(
+            reverse('mobile-refresh'), data={'refresh': refresh}, format='json',
+        )
+        self.assertEqual(retry.status_code, status.HTTP_401_UNAUTHORIZED)
