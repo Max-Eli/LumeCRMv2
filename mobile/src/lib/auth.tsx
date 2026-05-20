@@ -251,7 +251,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
     if (!branding) {
       throw new WorkspaceNotFoundError(slug);
     }
-    const next: Workspace = { slug: branding.slug, name: branding.name };
+    const next: Workspace = {
+      slug: branding.slug,
+      name: branding.name,
+      logoUrl: branding.logo_url,
+    };
     rememberWorkspace(next);
     await saveWorkspace(next);
     setStatus('need-credentials');

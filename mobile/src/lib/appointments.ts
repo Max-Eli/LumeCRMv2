@@ -273,6 +273,19 @@ export function useAppointmentsRange(startDate: string, endDate: string) {
   });
 }
 
+/** Every appointment for one customer, newest first. */
+export function useCustomerAppointments(customerId: number) {
+  const { authedFetch } = useAuth();
+  return useQuery({
+    queryKey: ['appointments', 'customer', customerId],
+    queryFn: () =>
+      authedFetch<Appointment[]>(
+        `/api/appointments/?customer=${customerId}`,
+      ),
+    enabled: Number.isFinite(customerId) && customerId > 0,
+  });
+}
+
 /** A single appointment by id. */
 export function useAppointment(id: number) {
   const { authedFetch } = useAuth();

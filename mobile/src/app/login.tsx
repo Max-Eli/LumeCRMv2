@@ -1,3 +1,4 @@
+import { Image } from 'expo-image';
 import { useState } from 'react';
 import {
   KeyboardAvoidingView,
@@ -58,10 +59,18 @@ export default function LoginScreen() {
           keyboardShouldPersistTaps="handled"
         >
           <View style={styles.header}>
-            <Text style={styles.wordmark}>Lumè</Text>
-            <Text style={styles.workspaceName}>
-              {workspace?.name ?? ''}
-            </Text>
+            {workspace?.logoUrl ? (
+              <Image
+                source={{ uri: workspace.logoUrl }}
+                style={styles.logo}
+                contentFit="contain"
+                accessibilityLabel={workspace.name}
+              />
+            ) : (
+              <Text style={styles.workspaceName}>
+                {workspace?.name ?? ''}
+              </Text>
+            )}
             <Text style={styles.subtitle}>Staff sign-in</Text>
           </View>
 
@@ -156,18 +165,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     gap: spacing.xs,
   },
-  wordmark: {
-    fontFamily: fonts.serif,
-    fontSize: 40,
-    color: colors.foreground,
-    letterSpacing: -0.5,
+  logo: {
+    width: 220,
+    height: 76,
   },
   workspaceName: {
-    fontFamily: fonts.sans,
-    fontSize: fontSize.md,
-    fontWeight: '600',
+    fontFamily: fonts.serif,
+    fontSize: 32,
     color: colors.foreground,
-    marginTop: spacing.xs,
+    letterSpacing: -0.5,
+    textAlign: 'center',
   },
   subtitle: {
     fontFamily: fonts.sans,

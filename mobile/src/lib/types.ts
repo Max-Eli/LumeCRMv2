@@ -48,4 +48,7 @@ export interface TenantBranding {
 export interface Workspace {
   slug: string;
   name: string;
+  /** Tenant logo, shown on the login screen. Null when the spa has
+   *  not uploaded one. */
+  logoUrl: string | null;
 }

@@ -42,7 +42,11 @@ export async function loadSession(): Promise<StoredSession> {
     try {
       const parsed = JSON.parse(workspaceRaw);
       if (parsed?.slug && parsed?.name) {
-        workspace = { slug: parsed.slug, name: parsed.name };
+        workspace = {
+          slug: parsed.slug,
+          name: parsed.name,
+          logoUrl: parsed.logoUrl ?? null,
+        };
       }
     } catch {
       workspace = null;
