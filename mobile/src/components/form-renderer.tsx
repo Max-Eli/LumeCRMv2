@@ -10,6 +10,9 @@ interface FormRendererProps {
   answers: Record<string, unknown>;
   onAnswer: (fieldId: string, value: unknown) => void;
   onSignature: (data: string | null) => void;
+  /** Fires true while a signature stroke is in progress — lets the
+   *  parent ScrollView freeze so the draw doesn't scroll the page. */
+  onSignatureDraw?: (drawing: boolean) => void;
 }
 
 function asString(value: unknown): string {
@@ -30,6 +33,7 @@ export function FormRenderer({
   answers,
   onAnswer,
   onSignature,
+  onSignatureDraw,
 }: FormRendererProps) {
   return (
     <View style={styles.form}>
@@ -61,6 +65,7 @@ export function FormRenderer({
               value={answers[field.id]}
               onAnswer={(v) => onAnswer(field.id, v)}
               onSignature={onSignature}
+              onSignatureDraw={onSignatureDraw}
             />
           </View>
         );
@@ -74,14 +79,22 @@ function FieldControl({
   value,
   onAnswer,
   onSignature,
+  onSignatureDraw,
 }: {
   field: FormField;
   value: unknown;
   onAnswer: (v: unknown) => void;
   onSignature: (data: string | null) => void;
+  onSignatureDraw?: (drawing: boolean) => void;
 }) {
   if (field.type === 'signature') {
-    return <SignaturePad onChange={onSignature} />;
+    return (
+      <SignaturePad
+        onChange={onSignature}
+        onDrawStart={() => onSignatureDraw?.(true)}
+        onDrawEnd={() => onSignatureDraw?.(false)}
+      />
+    );
   }
 
   if (field.type === 'choice_single') {

@@ -16,11 +16,19 @@ const WEB_STYLE = `
 `;
 
 /** A drawable signature canvas. Reports the signature as a base64 PNG
- *  data URL on every stroke end; reports null when cleared. */
+ *  data URL on every stroke end; reports null when cleared.
+ *
+ *  `onDrawStart` / `onDrawEnd` fire on stroke begin/end so a parent
+ *  ScrollView can freeze its scroll while the finger is drawing —
+ *  otherwise the drag both draws and scrolls the page. */
 export function SignaturePad({
   onChange,
+  onDrawStart,
+  onDrawEnd,
 }: {
   onChange: (data: string | null) => void;
+  onDrawStart?: () => void;
+  onDrawEnd?: () => void;
 }) {
   const ref = useRef<SignatureViewRef>(null);
 
@@ -32,7 +40,11 @@ export function SignaturePad({
           onOK={(signature) => onChange(signature)}
           onEmpty={() => onChange(null)}
           onClear={() => onChange(null)}
-          onEnd={() => ref.current?.readSignature()}
+          onBegin={() => onDrawStart?.()}
+          onEnd={() => {
+            ref.current?.readSignature();
+            onDrawEnd?.();
+          }}
           autoClear={false}
           webStyle={WEB_STYLE}
           backgroundColor="#ffffff"

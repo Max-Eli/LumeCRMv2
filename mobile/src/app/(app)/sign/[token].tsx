@@ -47,6 +47,9 @@ export default function SignFormScreen() {
   const [locked, setLocked] = useState(false);
   const [unlockOpen, setUnlockOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Frozen while a signature stroke is in progress, so drawing doesn't
+  // scroll the form.
+  const [scrollEnabled, setScrollEnabled] = useState(true);
 
   const completed = form?.status === 'completed' || submit.isSuccess;
 
@@ -159,6 +162,7 @@ export default function SignFormScreen() {
             contentContainerStyle={styles.content}
             keyboardShouldPersistTaps="handled"
             showsVerticalScrollIndicator={false}
+            scrollEnabled={scrollEnabled}
           >
             <View style={styles.brand}>
               {form.tenant_logo_url ? (
@@ -192,6 +196,7 @@ export default function SignFormScreen() {
                     setAnswers((prev) => ({ ...prev, [id]: value }))
                   }
                   onSignature={setSignature}
+                  onSignatureDraw={(drawing) => setScrollEnabled(!drawing)}
                 />
 
                 {!hasSignatureField ? (
@@ -199,7 +204,11 @@ export default function SignFormScreen() {
                     <Text style={styles.signLabel}>
                       Signature<Text style={styles.required}> *</Text>
                     </Text>
-                    <SignaturePad onChange={setSignature} />
+                    <SignaturePad
+                      onChange={setSignature}
+                      onDrawStart={() => setScrollEnabled(false)}
+                      onDrawEnd={() => setScrollEnabled(true)}
+                    />
                   </View>
                 ) : null}
 
