@@ -12,7 +12,7 @@ import { colors, fonts, fontSize, radius, spacing } from '@/constants/theme';
 interface ButtonProps {
   label: string;
   onPress: () => void;
-  variant?: 'primary' | 'secondary';
+  variant?: 'primary' | 'secondary' | 'destructive';
   /** Shows a spinner and blocks presses. */
   loading?: boolean;
   disabled?: boolean;
@@ -29,8 +29,19 @@ export function Button({
   disabled = false,
   style,
 }: ButtonProps) {
-  const isPrimary = variant === 'primary';
   const blocked = disabled || loading;
+  const surface =
+    variant === 'primary'
+      ? styles.primary
+      : variant === 'destructive'
+        ? styles.destructive
+        : styles.secondary;
+  const textColor =
+    variant === 'primary'
+      ? colors.primaryForeground
+      : variant === 'destructive'
+        ? colors.destructive
+        : colors.foreground;
 
   return (
     <Pressable
@@ -40,25 +51,16 @@ export function Button({
       accessibilityState={{ disabled: blocked, busy: loading }}
       style={({ pressed }) => [
         styles.base,
-        isPrimary ? styles.primary : styles.secondary,
+        surface,
         pressed && !blocked && styles.pressed,
         blocked && styles.blocked,
         style,
       ]}
     >
       {loading ? (
-        <ActivityIndicator
-          color={isPrimary ? colors.primaryForeground : colors.foreground}
-        />
+        <ActivityIndicator color={textColor} />
       ) : (
-        <Text
-          style={[
-            styles.label,
-            { color: isPrimary ? colors.primaryForeground : colors.foreground },
-          ]}
-        >
-          {label}
-        </Text>
+        <Text style={[styles.label, { color: textColor }]}>{label}</Text>
       )}
     </Pressable>
   );
@@ -79,6 +81,11 @@ const styles = StyleSheet.create({
     backgroundColor: colors.card,
     borderWidth: 1,
     borderColor: colors.border,
+  },
+  destructive: {
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.destructive,
   },
   pressed: {
     opacity: 0.85,

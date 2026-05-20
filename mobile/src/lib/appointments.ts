@@ -6,7 +6,7 @@
  * which matches the spa's timezone for on-site staff.
  */
 
-import { useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { useAuth } from './auth';
 
@@ -72,6 +72,42 @@ export const STATUS_META: Record<
   no_show: { label: 'No-show', fg: '#CA3F16', bg: '#FBE7DF' },
   cancelled: { label: 'Cancelled', fg: '#9A9B9C', bg: '#ECEDEE' },
 };
+
+/** Valid status transitions, mirroring the backend serializer's state
+ *  machine. `completed` is intentionally absent everywhere — per
+ *  ADR 0007 the only path to it is closing the linked invoice, never a
+ *  one-tap action. */
+export const STATUS_TRANSITIONS: Record<
+  AppointmentStatus,
+  AppointmentStatus[]
+> = {
+  booked: ['confirmed', 'checked_in', 'cancelled', 'no_show'],
+  confirmed: ['checked_in', 'cancelled', 'no_show'],
+  checked_in: ['confirmed', 'cancelled', 'no_show'],
+  completed: [],
+  cancelled: [],
+  no_show: [],
+};
+
+/** Operator-facing label for a status-transition action. */
+export function transitionLabel(
+  from: AppointmentStatus,
+  to: AppointmentStatus,
+): string {
+  if (from === 'checked_in' && to === 'confirmed') return 'Undo check-in';
+  switch (to) {
+    case 'confirmed':
+      return 'Confirm';
+    case 'checked_in':
+      return 'Check in';
+    case 'cancelled':
+      return 'Cancel appointment';
+    case 'no_show':
+      return 'Mark no-show';
+    default:
+      return STATUS_META[to].label;
+  }
+}
 
 // ─── Display helpers ─────────────────────────────────────────────────
 
@@ -244,5 +280,25 @@ export function useAppointment(id: number) {
     queryKey: ['appointments', 'detail', id],
     queryFn: () => authedFetch<Appointment>(`/api/appointments/${id}/`),
     enabled: Number.isFinite(id) && id > 0,
+  });
+}
+
+/** Move an appointment to a new status (`PATCH /api/appointments/:id/`).
+ *  On success the detail cache is updated and every appointment list
+ *  is invalidated so the dashboard + calendar reflect the change. */
+export function useUpdateAppointmentStatus(id: number) {
+  const { authedFetch } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (status: AppointmentStatus) =>
+      authedFetch<Appointment>(`/api/appointments/${id}/`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status }),
+      }),
+    onSuccess: (updated) => {
+      queryClient.setQueryData(['appointments', 'detail', id], updated);
+      queryClient.invalidateQueries({ queryKey: ['appointments'] });
+    },
   });
 }
