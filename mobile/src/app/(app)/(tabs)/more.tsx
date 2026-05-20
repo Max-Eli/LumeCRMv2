@@ -1,6 +1,8 @@
+import { Feather } from '@expo/vector-icons';
 import Constants from 'expo-constants';
+import { router } from 'expo-router';
 import { useState } from 'react';
-import { ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { Button } from '@/components/ui/button';
@@ -62,6 +64,16 @@ export default function MoreScreen() {
           <View style={styles.divider} />
           <Row label="Role" value={membership?.role_display ?? '—'} />
         </View>
+
+        <Pressable
+          onPress={() => router.push('/clock-in')}
+          accessibilityRole="button"
+          style={styles.navRow}
+        >
+          <Feather name="clock" size={18} color={colors.foreground} />
+          <Text style={styles.navText}>Time clock</Text>
+          <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+        </Pressable>
 
         <Button
           label="Sign out"
@@ -165,6 +177,23 @@ const styles = StyleSheet.create({
     height: 1,
     backgroundColor: colors.border,
     marginVertical: spacing.sm,
+  },
+  navRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: colors.card,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: radius.lg,
+    padding: spacing.lg,
+  },
+  navText: {
+    flex: 1,
+    fontFamily: fonts.sans,
+    fontSize: fontSize.base,
+    fontWeight: '600',
+    color: colors.foreground,
   },
   version: {
     fontFamily: fonts.sans,
