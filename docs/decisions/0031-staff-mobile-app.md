@@ -6,6 +6,11 @@ Accepted (2026-05-20). Phase 2 of the staff mobile app build. The
 Expo project scaffold (Phase 1) and this backend auth surface
 (Phase 2) are the foundation; feature screens follow in later phases.
 
+Revised (2026-05-20, pre-deploy): tenant resolution changed from
+email-first to slug-first (§3) at the product owner's direction. No
+backend change was needed — the slug is validated against the existing
+public branding endpoint.
+
 ## Context
 
 Both launch spas have staff who expect to run day-to-day operations
@@ -72,26 +77,35 @@ platform admins are rejected with the structured
 credentials get a generic 401 with no account-enumeration leak; an
 account with zero active memberships is rejected (`no_membership`).
 
-### 3. Tenant resolution: email-first, no slug typing
+### 3. Tenant resolution: slug-first
 
-The `User` model uses email as `USERNAME_FIELD` with `unique=True` —
-**every staff email is unique platform-wide**. So the app does not need
-anyone to type a workspace slug:
+Sign-in is two steps:
 
-- Staff enter email + password.
-- The login response carries the user's `memberships`.
-- One membership → the app proceeds straight into that workspace.
-  Multiple → a "choose workspace" picker.
-- The chosen workspace's **slug rides on every API request as the
-  `X-Tenant-Slug` header** — the same header `TenantMiddleware` already
-  honours as its dev/non-subdomain fallback. The app resolves the slug
-  automatically; the operator never sees it.
+1. **Workspace.** The operator enters their workspace slug. The app
+   validates it against `GET /api/public/branding/` — public,
+   unauthenticated, resolves the tenant from the `X-Tenant-Slug`
+   header — and shows the spa's name. An unknown slug is caught here,
+   before any password attempt.
+2. **Credentials.** Email + password, scoped to that workspace.
 
-Tokens stay **tenant-agnostic** (they identify the person, not a
-workspace). A staff member who works at two spas switches workspace
-in-app without re-authenticating — only the `X-Tenant-Slug` header
-changes. This matches the web's domain-wide-cookie + per-request
+The chosen slug is persisted to the Keychain and rides on every
+authenticated request as the `X-Tenant-Slug` header — the same header
+`TenantMiddleware` honours as its non-subdomain fallback. After login
+the app verifies the account holds an active membership in the chosen
+workspace; a valid account with no membership there is refused
+client-side, and the server's `MobileJWTAuthentication` (§4) enforces
+the same boundary on every subsequent request.
+
+Tokens stay **tenant-agnostic** — they identify the person, not a
+workspace. "Change workspace" re-enters the slug flow; no token
+re-issue. This matches the web's domain-wide-cookie + per-request
 membership model.
+
+Slug-first was chosen over deriving the tenant from the (globally
+unique) email because it makes the workspace explicit and visible
+before the password step, supports a per-spa branded login, and matches
+how operators think ("I'm signing into <spa>"). The slug is entered
+once per install and then persisted, so the friction is one-time.
 
 ### 4. `MobileJWTAuthentication` — membership binding + fail-closed
 
@@ -187,8 +201,8 @@ suite re-run to confirm the auth-class change is non-breaking.
 - The web app cannot regress: the backend change is additive
   (new endpoints, a second auth class that no-ops for browser requests)
   and the full backend suite passes unchanged.
-- One app serves every tenant with zero slug-typing — onboarding a new
-  hire is email + password.
+- One app serves every tenant; the workspace slug is entered once at
+  first launch and then persisted.
 - Multi-spa staff switch workspace without re-authenticating.
 - Cross-tenant access fails closed, consistent with ADR 0026.
 
@@ -222,13 +236,14 @@ Simpler — one non-expiring token per user. Rejected: no expiry, no
 rotation, no blacklist-on-rotation. A captured token would be valid
 forever. Not defensible for a PHI app.
 
-### Slug-first login (a "workspace" field on the login screen)
+### Email-first login (derive the tenant from the account)
 
-A first screen asking for the spa's slug, then a branded login.
-Rejected: email is globally unique, so the slug adds nothing for
-correctness — only friction and a new failure mode (typos in
-`manhattan-laser-spa`). Per-tenant branding still appears everywhere
-*inside* the app once the workspace is known.
+Email is globally unique, so the app *could* skip the slug entirely and
+resolve the workspace from the account's memberships (with a picker for
+multi-spa staff). Initially chosen, then revised to slug-first (§3): an
+explicit, visible workspace step is the clearer operator experience and
+the product owner's call. Slug validation reuses a public endpoint and
+the slug is entered once, so the added friction is minimal.
 
 ### JWT class first in `DEFAULT_AUTHENTICATION_CLASSES`
 
