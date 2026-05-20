@@ -56,6 +56,12 @@ export const radius = {
   pill: 999,
 } as const;
 
+/** Max width for reading-oriented content (forms, charts, detail
+ *  screens). Full-width on a phone; a centred column on an iPad. */
+export const layout = {
+  contentMaxWidth: 620,
+} as const;
+
 export const fontSize = {
   xs: 12,
   sm: 13,

@@ -3,12 +3,13 @@
     "name": "Lumè CRM",
     "slug": "lume-crm",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "lumecrm",
     "userInterfaceStyle": "light",
     "ios": {
-      "bundleIdentifier": "com.lumecrm.staff"
+      "bundleIdentifier": "com.lumecrm.staff",
+      "supportsTablet": true
     },
     "android": {
       "package": "com.lumecrm.staff",
