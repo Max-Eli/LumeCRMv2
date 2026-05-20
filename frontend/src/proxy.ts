@@ -69,6 +69,26 @@ export function proxy(request: NextRequest) {
     return NextResponse.redirect(target, 308);
   }
 
+  // Tenant subdomain root → /login. A tenant's staff opening
+  // `<spa>.lumecrm.com` should land on their sign-in page, not the
+  // public marketing landing (which is meant for prospects on the apex
+  // domain). The login page itself will then route a signed-in user
+  // straight to /dashboard, so the typical staff load is two redirects
+  // deep but lands where the operator expects.
+  //
+  // Reserved subdomains (apex, www, api, platform) are excluded — and
+  // platform is handled above already. Anything else under the root
+  // domain that isn't a reserved subdomain is treated as a tenant.
+  if (!onPlatformHost && pathname === '/') {
+    const reserved = new Set(['', 'www', 'api', 'mail', 'bounce']);
+    const apexHost = host === ROOT_DOMAIN;
+    const subdomain = apexHost ? '' : host.slice(0, -1 - ROOT_DOMAIN.length);
+    if (!apexHost && !reserved.has(subdomain)) {
+      url.pathname = '/login';
+      return NextResponse.redirect(url, 307);
+    }
+  }
+
   return NextResponse.next();
 }
 

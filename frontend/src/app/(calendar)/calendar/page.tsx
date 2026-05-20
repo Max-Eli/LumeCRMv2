@@ -184,24 +184,51 @@ export default function CalendarPage() {
   const dayEndHour =
     tenantHourFromTime(activeLocation?.business_close_time) ?? undefined;
 
-  const filteredProviders = useMemo(() => {
+  // Day-aware schedule filter: in day view, drop providers who aren't
+  // scheduled for the current weekday. Operators were seeing "ghost
+  // columns" for bookable staff who weren't on the schedule (e.g. a
+  // nurse who only works Mon + Fri showing up in every Tue–Thu view).
+  // Rules (strict — Option A):
+  //   - schedule_for_location is null/undefined → hide (no schedule
+  //     set = not scheduled)
+  //   - schedule_for_location[weekday] missing or empty array → hide
+  //   - schedule_for_location[weekday] has at least one entry → show
+  // Week / month views show everyone (each day inside those views can
+  // make its own schedule decision rendering-side).
+  const weekday = useMemo(() => weekdayKey(date), [date]);
+  const scheduledProviders = useMemo(() => {
     const all = providers ?? [];
-    if (providerFilter.length === 0) return all;
-    const allowed = new Set(providerFilter);
-    return all.filter((p) => allowed.has(p.id));
-  }, [providers, providerFilter]);
+    if (view !== 'day') return all;
+    return all.filter((p) => {
+      const sched = p.schedule_for_location;
+      if (!sched) return false;
+      const todayHours = sched[weekday];
+      return Array.isArray(todayHours) && todayHours.length > 0;
+    });
+  }, [providers, view, weekday]);
 
+  const filteredProviders = useMemo(() => {
+    const base = scheduledProviders;
+    if (providerFilter.length === 0) return base;
+    const allowed = new Set(providerFilter);
+    return base.filter((p) => allowed.has(p.id));
+  }, [scheduledProviders, providerFilter]);
+
+  // Appointments use the same provider set as the column list, so a
+  // provider hidden by the schedule filter also hides their cards —
+  // otherwise you'd get appointment chips floating with no column to
+  // anchor against.
   const filteredAppointments = useMemo(() => {
     let list = appointments ?? [];
-    if (providerFilter.length > 0) {
-      const allowed = new Set(providerFilter);
-      list = list.filter((a) => allowed.has(a.provider.id));
+    const allowedIds = new Set(filteredProviders.map((p) => p.id));
+    if (view === 'day' || providerFilter.length > 0) {
+      list = list.filter((a) => allowedIds.has(a.provider.id));
     }
     if (hideCancelled) {
       list = list.filter((a) => a.status !== 'cancelled' && a.status !== 'no_show');
     }
     return list;
-  }, [appointments, providerFilter, hideCancelled]);
+  }, [appointments, filteredProviders, providerFilter, hideCancelled, view]);
 
   // ── Setters that sync URL or localStorage ──────────────────────────────
   const updateParam = useCallback(
@@ -495,5 +522,14 @@ function clamp(value: number, min: number, max: number): number {
   if (value < min) return min;
   if (value > max) return max;
   return value;
+}
+
+/** Lowercase weekday name matching the keys used by
+ *  `ProviderSchedule.weekly_hours` on the backend
+ *  (`monday`, `tuesday`, …). Date string is parsed as a local
+ *  calendar date (not UTC) so a Sunday in California stays Sunday. */
+function weekdayKey(dateStr: string): string {
+  const d = new Date(`${dateStr}T00:00:00`);
+  return ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'][d.getDay()];
 }
 
