@@ -15,7 +15,7 @@
 
 'use client';
 
-import { CalendarClock, X } from 'lucide-react';
+import { CalendarClock, Wrench, X } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
@@ -37,7 +37,7 @@ import { ListView } from '../_components/list-view';
 import { MonthView } from '../_components/month-view';
 import { NewAppointmentSheet } from '../_components/new-appointment-sheet';
 import { RightToolRail, TOOLS, type CalendarTool } from '../_components/right-tool-rail';
-import { ToolPanel } from '../_components/tool-panel';
+import { MobileToolsSheet, ToolPanel } from '../_components/tool-panel';
 import { WeekView } from '../_components/week-view';
 import {
   useAppointment,
@@ -278,6 +278,10 @@ export default function CalendarPage() {
   );
   const closeTool = useCallback(() => updateParam('tool', null), [updateParam]);
 
+  // Mobile-only: the tool rail is desktop chrome; phones reach the
+  // same tools through a bottom-sheet launcher (FAB → grid → panel).
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
+
   const cancelReschedule = useCallback(() => {
     const next = new URLSearchParams(searchParams.toString());
     next.delete('rescheduling');
@@ -487,6 +491,45 @@ export default function CalendarPage() {
         />
         <RightToolRail active={activeTool} onToggle={toggleTool} />
       </div>
+
+      {/* Mobile-only tools launcher — the desktop right rail is
+          hidden below sm; this FAB opens the same tools in a sheet. */}
+      <button
+        type="button"
+        onClick={() => setMobileToolsOpen(true)}
+        aria-label="Calendar tools"
+        className="sm:hidden fixed bottom-4 right-4 z-30 inline-flex size-12 items-center justify-center rounded-full bg-foreground text-background shadow-lg active:scale-95 transition-transform"
+      >
+        <Wrench className="size-5" />
+      </button>
+
+      <MobileToolsSheet
+        open={mobileToolsOpen}
+        onOpenChange={(open) => {
+          setMobileToolsOpen(open);
+          if (!open) closeTool();
+        }}
+        active={activeTool}
+        onClose={closeTool}
+        onSelectTool={toggleTool}
+        focusDate={date}
+        appointments={appointments ?? []}
+        timezone={tenantTimezone}
+        viewSettings={{
+          pxPerMin,
+          pxPerMinMin: PX_PER_MIN_MIN,
+          pxPerMinMax: PX_PER_MIN_MAX,
+          pxPerMinStep: PX_PER_MIN_STEP,
+          onChangePxPerMin: persistPxPerMin,
+          columnWidthPx,
+          columnPxMin: COLUMN_PX_MIN,
+          columnPxMax: COLUMN_PX_MAX,
+          columnPxStep: COLUMN_PX_STEP,
+          onChangeColumnWidthPx: persistColumnWidthPx,
+          displayMode,
+          onChangeDisplayMode: setDisplayMode,
+        }}
+      />
 
       <NewAppointmentSheet
         open={newApptOpen}
