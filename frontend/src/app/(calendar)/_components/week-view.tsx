@@ -1,36 +1,40 @@
 /**
- * Week view — a 7-day agenda for the focus week.
+ * Week view — a 7-day time grid, Google-Calendar style.
  *
- * Each day in the week is a section: a sticky-ish header (weekday +
- * date, today emphasized) followed by that day's appointment cards.
- * Empty days collapse to a thin "No appointments" line so a quiet
- * week still scans fast.
+ * Layout:
+ *   - A sticky header row: time-gutter spacer + 7 day headers
+ *     (weekday abbrev + date pill, today emphasized).
+ *   - A vertically scrollable body: hour-labelled time gutter on the
+ *     left + 7 day columns. Appointments are absolutely-positioned
+ *     colored blocks.
+ *   - Overlapping appointments within a day are packed side-by-side
+ *     (cluster → sub-column assignment) so a busy day doesn't render
+ *     a single block hiding five others.
+ *   - A red "now" line is drawn across today's column when the
+ *     visible week contains the current date.
  *
- * Why agenda and not a 7-column time grid: on a phone, seven time-
- * grid columns are ~45px wide — every customer name and service
- * truncates to nothing. The agenda layout gives each appointment a
- * full-width readable card, which is what modern scheduling apps
- * ship for mobile week views. On desktop the day-view time grid is
- * still the dense option; this is the scannable one.
+ * Columns are deliberately narrow on phones — that's how Google's
+ * mobile week view works. Blocks show the start time + customer
+ * name, truncated; tapping opens the full <AppointmentPopover>.
  *
- * Cards reuse `<AppointmentPopover>` so tapping one opens the exact
- * same detail panel as every other calendar surface.
+ * The visible hour window defaults to the tenant's business hours
+ * but expands to cover any appointment that starts earlier / ends
+ * later so nothing is clipped.
  */
 
 'use client';
 
-import { CalendarOff } from 'lucide-react';
+import { useMemo } from 'react';
 
-import { InitialsAvatar } from '@/components/initials-avatar';
-import { StatusBadge } from '@/components/status-badge';
-import {
-  STATUS_LABELS,
-  STATUS_TONE,
-  type Appointment,
-} from '@/lib/appointments';
+import { type Appointment } from '@/lib/appointments';
 import { cn } from '@/lib/utils';
 
 import { AppointmentPopover } from './appointment-popover';
+
+const GUTTER_PX = 44;
+const HOUR_PX = 56;
+const DEFAULT_START_HOUR = 8;
+const DEFAULT_END_HOUR = 20;
 
 export interface WeekViewProps {
   /** Any date inside the week to render (YYYY-MM-DD). */
@@ -40,187 +44,297 @@ export interface WeekViewProps {
   appointments: Appointment[];
   /** Tapping a day header — jumps to that day's detailed view. */
   onSelectDay: (date: string) => void;
+  /** Tenant business hours (integer hours); window expands past
+   *  these if an appointment falls outside. */
+  dayStartHour?: number;
+  dayEndHour?: number;
 }
 
-export function WeekView({ date, timezone, appointments, onSelectDay }: WeekViewProps) {
+interface Positioned {
+  appt: Appointment;
+  topMin: number;
+  durationMin: number;
+  col: number;
+  cols: number;
+}
+
+export function WeekView({
+  date,
+  timezone,
+  appointments,
+  onSelectDay,
+  dayStartHour,
+  dayEndHour,
+}: WeekViewProps) {
   const focus = parseLocalDate(date);
   const todayStr = toISODate(new Date());
 
-  // Week starts Sunday (matches the month grid).
-  const weekStart = new Date(focus);
-  weekStart.setDate(weekStart.getDate() - weekStart.getDay());
-  const days: Date[] = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(weekStart);
-    d.setDate(d.getDate() + i);
-    days.push(d);
-  }
+  // Sunday-anchored week.
+  const days = useMemo(() => {
+    const start = new Date(focus);
+    start.setDate(start.getDate() - start.getDay());
+    return Array.from({ length: 7 }, (_, i) => {
+      const d = new Date(start);
+      d.setDate(d.getDate() + i);
+      return d;
+    });
+  }, [focus]);
 
   // Bucket appointments by local start date.
-  const byDay = new Map<string, Appointment[]>();
-  for (const appt of appointments) {
-    const key = toISODate(new Date(appt.start_time));
-    const arr = byDay.get(key) ?? [];
-    arr.push(appt);
-    byDay.set(key, arr);
-  }
-  for (const arr of byDay.values()) {
-    arr.sort((a, b) => (a.start_time < b.start_time ? -1 : 1));
-  }
+  const byDay = useMemo(() => {
+    const map = new Map<string, Appointment[]>();
+    for (const appt of appointments) {
+      const key = toISODate(new Date(appt.start_time));
+      const arr = map.get(key) ?? [];
+      arr.push(appt);
+      map.set(key, arr);
+    }
+    return map;
+  }, [appointments]);
+
+  // Visible window: business hours, widened to cover outliers.
+  const { startHour, endHour } = useMemo(() => {
+    let lo = dayStartHour ?? DEFAULT_START_HOUR;
+    let hi = dayEndHour ?? DEFAULT_END_HOUR;
+    for (const appt of appointments) {
+      const s = new Date(appt.start_time);
+      const e = new Date(appt.end_time);
+      lo = Math.min(lo, s.getHours());
+      hi = Math.max(hi, e.getMinutes() > 0 ? e.getHours() + 1 : e.getHours());
+    }
+    return { startHour: Math.max(0, lo), endHour: Math.min(24, Math.max(hi, lo + 1)) };
+  }, [appointments, dayStartHour, dayEndHour]);
+
+  const startMin = startHour * 60;
+  const totalMin = (endHour - startHour) * 60;
+  const bodyHeight = (totalMin / 60) * HOUR_PX;
+  const hourLabels = Array.from({ length: endHour - startHour + 1 }, (_, i) => startHour + i);
+
+  // "Now" line offset, only if the current week includes today.
+  const now = new Date();
+  const nowStr = toISODate(now);
+  const showNow = days.some((d) => toISODate(d) === nowStr);
+  const nowOffset = ((now.getHours() * 60 + now.getMinutes()) - startMin) / 60 * HOUR_PX;
 
   return (
-    <div className="flex-1 min-h-0 overflow-y-auto bg-muted/30">
-      <ul className="divide-y">
+    <div className="flex-1 min-h-0 flex flex-col bg-card">
+      {/* Sticky day-of-week header */}
+      <div
+        className="flex shrink-0 border-b bg-card"
+        style={{ paddingLeft: GUTTER_PX }}
+      >
         {days.map((day) => {
           const iso = toISODate(day);
           const isToday = iso === todayStr;
-          const dayAppts = byDay.get(iso) ?? [];
           return (
-            <li key={iso}>
-              <DaySection
-                day={day}
-                iso={iso}
-                isToday={isToday}
-                appointments={dayAppts}
-                timezone={timezone}
-                onSelectDay={onSelectDay}
-              />
-            </li>
+            <button
+              key={iso}
+              type="button"
+              onClick={() => onSelectDay(iso)}
+              className="flex-1 min-w-0 flex flex-col items-center py-1.5 gap-0.5 hover:bg-muted/40 transition-colors"
+            >
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {WEEKDAY_ABBR[day.getDay()]}
+              </span>
+              <span
+                className={cn(
+                  'inline-flex items-center justify-center size-6 rounded-full text-xs tabular-nums',
+                  isToday
+                    ? 'bg-foreground text-background font-semibold'
+                    : 'text-foreground',
+                )}
+              >
+                {day.getDate()}
+              </span>
+            </button>
           );
         })}
-      </ul>
+      </div>
+
+      {/* Scrollable time grid */}
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        <div className="flex" style={{ height: bodyHeight }}>
+          {/* Time gutter */}
+          <div className="shrink-0 relative" style={{ width: GUTTER_PX }}>
+            {hourLabels.map((h, i) => (
+              <div
+                key={h}
+                className="absolute right-1 text-[10px] text-muted-foreground tabular-nums -translate-y-1/2"
+                style={{ top: i * HOUR_PX }}
+              >
+                {i === 0 ? '' : formatHour(h)}
+              </div>
+            ))}
+          </div>
+
+          {/* Day columns */}
+          <div className="flex flex-1 min-w-0 relative">
+            {/* Hour grid lines spanning all columns */}
+            {hourLabels.map((h, i) => (
+              <div
+                key={h}
+                className="absolute inset-x-0 border-t border-border/60"
+                style={{ top: i * HOUR_PX }}
+                aria-hidden
+              />
+            ))}
+
+            {days.map((day) => {
+              const iso = toISODate(day);
+              const dayAppts = byDay.get(iso) ?? [];
+              const positioned = packDay(dayAppts);
+              const isToday = iso === nowStr;
+              return (
+                <div
+                  key={iso}
+                  className="flex-1 min-w-0 relative border-r border-border/60 last:border-r-0"
+                >
+                  {positioned.map((p) => (
+                    <WeekEventBlock
+                      key={p.appt.id}
+                      positioned={p}
+                      startMin={startMin}
+                      timezone={timezone}
+                    />
+                  ))}
+                  {isToday && showNow && nowOffset >= 0 && nowOffset <= bodyHeight ? (
+                    <div
+                      className="absolute inset-x-0 z-10 pointer-events-none"
+                      style={{ top: nowOffset }}
+                    >
+                      <div className="h-px bg-red-500" />
+                      <div className="absolute -left-1 -top-1 size-2 rounded-full bg-red-500" />
+                    </div>
+                  ) : null}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
 
-function DaySection({
-  day,
-  iso,
-  isToday,
-  appointments,
+function WeekEventBlock({
+  positioned,
+  startMin,
   timezone,
-  onSelectDay,
 }: {
-  day: Date;
-  iso: string;
-  isToday: boolean;
-  appointments: Appointment[];
+  positioned: Positioned;
+  startMin: number;
   timezone: string;
-  onSelectDay: (date: string) => void;
 }) {
-  const weekday = day.toLocaleDateString('en-US', { weekday: 'long' });
-  const monthDay = day.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-
-  return (
-    <section>
-      <button
-        type="button"
-        onClick={() => onSelectDay(iso)}
-        className={cn(
-          'w-full flex items-center gap-2.5 px-4 py-2.5 text-left transition-colors hover:bg-muted/50',
-          'sticky top-0 z-[1] backdrop-blur bg-card/95 supports-[backdrop-filter]:bg-card/80 border-b',
-        )}
-      >
-        <span
-          className={cn(
-            'inline-flex items-center justify-center size-7 rounded-full text-xs tabular-nums shrink-0',
-            isToday
-              ? 'bg-foreground text-background font-semibold'
-              : 'text-foreground',
-          )}
-        >
-          {day.getDate()}
-        </span>
-        <span
-          className={cn(
-            'text-sm font-medium',
-            isToday ? 'text-foreground' : 'text-foreground/90',
-          )}
-        >
-          {weekday}
-        </span>
-        <span className="text-xs text-muted-foreground">{monthDay}</span>
-        {appointments.length > 0 ? (
-          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-            {appointments.length} appt{appointments.length === 1 ? '' : 's'}
-          </span>
-        ) : null}
-      </button>
-
-      {appointments.length === 0 ? (
-        <div className="px-4 py-3 flex items-center gap-2 text-xs text-muted-foreground/70">
-          <CalendarOff className="size-3.5" aria-hidden />
-          No appointments
-        </div>
-      ) : (
-        <ul className="divide-y bg-card">
-          {appointments.map((appt) => (
-            <li key={appt.id}>
-              <ApptRow appt={appt} timezone={timezone} />
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
-}
-
-function ApptRow({ appt, timezone }: { appt: Appointment; timezone: string }) {
+  const { appt, topMin, durationMin, col, cols } = positioned;
   const cancelled = appt.status === 'cancelled' || appt.status === 'no_show';
   const color = appt.service.category_color ?? 'hsl(220 9% 46%)';
-  const providerName = `${appt.provider.user_first_name} ${appt.provider.user_last_name}`.trim();
+  const top = ((topMin - startMin) / 60) * HOUR_PX;
+  const height = Math.max(14, (durationMin / 60) * HOUR_PX);
+  const widthPct = 100 / cols;
 
   const trigger = (
     <button
       type="button"
-      className="w-full text-left flex items-stretch gap-3 px-4 py-3 hover:bg-muted/40 active:bg-muted/60 transition-colors"
+      className={cn(
+        'absolute rounded-[3px] overflow-hidden text-left leading-tight',
+        'border-l-2 px-1 py-0.5 transition-opacity hover:opacity-90',
+        cancelled && 'opacity-60',
+      )}
+      style={{
+        top,
+        height,
+        left: `calc(${col * widthPct}% + 1px)`,
+        width: `calc(${widthPct}% - 2px)`,
+        background: `${color}1f`,
+        borderLeftColor: color,
+      }}
     >
-      <div className="w-14 shrink-0 flex flex-col justify-center">
-        <span
-          className={cn(
-            'text-sm font-semibold tabular-nums leading-tight',
-            cancelled && 'text-muted-foreground',
-          )}
-        >
-          {formatTime(appt.start_time, timezone)}
-        </span>
-      </div>
       <span
-        className="w-1 rounded-full shrink-0 self-stretch"
-        style={{ background: color }}
-        aria-hidden
-      />
-      <div className="min-w-0 flex-1">
-        <p
-          className={cn(
-            'font-medium text-[15px] leading-snug',
-            cancelled && 'line-through text-muted-foreground',
-          )}
-        >
-          {appt.service.name}
-        </p>
-        <p className="text-[13px] text-muted-foreground truncate mt-0.5">
-          {appt.customer.full_name}
-        </p>
-        <div className="flex items-center justify-between gap-2 mt-1.5">
-          <span className="inline-flex items-center gap-1.5 min-w-0">
-            <InitialsAvatar name={providerName} size="sm" />
-            <span className="text-xs text-muted-foreground truncate">
-              {providerName}
-            </span>
-          </span>
-          <StatusBadge tone={STATUS_TONE[appt.status]}>
-            {STATUS_LABELS[appt.status]}
-          </StatusBadge>
-        </div>
-      </div>
+        className={cn(
+          'block text-[9px] font-medium text-foreground/90 truncate',
+          cancelled && 'line-through',
+        )}
+      >
+        {formatTime(appt.start_time, timezone)}
+      </span>
+      <span className="block text-[9px] text-foreground/75 truncate">
+        {appt.customer.full_name}
+      </span>
     </button>
   );
 
   return <AppointmentPopover appointment={appt} timezone={timezone} trigger={trigger} />;
 }
 
+// ── overlap packing ─────────────────────────────────────────────────
+
+/** Assign each appointment a (col, cols) so overlapping ones render
+ *  side-by-side. Events are grouped into clusters of mutual overlap;
+ *  within a cluster each event takes the first free sub-column. */
+function packDay(appts: Appointment[]): Positioned[] {
+  const items = appts
+    .map((appt) => {
+      const s = new Date(appt.start_time);
+      const e = new Date(appt.end_time);
+      const topMin = s.getHours() * 60 + s.getMinutes();
+      const endMin = e.getHours() * 60 + e.getMinutes();
+      return { appt, topMin, endMin: Math.max(endMin, topMin + 5) };
+    })
+    .sort((a, b) => a.topMin - b.topMin || a.endMin - b.endMin);
+
+  const result: Positioned[] = [];
+  let cluster: typeof items = [];
+  let clusterEnd = -1;
+
+  const flush = () => {
+    if (cluster.length === 0) return;
+    // Greedy column assignment.
+    const columns: number[] = []; // columns[c] = end-min of last event in col c
+    const colOf = new Map<Appointment, number>();
+    for (const it of cluster) {
+      let placed = -1;
+      for (let c = 0; c < columns.length; c++) {
+        if (it.topMin >= columns[c]) {
+          placed = c;
+          break;
+        }
+      }
+      if (placed === -1) {
+        placed = columns.length;
+        columns.push(it.endMin);
+      } else {
+        columns[placed] = it.endMin;
+      }
+      colOf.set(it.appt, placed);
+    }
+    const cols = columns.length;
+    for (const it of cluster) {
+      result.push({
+        appt: it.appt,
+        topMin: it.topMin,
+        durationMin: it.endMin - it.topMin,
+        col: colOf.get(it.appt) ?? 0,
+        cols,
+      });
+    }
+    cluster = [];
+  };
+
+  for (const it of items) {
+    if (cluster.length > 0 && it.topMin >= clusterEnd) {
+      flush();
+      clusterEnd = -1;
+    }
+    cluster.push(it);
+    clusterEnd = Math.max(clusterEnd, it.endMin);
+  }
+  flush();
+  return result;
+}
+
 // ── date helpers ────────────────────────────────────────────────────
+
+const WEEKDAY_ABBR = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
 
 function parseLocalDate(iso: string): Date {
   return new Date(`${iso}T00:00:00`);
@@ -231,6 +345,12 @@ function toISODate(d: Date): string {
   const m = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
+}
+
+function formatHour(h: number): string {
+  if (h === 0 || h === 24) return '12 AM';
+  if (h === 12) return '12 PM';
+  return h < 12 ? `${h} AM` : `${h - 12} PM`;
 }
 
 function formatTime(iso: string, timezone: string): string {

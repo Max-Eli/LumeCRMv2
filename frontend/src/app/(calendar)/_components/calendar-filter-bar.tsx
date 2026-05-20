@@ -89,10 +89,82 @@ export function CalendarFilterBar({
 
   const stepLabel = view === 'month' ? 'month' : view === 'week' ? 'week' : 'day';
 
+  const prevNext = (
+    <div className="inline-flex items-center rounded-md border bg-card">
+      <button
+        type="button"
+        onClick={() => shift(-1)}
+        className="inline-flex size-8 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+        aria-label={`Previous ${stepLabel}`}
+      >
+        <ChevronLeft className="size-4" />
+      </button>
+      <button
+        type="button"
+        onClick={() => shift(1)}
+        className="inline-flex size-8 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+        aria-label={`Next ${stepLabel}`}
+      >
+        <ChevronRight className="size-4" />
+      </button>
+    </div>
+  );
+
+  const hideCancelledButton = (
+    <button
+      type="button"
+      onClick={() => onChangeHideCancelled(!hideCancelled)}
+      aria-pressed={hideCancelled}
+      aria-label="Hide cancelled appointments"
+      title="Hide cancelled appointments"
+      className={cn(
+        'inline-flex items-center gap-1.5 h-8 px-2 sm:px-2.5 rounded-md text-xs uppercase tracking-wide transition-colors border shrink-0',
+        hideCancelled
+          ? 'border-foreground/30 bg-foreground text-background'
+          : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground',
+      )}
+    >
+      <EyeOff className="size-3.5" />
+      <span className="hidden sm:inline">Hide cancelled</span>
+    </button>
+  );
+
   return (
     <div className="shrink-0 border-b bg-background">
-      <div className="flex items-center justify-between gap-2 sm:gap-3 px-3 sm:px-6 py-2.5">
-        {/* Date controls */}
+      {/* ── Mobile: two rows ─────────────────────────────────────
+          One cramped row couldn't hold nav + headline + 3 filter
+          controls + the view toggle at 375px. Split it: row 1 is
+          navigation + the month/week headline, row 2 is the
+          Day/Week/Month segmented control + filter controls. */}
+      <div className="md:hidden">
+        <div className="flex items-center gap-2 px-3 pt-2.5 pb-2">
+          {prevNext}
+          <span className="font-serif text-[17px] font-semibold tracking-tight truncate flex-1 min-w-0">
+            {headlineLong}
+          </span>
+          <DatePicker value={date} onChange={onChangeDate} ariaLabel="Select date" />
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => onChangeDate(todayStr)}
+            disabled={isToday}
+          >
+            Today
+          </Button>
+        </div>
+        <div className="flex items-center gap-2 px-3 pb-2.5">
+          <ViewToggle value={view} onChange={onChangeView} fullWidth />
+          <ProviderMultiSelect
+            providers={providers}
+            providerFilter={providerFilter}
+            onChange={onChangeProviderFilter}
+          />
+          {hideCancelledButton}
+        </div>
+      </div>
+
+      {/* ── Desktop: single row ──────────────────────────────────── */}
+      <div className="hidden md:flex items-center justify-between gap-3 px-6 py-2.5">
         <div className="flex items-center gap-2 min-w-0">
           <Button
             variant="outline"
@@ -102,76 +174,22 @@ export function CalendarFilterBar({
           >
             Today
           </Button>
-          <div className="inline-flex items-center rounded-md border bg-card">
-            <button
-              type="button"
-              onClick={() => shift(-1)}
-              className="inline-flex size-8 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              aria-label={`Previous ${stepLabel}`}
-            >
-              <ChevronLeft className="size-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => shift(1)}
-              className="inline-flex size-8 items-center justify-center text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
-              aria-label={`Next ${stepLabel}`}
-            >
-              <ChevronRight className="size-4" />
-            </button>
-          </div>
+          {prevNext}
           <DatePicker value={date} onChange={onChangeDate} ariaLabel="Select date" />
-          {/* Headline: full long form on desktop. On mobile it's the
-              only on-screen indicator of which week/month you're in
-              (the grid itself doesn't repeat the month name), so it
-              shows there too — truncating if the row gets tight. */}
-          <span className="font-serif text-sm sm:text-base font-medium tracking-tight ml-1 sm:ml-2 truncate">
+          <span className="font-serif text-base font-medium tracking-tight ml-2 truncate">
             {headlineLong}
           </span>
         </div>
 
-        {/* Filters + display mode + view */}
         <div className="flex items-center gap-2">
-          {/* Provider multi-select is meaningful on every screen size
-              — on mobile we collapse the trigger to an icon-only
-              button (the popover content is identical). */}
-          <div className="flex items-center">
-            <ProviderMultiSelect
-              providers={providers}
-              providerFilter={providerFilter}
-              onChange={onChangeProviderFilter}
-            />
-          </div>
-
-          <button
-            type="button"
-            onClick={() => onChangeHideCancelled(!hideCancelled)}
-            aria-pressed={hideCancelled}
-            aria-label="Hide cancelled appointments"
-            title="Hide cancelled appointments"
-            className={cn(
-              'inline-flex items-center gap-1.5 h-8 px-2 sm:px-2.5 rounded-md text-xs uppercase tracking-wide transition-colors border',
-              hideCancelled
-                ? 'border-foreground/30 bg-foreground text-background'
-                : 'border-border bg-card text-muted-foreground hover:bg-muted hover:text-foreground',
-            )}
-          >
-            <EyeOff className="size-3.5" />
-            <span className="hidden sm:inline">Hide cancelled</span>
-          </button>
-
-          {/* DisplayMode toggle (grid vs list) stays desktop-only —
-              mobile day view ALWAYS renders the list because the
-              time-grid is unusable below 768px. ViewToggle
-              (Day/Week/Month) shows on every size now that week +
-              month views are built — they're the mobile-friendly
-              calendar surfaces. */}
-          <div className="hidden md:flex items-center">
-            <DisplayModeToggle value={displayMode} onChange={onChangeDisplayMode} />
-          </div>
-          <div className="flex items-center">
-            <ViewToggle value={view} onChange={onChangeView} />
-          </div>
+          <ProviderMultiSelect
+            providers={providers}
+            providerFilter={providerFilter}
+            onChange={onChangeProviderFilter}
+          />
+          {hideCancelledButton}
+          <DisplayModeToggle value={displayMode} onChange={onChangeDisplayMode} />
+          <ViewToggle value={view} onChange={onChangeView} />
         </div>
       </div>
     </div>
@@ -220,12 +238,22 @@ function DisplayModeToggle({
 function ViewToggle({
   value,
   onChange,
+  fullWidth = false,
 }: {
   value: CalendarView;
   onChange: (v: CalendarView) => void;
+  /** Stretch the three segments to fill the container — used by the
+   *  mobile filter bar where the toggle is the row's primary control. */
+  fullWidth?: boolean;
 }) {
   return (
-    <div role="group" className="inline-flex rounded-md border bg-card overflow-hidden">
+    <div
+      role="group"
+      className={cn(
+        'rounded-md border bg-card overflow-hidden',
+        fullWidth ? 'flex flex-1 min-w-0' : 'inline-flex',
+      )}
+    >
       {(['day', 'week', 'month'] as const).map((v) => {
         const active = v === value;
         return (
@@ -235,9 +263,10 @@ function ViewToggle({
             onClick={() => onChange(v)}
             aria-pressed={active}
             className={cn(
-              'px-2.5 sm:px-3 h-8 text-xs uppercase tracking-wide capitalize transition-colors',
+              'h-8 text-xs uppercase tracking-wide capitalize transition-colors',
+              fullWidth ? 'flex-1' : 'px-2.5 sm:px-3',
               active
-                ? 'bg-foreground text-background'
+                ? 'bg-foreground text-background font-medium'
                 : 'text-muted-foreground hover:bg-muted hover:text-foreground',
             )}
           >

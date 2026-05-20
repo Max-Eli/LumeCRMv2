@@ -396,6 +396,8 @@ export default function CalendarPage() {
                 setDate(d);
                 setView('day');
               }}
+              dayStartHour={dayStartHour}
+              dayEndHour={dayEndHour}
             />
           ) : (
             <>
