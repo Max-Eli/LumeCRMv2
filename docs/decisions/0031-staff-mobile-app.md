@@ -176,11 +176,15 @@ suite re-run to confirm the auth-class change is non-breaking.
   `expo-secure-store`, backed by the iOS Keychain / Android Keystore
   (hardware-backed where the device supports it) — never in plain
   `AsyncStorage`.
-- **Idle / lost-device control.** The on-device biometric/PIN app-lock
-  (Phase 4) is the primary control for an unlocked, unattended phone.
-  The short access-token lifetime + 7-day refresh ceiling +
-  rotate/blacklist are defence in depth — a lost device cannot mint
-  fresh access indefinitely.
+- **Idle / lost-device control.** An on-device app-lock (Phase 4,
+  `mobile/src/lib/app-lock.tsx`) requires biometrics or the device
+  passcode to re-enter the signed-in app — on a cold-start session
+  restore, and after five minutes in the background. It is the primary
+  control for an unattended unlocked phone, mirroring the web CRM's
+  idle session timeout. The short access-token lifetime + 7-day refresh
+  ceiling + rotate/blacklist are defence in depth. The lock is disabled
+  in the Expo Go dev harness (which cannot run Face ID) and fully
+  active in development and release builds.
 - **Tenant boundary.** §4's fail-closed check preserves the same PHI
   tenant-isolation guarantee ADR 0026 established for the web. A
   mis-addressed or malicious `X-Tenant-Slug` cannot read another spa's

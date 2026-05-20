@@ -33,7 +33,13 @@
           "imageWidth": 140
         }
       ],
-      "expo-secure-store"
+      "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "Lumè CRM uses Face ID to keep patient information private when the app is left unattended."
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true,

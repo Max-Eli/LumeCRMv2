@@ -8,6 +8,7 @@ import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { colors } from '@/constants/theme';
+import { AppLockProvider } from '@/lib/app-lock';
 import { AuthProvider, useAuth } from '@/lib/auth';
 
 // Hold the splash screen until the auth provider has restored (or
@@ -20,7 +21,9 @@ export default function RootLayout() {
       <SafeAreaProvider>
         <StatusBar style="dark" />
         <AuthProvider>
-          <RootNavigator />
+          <AppLockProvider>
+            <RootNavigator />
+          </AppLockProvider>
         </AuthProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
