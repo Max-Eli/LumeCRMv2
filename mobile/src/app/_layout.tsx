@@ -1,5 +1,6 @@
 import '@/global.css';
 
+import { QueryClientProvider } from '@tanstack/react-query';
 import { Stack } from 'expo-router';
 import * as SplashScreen from 'expo-splash-screen';
 import { StatusBar } from 'expo-status-bar';
@@ -10,6 +11,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { colors } from '@/constants/theme';
 import { AppLockProvider } from '@/lib/app-lock';
 import { AuthProvider, useAuth } from '@/lib/auth';
+import { queryClient } from '@/lib/query';
 
 // Hold the splash screen until the auth provider has restored (or
 // ruled out) a session, so the first painted screen is the right one.
@@ -20,11 +22,13 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <SafeAreaProvider>
         <StatusBar style="dark" />
-        <AuthProvider>
-          <AppLockProvider>
-            <RootNavigator />
-          </AppLockProvider>
-        </AuthProvider>
+        <QueryClientProvider client={queryClient}>
+          <AuthProvider>
+            <AppLockProvider>
+              <RootNavigator />
+            </AppLockProvider>
+          </AuthProvider>
+        </QueryClientProvider>
       </SafeAreaProvider>
     </GestureHandlerRootView>
   );
