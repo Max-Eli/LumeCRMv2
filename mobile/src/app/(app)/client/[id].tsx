@@ -4,6 +4,7 @@ import { Linking, Pressable, ScrollView, StyleSheet, Text, View } from 'react-na
 import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { AppointmentCard } from '@/components/appointment-card';
+import { Button } from '@/components/ui/button';
 import { Skeleton } from '@/components/ui/skeleton';
 import { colors, fonts, fontSize, radius, spacing } from '@/constants/theme';
 import { formatLongDate, useCustomerAppointments } from '@/lib/appointments';
@@ -92,6 +93,17 @@ export default function ClientDetailScreen() {
               }
             />
           </View>
+
+          <Button
+            label="Message client"
+            variant="secondary"
+            onPress={() =>
+              router.push({
+                pathname: '/conversation/[customerId]',
+                params: { customerId: String(client.id) },
+              })
+            }
+          />
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Medical</Text>
