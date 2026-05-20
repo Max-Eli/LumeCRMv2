@@ -302,3 +302,30 @@ export function useUpdateAppointmentStatus(id: number) {
     },
   });
 }
+
+export interface CreateAppointmentInput {
+  customer_id: number;
+  service_id: number;
+  provider_id: number;
+  start_time: string;
+  end_time: string;
+  notes?: string;
+}
+
+/** Create an appointment (`POST /api/appointments/`). Invalidates every
+ *  appointment list so the dashboard + calendar pick it up. */
+export function useCreateAppointment() {
+  const { authedFetch } = useAuth();
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: CreateAppointmentInput) =>
+      authedFetch<Appointment>('/api/appointments/', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(input),
+      }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['appointments'] });
+    },
+  });
+}

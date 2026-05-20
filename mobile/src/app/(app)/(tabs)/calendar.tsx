@@ -1,4 +1,5 @@
 import { Feather } from '@expo/vector-icons';
+import { router } from 'expo-router';
 import { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -74,6 +75,20 @@ export default function CalendarScreen() {
           <MonthView date={focusDate} onPickDay={pickDay} />
         )}
       </View>
+
+      <Pressable
+        onPress={() =>
+          router.push({
+            pathname: '/new-appointment',
+            params: { date: focusDate },
+          })
+        }
+        accessibilityRole="button"
+        accessibilityLabel="New appointment"
+        style={styles.fab}
+      >
+        <Feather name="plus" size={26} color={colors.primaryForeground} />
+      </Pressable>
     </SafeAreaView>
   );
 }
@@ -153,5 +168,21 @@ const styles = StyleSheet.create({
   },
   body: {
     flex: 1,
+  },
+  fab: {
+    position: 'absolute',
+    right: spacing.lg,
+    bottom: spacing.lg,
+    width: 56,
+    height: 56,
+    borderRadius: radius.pill,
+    backgroundColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 3 },
+    elevation: 5,
   },
 });
