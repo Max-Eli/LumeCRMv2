@@ -75,6 +75,16 @@ export default function MoreScreen() {
           <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
         </Pressable>
 
+        <Pressable
+          onPress={() => router.push('/earnings')}
+          accessibilityRole="button"
+          style={styles.navRow}
+        >
+          <Feather name="trending-up" size={18} color={colors.foreground} />
+          <Text style={styles.navText}>Earnings</Text>
+          <Feather name="chevron-right" size={18} color={colors.mutedForeground} />
+        </Pressable>
+
         <Button
           label="Sign out"
           variant="secondary"
