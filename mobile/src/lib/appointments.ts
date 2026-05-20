@@ -141,6 +141,73 @@ export function formatPrice(cents: number): string {
   return `$${Math.round(cents / 100).toLocaleString('en-US')}`;
 }
 
+// ─── Calendar date math (all on `YYYY-MM-DD` local-date strings) ──────
+
+function ymd(d: Date): string {
+  const mm = String(d.getMonth() + 1).padStart(2, '0');
+  const dd = String(d.getDate()).padStart(2, '0');
+  return `${d.getFullYear()}-${mm}-${dd}`;
+}
+
+/** Shift a date string by `n` days. */
+export function addDays(date: string, n: number): string {
+  const [y, m, d] = date.split('-').map(Number);
+  return ymd(new Date(y, m - 1, d + n));
+}
+
+/** Shift a date string by `n` whole months (lands on the 1st). */
+export function addMonths(date: string, n: number): string {
+  const [y, m] = date.split('-').map(Number);
+  return ymd(new Date(y, m - 1 + n, 1));
+}
+
+/** The Sunday on or before `date` — the web calendar is Sunday-anchored. */
+export function startOfWeek(date: string): string {
+  const [y, m, d] = date.split('-').map(Number);
+  const dt = new Date(y, m - 1, d);
+  return ymd(new Date(y, m - 1, d - dt.getDay()));
+}
+
+/** The seven `YYYY-MM-DD` days of the week containing `date`. */
+export function weekDays(date: string): string[] {
+  const start = startOfWeek(date);
+  return Array.from({ length: 7 }, (_, i) => addDays(start, i));
+}
+
+/** The 42 days of a 6×7 month grid (first cell = Sunday on/before the 1st). */
+export function monthGridDays(date: string): string[] {
+  const [y, m] = date.split('-').map(Number);
+  const lead = new Date(y, m - 1, 1).getDay();
+  return Array.from({ length: 42 }, (_, i) => ymd(new Date(y, m - 1, 1 - lead + i)));
+}
+
+/** True when the date string is the device's today. */
+export function isToday(date: string): boolean {
+  return date === todayString();
+}
+
+/** The local calendar date of an appointment, as `YYYY-MM-DD`. */
+export function appointmentDate(appt: Appointment): string {
+  return ymd(new Date(appt.start_time));
+}
+
+/** "May 2026" for any date in that month. */
+export function formatMonthLabel(date: string): string {
+  const [y, m] = date.split('-').map(Number);
+  return `${MONTHS[m - 1]} ${y}`;
+}
+
+/** "May 18 – 24" / "Apr 27 – May 3" for the week containing `date`. */
+export function formatWeekLabel(date: string): string {
+  const days = weekDays(date);
+  const [, sm, sd] = days[0].split('-').map(Number);
+  const [, em, ed] = days[6].split('-').map(Number);
+  const left = `${MONTHS[sm - 1].slice(0, 3)} ${sd}`;
+  const right =
+    sm === em ? `${ed}` : `${MONTHS[em - 1].slice(0, 3)} ${ed}`;
+  return `${left} – ${right}`;
+}
+
 // ─── Hooks ───────────────────────────────────────────────────────────
 
 /** Every appointment on a given `YYYY-MM-DD`, in the active workspace. */
@@ -150,6 +217,23 @@ export function useAppointmentsForDate(date: string) {
     queryKey: ['appointments', 'date', date],
     queryFn: () =>
       authedFetch<Appointment[]>(`/api/appointments/?date=${date}`),
+  });
+}
+
+/** Every appointment overlapping a `[startDate, endDate]` window
+ *  (inclusive `YYYY-MM-DD`). Over-fetches a day on each side to absorb
+ *  timezone skew; screens bucket the result by `appointmentDate`. */
+export function useAppointmentsRange(startDate: string, endDate: string) {
+  const { authedFetch } = useAuth();
+  const start = `${addDays(startDate, -1)}T00:00:00`;
+  const end = `${addDays(endDate, 1)}T23:59:59`;
+  return useQuery({
+    queryKey: ['appointments', 'range', startDate, endDate],
+    queryFn: () =>
+      authedFetch<Appointment[]>(
+        `/api/appointments/?start=${encodeURIComponent(start)}` +
+          `&end=${encodeURIComponent(end)}`,
+      ),
   });
 }
 

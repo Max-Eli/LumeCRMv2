@@ -1,114 +1,100 @@
 import { Feather } from '@expo/vector-icons';
-import { router } from 'expo-router';
-import {
-  FlatList,
-  Pressable,
-  RefreshControl,
-  StyleSheet,
-  Text,
-  View,
-} from 'react-native';
+import { useState } from 'react';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
-import { AppointmentCard } from '@/components/appointment-card';
-import { Skeleton } from '@/components/ui/skeleton';
+import { DayView } from '@/components/calendar/day-view';
+import { MonthView } from '@/components/calendar/month-view';
+import { ViewSwitcher, type CalendarView } from '@/components/calendar/view-switcher';
+import { WeekView } from '@/components/calendar/week-view';
 import { colors, fonts, fontSize, radius, spacing } from '@/constants/theme';
 import {
+  addDays,
+  addMonths,
   formatDayLabel,
+  formatMonthLabel,
+  formatWeekLabel,
   todayString,
-  useAppointmentsForDate,
 } from '@/lib/appointments';
 
-/** Calendar tab — the full list of today's appointments. */
+/** Calendar tab — Day / Week / Month views over the active workspace. */
 export default function CalendarScreen() {
-  const today = todayString();
-  const { data, isLoading, isError, refetch, isRefetching } =
-    useAppointmentsForDate(today);
+  const [view, setView] = useState<CalendarView>('day');
+  const [focusDate, setFocusDate] = useState(todayString());
 
-  const appts = [...(data ?? [])].sort((a, b) =>
-    a.start_time.localeCompare(b.start_time),
-  );
-  const count = appts.filter((a) => a.status !== 'cancelled').length;
+  function step(direction: -1 | 1) {
+    if (view === 'day') setFocusDate(addDays(focusDate, direction));
+    else if (view === 'week') setFocusDate(addDays(focusDate, direction * 7));
+    else setFocusDate(addMonths(focusDate, direction));
+  }
+
+  function pickDay(day: string) {
+    setFocusDate(day);
+    setView('day');
+  }
+
+  const title =
+    view === 'day'
+      ? formatDayLabel(focusDate)
+      : view === 'week'
+        ? formatWeekLabel(focusDate)
+        : formatMonthLabel(focusDate);
 
   return (
     <SafeAreaView edges={['top']} style={styles.safe}>
       <View style={styles.header}>
-        <Text style={styles.eyebrow}>Schedule</Text>
-        <Text style={styles.title}>Today</Text>
-        <Text style={styles.sub}>
-          {formatDayLabel(today)}
-          {!isLoading && !isError ? `  ·  ${countLabel(count)}` : ''}
-        </Text>
-      </View>
-
-      {isLoading ? (
-        <View style={styles.list}>
-          {[0, 1, 2, 3, 4].map((i) => (
-            <Skeleton key={i} style={styles.cardSkeleton} />
-          ))}
-        </View>
-      ) : isError ? (
-        <View style={styles.centered}>
-          <Feather name="wifi-off" size={24} color={colors.mutedForeground} />
-          <Text style={styles.centeredText}>
-            Couldn&apos;t load the schedule.
+        <View style={styles.titleRow}>
+          <NavButton icon="chevron-left" onPress={() => step(-1)} />
+          <Text style={styles.title} numberOfLines={1}>
+            {title}
           </Text>
+          <NavButton icon="chevron-right" onPress={() => step(1)} />
+        </View>
+
+        <View style={styles.controls}>
+          <View style={styles.switcher}>
+            <ViewSwitcher value={view} onChange={setView} />
+          </View>
           <Pressable
-            onPress={() => refetch()}
+            onPress={() => setFocusDate(todayString())}
             accessibilityRole="button"
-            hitSlop={8}
+            style={styles.todayButton}
           >
-            <Text style={styles.retry}>Try again</Text>
+            <Text style={styles.todayText}>Today</Text>
           </Pressable>
         </View>
-      ) : (
-        <FlatList
-          data={appts}
-          keyExtractor={(item) => String(item.id)}
-          contentContainerStyle={styles.list}
-          showsVerticalScrollIndicator={false}
-          refreshControl={
-            <RefreshControl
-              refreshing={isRefetching}
-              onRefresh={refetch}
-              tintColor={colors.accent}
-            />
-          }
-          renderItem={({ item }) => (
-            <AppointmentCard
-              appointment={item}
-              onPress={() =>
-                router.push({
-                  pathname: '/appointment/[id]',
-                  params: { id: String(item.id) },
-                })
-              }
-            />
-          )}
-          ListEmptyComponent={
-            <View style={styles.centered}>
-              <Feather
-                name="calendar"
-                size={26}
-                color={colors.mutedForeground}
-              />
-              <Text style={styles.centeredText}>
-                No appointments today.
-              </Text>
-              <Text style={styles.centeredSub}>
-                Enjoy the quiet — or check back later.
-              </Text>
-            </View>
-          }
-        />
-      )}
+      </View>
+
+      <View style={styles.body}>
+        {view === 'day' ? (
+          <DayView date={focusDate} />
+        ) : view === 'week' ? (
+          <WeekView date={focusDate} onPickDay={pickDay} />
+        ) : (
+          <MonthView date={focusDate} onPickDay={pickDay} />
+        )}
+      </View>
     </SafeAreaView>
   );
 }
 
-function countLabel(n: number): string {
-  if (n === 0) return 'No appointments';
-  return `${n} appointment${n === 1 ? '' : 's'}`;
+function NavButton({
+  icon,
+  onPress,
+}: {
+  icon: 'chevron-left' | 'chevron-right';
+  onPress: () => void;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      hitSlop={8}
+      style={styles.navButton}
+    >
+      <Feather name={icon} size={22} color={colors.foreground} />
+    </Pressable>
+  );
 }
 
 const styles = StyleSheet.create({
@@ -118,60 +104,54 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: spacing.lg,
-    paddingTop: spacing.lg,
+    paddingTop: spacing.sm,
     paddingBottom: spacing.md,
-    gap: spacing.xs,
+    gap: spacing.md,
   },
-  eyebrow: {
-    fontFamily: fonts.sans,
-    fontSize: fontSize.xs,
-    textTransform: 'uppercase',
-    letterSpacing: 1.5,
-    color: colors.mutedForeground,
+  titleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+  },
+  navButton: {
+    width: 36,
+    height: 36,
+    borderRadius: radius.md,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   title: {
+    flex: 1,
+    textAlign: 'center',
     fontFamily: fonts.serif,
-    fontSize: fontSize.xxl,
+    fontSize: fontSize.lg,
     color: colors.foreground,
-    letterSpacing: -0.5,
+    letterSpacing: -0.3,
   },
-  sub: {
-    fontFamily: fonts.sans,
-    fontSize: fontSize.sm,
-    color: colors.mutedForeground,
-  },
-  list: {
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.sm,
-    paddingBottom: spacing.xxl,
-    gap: spacing.sm,
-  },
-  cardSkeleton: {
-    height: 72,
-    borderRadius: radius.lg,
-  },
-  centered: {
+  controls: {
+    flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
-    paddingVertical: spacing.xxl * 2,
-    paddingHorizontal: spacing.xl,
   },
-  centeredText: {
+  switcher: {
+    flex: 1,
+  },
+  todayButton: {
+    paddingHorizontal: spacing.md,
+    paddingVertical: 9,
+    borderRadius: radius.md,
+    borderWidth: 1,
+    borderColor: colors.border,
+    backgroundColor: colors.card,
+  },
+  todayText: {
     fontFamily: fonts.sans,
-    fontSize: fontSize.base,
+    fontSize: fontSize.sm,
+    fontWeight: '600',
     color: colors.foreground,
-    fontWeight: '600',
   },
-  centeredSub: {
-    fontFamily: fonts.sans,
-    fontSize: fontSize.sm,
-    color: colors.mutedForeground,
-    textAlign: 'center',
-  },
-  retry: {
-    fontFamily: fonts.sans,
-    fontSize: fontSize.sm,
-    fontWeight: '600',
-    color: colors.accent,
+  body: {
+    flex: 1,
   },
 });
