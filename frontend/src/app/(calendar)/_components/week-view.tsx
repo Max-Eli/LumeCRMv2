@@ -7,15 +7,17 @@
  *   - A vertically scrollable body: hour-labelled time gutter on the
  *     left + 7 day columns. Appointments are absolutely-positioned
  *     colored blocks.
- *   - Overlapping appointments within a day are packed side-by-side
- *     (cluster → sub-column assignment) so a busy day doesn't render
- *     a single block hiding five others.
+ *   - Overlapping appointments within a day are packed side-by-side,
+ *     capped at 3 visible columns. A cluster that needs more collapses
+ *     its 3rd+ columns into one "+N" tile — tapping it opens that day.
+ *     Capping keeps every visible block at least a third of the column
+ *     wide so it stays readable instead of slivering to nothing.
  *   - A red "now" line is drawn across today's column when the
  *     visible week contains the current date.
  *
- * Columns are deliberately narrow on phones — that's how Google's
- * mobile week view works. Blocks show the start time + customer
- * name, truncated; tapping opens the full <AppointmentPopover>.
+ * Blocks show the customer name only — vertical position already
+ * conveys the time, so printing "11:00 AM" inside a 40px block was
+ * pure noise. Tapping a block opens the full <AppointmentPopover>.
  *
  * The visible hour window defaults to the tenant's business hours
  * but expands to cover any appointment that starts earlier / ends
@@ -32,9 +34,10 @@ import { cn } from '@/lib/utils';
 import { AppointmentPopover } from './appointment-popover';
 
 const GUTTER_PX = 44;
-const HOUR_PX = 56;
+const HOUR_PX = 60;
 const DEFAULT_START_HOUR = 8;
 const DEFAULT_END_HOUR = 20;
+const MAX_COLS = 3;
 
 export interface WeekViewProps {
   /** Any date inside the week to render (YYYY-MM-DD). */
@@ -42,7 +45,8 @@ export interface WeekViewProps {
   timezone: string;
   /** Every appointment overlapping the visible week. */
   appointments: Appointment[];
-  /** Tapping a day header — jumps to that day's detailed view. */
+  /** Tapping a day header (or a "+N more" tile) — jumps to that
+   *  day's detailed view. */
   onSelectDay: (date: string) => void;
   /** Tenant business hours (integer hours); window expands past
    *  these if an appointment falls outside. */
@@ -50,13 +54,23 @@ export interface WeekViewProps {
   dayEndHour?: number;
 }
 
-interface Positioned {
+interface ApptCell {
+  kind: 'appt';
   appt: Appointment;
   topMin: number;
   durationMin: number;
   col: number;
   cols: number;
 }
+interface OverflowCell {
+  kind: 'overflow';
+  topMin: number;
+  durationMin: number;
+  col: number;
+  cols: number;
+  count: number;
+}
+type Cell = ApptCell | OverflowCell;
 
 export function WeekView({
   date,
@@ -126,6 +140,7 @@ export function WeekView({
         {days.map((day) => {
           const iso = toISODate(day);
           const isToday = iso === todayStr;
+          const count = (byDay.get(iso) ?? []).length;
           return (
             <button
               key={iso}
@@ -146,6 +161,13 @@ export function WeekView({
               >
                 {day.getDate()}
               </span>
+              {count > 0 ? (
+                <span className="text-[9px] text-muted-foreground tabular-nums leading-none">
+                  {count}
+                </span>
+              ) : (
+                <span className="h-[9px]" aria-hidden />
+              )}
             </button>
           );
         })}
@@ -173,7 +195,7 @@ export function WeekView({
             {hourLabels.map((h, i) => (
               <div
                 key={h}
-                className="absolute inset-x-0 border-t border-border/60"
+                className="absolute inset-x-0 border-t border-border/50"
                 style={{ top: i * HOUR_PX }}
                 aria-hidden
               />
@@ -182,19 +204,20 @@ export function WeekView({
             {days.map((day) => {
               const iso = toISODate(day);
               const dayAppts = byDay.get(iso) ?? [];
-              const positioned = packDay(dayAppts);
+              const cells = packDay(dayAppts);
               const isToday = iso === nowStr;
               return (
                 <div
                   key={iso}
-                  className="flex-1 min-w-0 relative border-r border-border/60 last:border-r-0"
+                  className="flex-1 min-w-0 relative border-r border-border/50 last:border-r-0"
                 >
-                  {positioned.map((p) => (
-                    <WeekEventBlock
-                      key={p.appt.id}
-                      positioned={p}
+                  {cells.map((cell, i) => (
+                    <WeekCell
+                      key={cell.kind === 'appt' ? cell.appt.id : `ov-${i}`}
+                      cell={cell}
                       startMin={startMin}
                       timezone={timezone}
+                      onOverflowClick={() => onSelectDay(iso)}
                     />
                   ))}
                   {isToday && showNow && nowOffset >= 0 && nowOffset <= bodyHeight ? (
@@ -216,50 +239,72 @@ export function WeekView({
   );
 }
 
-function WeekEventBlock({
-  positioned,
+function WeekCell({
+  cell,
   startMin,
   timezone,
+  onOverflowClick,
 }: {
-  positioned: Positioned;
+  cell: Cell;
   startMin: number;
   timezone: string;
+  onOverflowClick: () => void;
 }) {
-  const { appt, topMin, durationMin, col, cols } = positioned;
+  const top = ((cell.topMin - startMin) / 60) * HOUR_PX;
+  const height = Math.max(16, (cell.durationMin / 60) * HOUR_PX);
+  const widthPct = 100 / cell.cols;
+  const posStyle: React.CSSProperties = {
+    top,
+    height,
+    left: `calc(${cell.col * widthPct}% + 1px)`,
+    width: `calc(${widthPct}% - 2px)`,
+  };
+
+  if (cell.kind === 'overflow') {
+    return (
+      <button
+        type="button"
+        onClick={onOverflowClick}
+        className="absolute rounded-[4px] bg-muted/80 border border-border text-[10px] font-medium text-muted-foreground flex items-center justify-center hover:bg-muted transition-colors"
+        style={posStyle}
+      >
+        +{cell.count}
+      </button>
+    );
+  }
+
+  const { appt } = cell;
   const cancelled = appt.status === 'cancelled' || appt.status === 'no_show';
   const color = appt.service.category_color ?? 'hsl(220 9% 46%)';
-  const top = ((topMin - startMin) / 60) * HOUR_PX;
-  const height = Math.max(14, (durationMin / 60) * HOUR_PX);
-  const widthPct = 100 / cols;
+  // Print the name only when the block has room for it: tall enough
+  // not to clip mid-glyph, and no more than 2 columns wide (a 3-col
+  // block on a phone is ~30px — a truncated "Ro…" is just noise, so
+  // it becomes a clean color chip instead).
+  const showText = height >= 26 && cell.cols <= 2;
 
   const trigger = (
     <button
       type="button"
       className={cn(
-        'absolute rounded-[3px] overflow-hidden text-left leading-tight',
-        'border-l-2 px-1 py-0.5 transition-opacity hover:opacity-90',
-        cancelled && 'opacity-60',
+        'absolute rounded-[4px] overflow-hidden text-left border-l-[3px] transition-opacity hover:opacity-90',
+        cancelled && 'opacity-55',
       )}
       style={{
-        top,
-        height,
-        left: `calc(${col * widthPct}% + 1px)`,
-        width: `calc(${widthPct}% - 2px)`,
-        background: `${color}1f`,
+        ...posStyle,
+        background: `${color}26`,
         borderLeftColor: color,
       }}
     >
-      <span
-        className={cn(
-          'block text-[9px] font-medium text-foreground/90 truncate',
-          cancelled && 'line-through',
-        )}
-      >
-        {formatTime(appt.start_time, timezone)}
-      </span>
-      <span className="block text-[9px] text-foreground/75 truncate">
-        {appt.customer.full_name}
-      </span>
+      {showText ? (
+        <span
+          className={cn(
+            'block px-1 pt-0.5 text-[10px] font-medium text-foreground/90 truncate leading-tight',
+            cancelled && 'line-through',
+          )}
+        >
+          {appt.customer.full_name}
+        </span>
+      ) : null}
     </button>
   );
 
@@ -270,8 +315,14 @@ function WeekEventBlock({
 
 /** Assign each appointment a (col, cols) so overlapping ones render
  *  side-by-side. Events are grouped into clusters of mutual overlap;
- *  within a cluster each event takes the first free sub-column. */
-function packDay(appts: Appointment[]): Positioned[] {
+ *  within a cluster each event takes the first free sub-column.
+ *
+ *  Capped at MAX_COLS visible columns: a cluster that needs more
+ *  renders its first (MAX_COLS - 1) columns of events and collapses
+ *  everything beyond into a single "+N" overflow tile in the last
+ *  column. Without the cap a 6-deep overlap slivered every block to
+ *  ~16px on a phone. */
+function packDay(appts: Appointment[]): Cell[] {
   const items = appts
     .map((appt) => {
       const s = new Date(appt.start_time);
@@ -282,40 +333,75 @@ function packDay(appts: Appointment[]): Positioned[] {
     })
     .sort((a, b) => a.topMin - b.topMin || a.endMin - b.endMin);
 
-  const result: Positioned[] = [];
+  const result: Cell[] = [];
   let cluster: typeof items = [];
   let clusterEnd = -1;
 
   const flush = () => {
     if (cluster.length === 0) return;
     // Greedy column assignment.
-    const columns: number[] = []; // columns[c] = end-min of last event in col c
+    const columnEnds: number[] = [];
     const colOf = new Map<Appointment, number>();
     for (const it of cluster) {
       let placed = -1;
-      for (let c = 0; c < columns.length; c++) {
-        if (it.topMin >= columns[c]) {
+      for (let c = 0; c < columnEnds.length; c++) {
+        if (it.topMin >= columnEnds[c]) {
           placed = c;
           break;
         }
       }
       if (placed === -1) {
-        placed = columns.length;
-        columns.push(it.endMin);
+        placed = columnEnds.length;
+        columnEnds.push(it.endMin);
       } else {
-        columns[placed] = it.endMin;
+        columnEnds[placed] = it.endMin;
       }
       colOf.set(it.appt, placed);
     }
-    const cols = columns.length;
-    for (const it of cluster) {
-      result.push({
-        appt: it.appt,
-        topMin: it.topMin,
-        durationMin: it.endMin - it.topMin,
-        col: colOf.get(it.appt) ?? 0,
-        cols,
-      });
+    const neededCols = columnEnds.length;
+
+    if (neededCols <= MAX_COLS) {
+      for (const it of cluster) {
+        result.push({
+          kind: 'appt',
+          appt: it.appt,
+          topMin: it.topMin,
+          durationMin: it.endMin - it.topMin,
+          col: colOf.get(it.appt) ?? 0,
+          cols: neededCols,
+        });
+      }
+    } else {
+      // Render columns 0..MAX_COLS-2 of events; collapse the rest.
+      const visibleCol = MAX_COLS - 1;
+      const overflow: typeof items = [];
+      for (const it of cluster) {
+        const c = colOf.get(it.appt) ?? 0;
+        if (c < visibleCol) {
+          result.push({
+            kind: 'appt',
+            appt: it.appt,
+            topMin: it.topMin,
+            durationMin: it.endMin - it.topMin,
+            col: c,
+            cols: MAX_COLS,
+          });
+        } else {
+          overflow.push(it);
+        }
+      }
+      if (overflow.length > 0) {
+        const ovTop = Math.min(...overflow.map((o) => o.topMin));
+        const ovEnd = Math.max(...overflow.map((o) => o.endMin));
+        result.push({
+          kind: 'overflow',
+          topMin: ovTop,
+          durationMin: ovEnd - ovTop,
+          col: visibleCol,
+          cols: MAX_COLS,
+          count: overflow.length,
+        });
+      }
     }
     cluster = [];
   };
@@ -351,13 +437,4 @@ function formatHour(h: number): string {
   if (h === 0 || h === 24) return '12 AM';
   if (h === 12) return '12 PM';
   return h < 12 ? `${h} AM` : `${h - 12} PM`;
-}
-
-function formatTime(iso: string, timezone: string): string {
-  return new Date(iso).toLocaleTimeString('en-US', {
-    timeZone: timezone,
-    hour: 'numeric',
-    minute: '2-digit',
-    hour12: true,
-  });
 }
