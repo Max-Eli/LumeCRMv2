@@ -550,6 +550,158 @@ STARTER_TEMPLATES: list[StarterTemplate] = [
         ],
     },
 
+    {
+        'slug': 'co2-laser-resurfacing',
+        'name': 'CO2 laser resurfacing treatment record',
+        'description': (
+            'Full ablative / fractional CO2 laser resurfacing chart — '
+            'pre-treatment screening (Accutane, HSV, photo-type), '
+            'per-area device settings (energy, density, passes), '
+            'anesthesia, intra-treatment endpoints, and the post-care '
+            '/ antiviral / wound-care plan.'
+        ),
+        'category': 'Laser & Energy',
+        'fields': [
+            # Pre-treatment screening
+            {'id': 'consent_on_file', 'type': 'choice_single',
+             'label': 'CO2 laser informed consent on file + reviewed today',
+             'required': True,
+             'options': _options('Yes', 'Reviewed verbally', 'No — stop')},
+            {'id': 'fitzpatrick', 'type': 'choice_single',
+             'label': 'Fitzpatrick skin type',
+             'required': True,
+             'options': _options('I', 'II', 'III', 'IV', 'V', 'VI')},
+            {'id': 'treatment_indication', 'type': 'choice_multiple',
+             'label': 'Treatment indication',
+             'options': _options(
+                 'Photoaging / fine lines', 'Deep wrinkles',
+                 'Acne scarring', 'Surgical / traumatic scar',
+                 'Texture / pore size', 'Actinic damage',
+                 'Rhytids — perioral', 'Rhytids — periorbital',
+             )},
+            {'id': 'isotretinoin_history', 'type': 'choice_single',
+             'label': 'Isotretinoin (Accutane) in the last 6–12 months',
+             'required': True,
+             'options': _options('No', 'Yes — within 6 months (contraindicated)',
+                                 'Yes — 6–12 months ago', 'Unsure')},
+            {'id': 'hsv_history', 'type': 'choice_single',
+             'label': 'History of cold sores / HSV',
+             'required': True,
+             'options': _options('No', 'Yes', 'Unsure')},
+            {'id': 'antiviral_prophylaxis', 'type': 'choice_single',
+             'label': 'Antiviral prophylaxis started',
+             'options': _options(
+                 'Yes — started pre-treatment', 'Prescribed today',
+                 'Not indicated', 'Declined by patient',
+             )},
+            {'id': 'recent_sun_exposure', 'type': 'choice_single',
+             'label': 'Significant sun exposure / tanning in last 4 weeks',
+             'required': True,
+             'options': _options('No', 'Yes')},
+            {'id': 'prior_resurfacing', 'type': 'long_text',
+             'label': 'Prior resurfacing / laser history (type + approx. date)'},
+            {'id': 'current_skincare', 'type': 'long_text',
+             'label': 'Current topicals (retinoids, hydroquinone, acids)'},
+            {'id': 'pre_photos', 'type': 'choice_single',
+             'label': 'Pre-treatment photos taken',
+             'required': True,
+             'options': _options('Yes', 'No', 'Patient declined')},
+
+            # Anesthesia
+            {'id': 'anesthesia', 'type': 'choice_multiple',
+             'label': 'Anesthesia / comfort measures',
+             'options': _options(
+                 'Topical anesthetic', 'Nerve block',
+                 'Oral analgesic / anxiolytic', 'Forced-air cooling',
+                 'None',
+             )},
+            {'id': 'topical_anesthetic_detail', 'type': 'short_text',
+             'label': 'Topical agent + dwell time'},
+
+            # Device + settings
+            {'id': 'device', 'type': 'short_text',
+             'label': 'Device / laser system',
+             'required': True},
+            {'id': 'treatment_mode', 'type': 'choice_single',
+             'label': 'Treatment mode',
+             'required': True,
+             'options': _options(
+                 'Fractional ablative', 'Fully ablative',
+                 'Deep FX / deep fractional', 'Active FX / superficial fractional',
+                 'Combined deep + superficial',
+             )},
+            {'id': 'areas_treated', 'type': 'choice_multiple',
+             'label': 'Areas treated',
+             'required': True,
+             'options': _options(
+                 'Full face', 'Perioral', 'Periorbital', 'Cheeks',
+                 'Forehead', 'Neck', 'Décolletage', 'Hands', 'Other',
+             )},
+            {'id': 'energy_mj', 'type': 'short_text',
+             'label': 'Energy / fluence (mJ) — per area if varied',
+             'required': True},
+            {'id': 'density_pct', 'type': 'short_text',
+             'label': 'Density / coverage (%) — per area if varied'},
+            {'id': 'spot_size', 'type': 'short_text',
+             'label': 'Spot size / scan pattern'},
+            {'id': 'passes', 'type': 'short_text',
+             'label': 'Passes per area',
+             'required': True},
+            {'id': 'settings_by_area', 'type': 'long_text',
+             'label': 'Per-area settings detail (energy · density · passes)',
+             'required': True,
+             'help_text': (
+                 'One line per area. Example: "Periorbital — 80mJ · '
+                 '5% · 2 passes feathered".'
+             )},
+
+            # Intra-treatment
+            {'id': 'endpoint', 'type': 'choice_multiple',
+             'label': 'Clinical endpoint observed',
+             'required': True,
+             'options': _options(
+                 'Pinpoint bleeding', 'Grey-white char (expected ablative)',
+                 'Tissue tightening / contraction', 'Brisk erythema',
+                 'Chamois-cloth appearance',
+             )},
+            {'id': 'complications', 'type': 'choice_multiple',
+             'label': 'Intra-treatment complications',
+             'required': True,
+             'options': _options(
+                 'None', 'Excessive bleeding', 'Uneven ablation',
+                 'Bulk heating concern', 'Patient intolerance — stopped early',
+                 'Other',
+             )},
+            {'id': 'complication_detail', 'type': 'long_text',
+             'label': 'Complication / intervention detail'},
+
+            # Post-treatment + wound care
+            {'id': 'immediate_appearance', 'type': 'choice_multiple',
+             'label': 'Immediate post-treatment appearance',
+             'options': _options(
+                 'Erythema', 'Edema', 'Serous weeping',
+                 'Pinpoint bleeding', 'Frosting',
+             )},
+            {'id': 'wound_care_applied', 'type': 'long_text',
+             'label': 'Wound care applied (occlusive ointment, dressing)'},
+            {'id': 'antibiotic_prescribed', 'type': 'choice_single',
+             'label': 'Antibiotic prescribed',
+             'options': _options('Yes', 'No — not indicated')},
+            {'id': 'downtime_reviewed', 'type': 'choice_single',
+             'label': 'Downtime + wound-care instructions reviewed with patient',
+             'required': True,
+             'options': _options('Yes', 'No')},
+            {'id': 'warning_signs_reviewed', 'type': 'choice_single',
+             'label': 'Warning signs reviewed (spreading redness, fever, pus, severe pain)',
+             'required': True,
+             'options': _options('Yes', 'No')},
+            {'id': 'follow_up_days', 'type': 'number',
+             'label': 'Follow-up / wound check in (days)'},
+            {'id': 'provider_notes', 'type': 'long_text',
+             'label': 'Provider notes'},
+        ],
+    },
+
     # ── Body & Contouring ───────────────────────────────────────────
     {
         'slug': 'body-contouring',
