@@ -209,13 +209,15 @@ function PlansTable({
                         <span className="font-medium text-foreground">
                           {it.quantity_per_cycle}×
                         </span>{' '}
-                        {it.service_name}
+                        {it.item_type === 'category'
+                          ? `Any ${it.category_name}`
+                          : it.service_name}
                         <span className="text-muted-foreground/70"> /cycle</span>
                       </div>
                     ))}
                     {p.items.length > 2 ? (
                       <p className="text-xs text-muted-foreground/70">
-                        + {p.items.length - 2} more service{p.items.length - 2 === 1 ? '' : 's'}
+                        + {p.items.length - 2} more line{p.items.length - 2 === 1 ? '' : 's'}
                       </p>
                     ) : null}
                   </div>

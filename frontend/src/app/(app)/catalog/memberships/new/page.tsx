@@ -19,6 +19,7 @@ import {
   type PlanFormErrors,
   type PlanFormValues,
   MembershipPlanForm,
+  emptyPlanItemRow,
   planFormToPayload,
   validatePlanForm,
 } from '../_components/plan-form';
@@ -32,7 +33,7 @@ const INITIAL_VALUES: PlanFormValues = {
   billing_interval: 'monthly',
   member_discount_percent: '0',
   is_active: true,
-  items: [{ service_id: '', quantity_per_cycle: '1' }],
+  items: [emptyPlanItemRow()],
 };
 
 export default function NewMembershipPlanPage() {

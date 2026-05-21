@@ -582,7 +582,9 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
             try:
                 plan_source = (
                     MembershipPlan.objects.for_current_tenant()
-                    .prefetch_related('items', 'items__service')
+                    .prefetch_related(
+                        'items', 'items__service', 'items__category',
+                    )
                     .get(pk=data['membership_plan_id'])
                 )
             except MembershipPlan.DoesNotExist:
@@ -599,7 +601,7 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
                 return Response(
                     {
                         'membership_plan_id': (
-                            'Plan has no included services.'
+                            'Plan has no included items.'
                         ),
                     },
                     status=status.HTTP_400_BAD_REQUEST,
@@ -635,18 +637,38 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
                     member_discount_percent=plan_source.member_discount_percent,
                     status=Subscription.Status.PENDING,
                 )
-                SubscriptionItem.objects.bulk_create([
-                    SubscriptionItem(
-                        subscription=subscription,
-                        service=item.service,
-                        service_name=item.service.name,
-                        quantity_per_cycle=item.quantity_per_cycle,
-                        quantity_remaining=item.quantity_per_cycle,
-                        unit_value_cents=item.service.price_cents,
-                        sort_order=item.sort_order,
-                    )
-                    for item in plan_source.items.all()
-                ])
+                sub_items = []
+                for item in plan_source.items.select_related(
+                    'service', 'category',
+                ):
+                    if item.category_id:
+                        # Category credit — redeemable against any
+                        # service in the category. Value depends on
+                        # which service is redeemed, so no snapshot.
+                        sub_items.append(SubscriptionItem(
+                            subscription=subscription,
+                            service=None,
+                            service_name='',
+                            category=item.category,
+                            category_name=item.category.name,
+                            quantity_per_cycle=item.quantity_per_cycle,
+                            quantity_remaining=item.quantity_per_cycle,
+                            unit_value_cents=0,
+                            sort_order=item.sort_order,
+                        ))
+                    else:
+                        sub_items.append(SubscriptionItem(
+                            subscription=subscription,
+                            service=item.service,
+                            service_name=item.service.name,
+                            category=None,
+                            category_name='',
+                            quantity_per_cycle=item.quantity_per_cycle,
+                            quantity_remaining=item.quantity_per_cycle,
+                            unit_value_cents=item.service.price_cents,
+                            sort_order=item.sort_order,
+                        ))
+                SubscriptionItem.objects.bulk_create(sub_items)
             audit_event = 'membership_line_added'
             audit_payload = {
                 'membership_plan_id': plan_source.pk,
@@ -921,15 +943,60 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
                     status=status.HTTP_409_CONFLICT,
                 )
 
+            from apps.services.models import Service
+
             try:
+                redeemed_service = (
+                    Service.objects.for_current_tenant()
+                    .get(pk=data['service_id'])
+                )
+            except Service.DoesNotExist:
+                return Response(
+                    {'service_id': 'Service not found.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+            # Find a credit with capacity: a direct service credit
+            # first, then a category credit that covers the service.
+            sub_item = (
+                SubscriptionItem.objects.select_for_update()
+                .filter(
+                    subscription=sub,
+                    service_id=redeemed_service.pk,
+                    quantity_remaining__gte=1,
+                )
+                .first()
+            )
+            if sub_item is None and redeemed_service.category_id:
                 sub_item = (
                     SubscriptionItem.objects.select_for_update()
-                    .get(
+                    .filter(
                         subscription=sub,
-                        service_id=data['service_id'],
+                        category_id=redeemed_service.category_id,
+                        quantity_remaining__gte=1,
+                    )
+                    .first()
+                )
+            if sub_item is None:
+                # Distinguish "not in the plan" from "in the plan but
+                # depleted" so the operator gets an accurate message.
+                in_plan = (
+                    SubscriptionItem.objects.filter(
+                        subscription=sub, service_id=redeemed_service.pk,
+                    ).exists()
+                    or (
+                        redeemed_service.category_id is not None
+                        and SubscriptionItem.objects.filter(
+                            subscription=sub,
+                            category_id=redeemed_service.category_id,
+                        ).exists()
                     )
                 )
-            except SubscriptionItem.DoesNotExist:
+                if in_plan:
+                    return Response(
+                        {'detail': 'No credits remaining for this service.'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
                 return Response(
                     {
                         'service_id': (
@@ -938,23 +1005,18 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
                     },
                     status=status.HTTP_400_BAD_REQUEST,
                 )
-            if sub_item.quantity_remaining < 1:
-                return Response(
-                    {'detail': 'No credits remaining for this service.'},
-                    status=status.HTTP_409_CONFLICT,
-                )
 
             sub_item.quantity_remaining -= 1
             sub_item.save(update_fields=['quantity_remaining'])
 
             line = InvoiceLineItem.objects.create(
                 invoice=invoice,
-                service_id=sub_item.service_id,
+                service_id=redeemed_service.pk,
                 product=None,
                 package=None,
                 membership_plan=None,
                 description=(
-                    f'{sub_item.service_name} '
+                    f'{redeemed_service.name} '
                     f'(redeemed from membership #{sub.pk})'
                 ),
                 quantity=1,
@@ -981,8 +1043,9 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
             metadata={
                 'event': 'membership_redeemed',
                 'subscription_id': sub.pk,
-                'service_id': sub_item.service_id,
-                'service_name': sub_item.service_name,
+                'service_id': redeemed_service.pk,
+                'service_name': redeemed_service.name,
+                'credit_kind': 'category' if sub_item.category_id else 'service',
                 'remaining_after': sub_item.quantity_remaining,
                 'line_id': line.pk,
             },

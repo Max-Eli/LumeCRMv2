@@ -215,7 +215,10 @@ class MembershipPlan(TenantedModel):
 
 
 class MembershipPlanItem(models.Model):
-    """One service inclusion line on a plan: "1 facial per cycle"."""
+    """One inclusion line on a plan. Either a specific service
+    ("1 facial per cycle") OR a whole service category ("any 2
+    facials per cycle") — exactly one of `service` / `category` is set.
+    """
 
     plan = models.ForeignKey(
         MembershipPlan,
@@ -226,6 +229,20 @@ class MembershipPlanItem(models.Model):
         'services.Service',
         on_delete=models.PROTECT,
         related_name='+',
+        null=True,
+        blank=True,
+        help_text='A specific included service. Null when this line is a category.',
+    )
+    category = models.ForeignKey(
+        'services.ServiceCategory',
+        on_delete=models.PROTECT,
+        related_name='+',
+        null=True,
+        blank=True,
+        help_text=(
+            'A whole service category — any service in it is redeemable. '
+            'Null when this line is a single service.'
+        ),
     )
     quantity_per_cycle = models.PositiveIntegerField(
         default=1,
@@ -239,20 +256,36 @@ class MembershipPlanItem(models.Model):
     class Meta:
         ordering = ['sort_order', 'id']
         constraints = [
+            # A given service / category can appear at most once per plan.
+            # Partial — `service` and `category` are each nullable, and
+            # NULLs must not collide with each other.
             models.UniqueConstraint(
                 fields=['plan', 'service'],
+                condition=models.Q(service__isnull=False),
                 name='membership_plan_items_unique_plan_service',
+            ),
+            models.UniqueConstraint(
+                fields=['plan', 'category'],
+                condition=models.Q(category__isnull=False),
+                name='membership_plan_items_unique_plan_category',
             ),
             models.CheckConstraint(
                 condition=models.Q(quantity_per_cycle__gt=0),
                 name='membership_plan_items_quantity_positive',
             ),
+            # Exactly one of service / category — never both, never neither.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(service__isnull=False, category__isnull=True)
+                    | models.Q(service__isnull=True, category__isnull=False)
+                ),
+                name='membership_plan_items_service_xor_category',
+            ),
         ]
 
     def __str__(self):
-        return (
-            f'{self.plan} · {self.service} × {self.quantity_per_cycle}/cycle'
-        )
+        target = self.service if self.service_id else self.category
+        return f'{self.plan} · {target} × {self.quantity_per_cycle}/cycle'
 
 
 # ── Customer-side instance ──────────────────────────────────────────
@@ -407,7 +440,8 @@ class Subscription(TenantedModel):
 
 
 class SubscriptionItem(models.Model):
-    """Per-service balance row for a single Subscription.
+    """Per-credit balance row for a single Subscription. Either a
+    specific service or a whole category (any service in it).
 
     `quantity_remaining` is the only mutating column; everything
     else is snapshotted at sale. Decremented atomically inside the
@@ -426,22 +460,33 @@ class SubscriptionItem(models.Model):
         null=True,
         blank=True,
         help_text=(
-            'FK to the catalog Service. NULL for migration-imported '
-            'rows where the upstream service name did not match any '
-            'Lumè Service in the catalog — the snapshot `service_name` '
-            'still displays so the operator can manually map / redeem '
-            'after the fact.'
+            'FK to the catalog Service. NULL for a category credit, or '
+            'for a migration-imported row whose upstream service name '
+            "didn't match any Lumè Service — the snapshot `service_name` "
+            'still displays so the operator can manually map / redeem.'
         ),
     )
-    service_name = models.CharField(max_length=200)
+    service_name = models.CharField(max_length=200, blank=True, default='')
+    category = models.ForeignKey(
+        'services.ServiceCategory',
+        on_delete=models.PROTECT,
+        related_name='+',
+        null=True,
+        blank=True,
+        help_text=(
+            'Set when this credit covers a whole category — any service '
+            'in it is redeemable. Null for a single-service credit.'
+        ),
+    )
+    category_name = models.CharField(max_length=200, blank=True, default='')
     quantity_per_cycle = models.PositiveIntegerField()
     quantity_remaining = models.PositiveIntegerField()
     unit_value_cents = models.PositiveIntegerField(
         default=0,
         help_text=(
-            "Snapshot of the service's a-la-carte price at sale "
-            'time. Used as the redemption line value (analogous to '
-            'PurchasedPackageItem.unit_value_cents).'
+            "Snapshot of the service's a-la-carte price at sale time "
+            '(single-service credits only). 0 for a category credit — '
+            "its value depends on which service is redeemed."
         ),
     )
     sort_order = models.IntegerField(default=0)
@@ -451,7 +496,13 @@ class SubscriptionItem(models.Model):
         constraints = [
             models.UniqueConstraint(
                 fields=['subscription', 'service'],
+                condition=models.Q(service__isnull=False),
                 name='subscription_items_unique',
+            ),
+            models.UniqueConstraint(
+                fields=['subscription', 'category'],
+                condition=models.Q(category__isnull=False),
+                name='subscription_items_unique_category',
             ),
             models.CheckConstraint(
                 condition=models.Q(
@@ -462,10 +513,8 @@ class SubscriptionItem(models.Model):
         ]
 
     def __str__(self):
-        return (
-            f'{self.service_name} · '
-            f'{self.quantity_remaining}/{self.quantity_per_cycle}'
-        )
+        label = self.category_name or self.service_name
+        return f'{label} · {self.quantity_remaining}/{self.quantity_per_cycle}'
 
 
 class SubscriptionRedemption(TenantedModel):

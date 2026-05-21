@@ -51,7 +51,7 @@ class MembershipPlanViewSet(viewsets.ModelViewSet):
         return (
             MembershipPlan.objects
             .for_current_tenant()
-            .prefetch_related('items', 'items__service')
+            .prefetch_related('items', 'items__service', 'items__category')
         )
 
     def filter_queryset(self, queryset):
@@ -171,7 +171,15 @@ class SubscriptionViewSet(viewsets.ReadOnlyModelViewSet):
             Subscription.objects
             .for_current_tenant()
             .select_related('customer', 'plan', 'cancelled_by')
-            .prefetch_related('items', 'redemptions', 'redemptions__by_user')
+            .prefetch_related(
+                'items',
+                'items__service',
+                'items__category',
+                'redemptions',
+                'redemptions__by_user',
+                'redemptions__item',
+                'redemptions__invoice_line__service',
+            )
         )
 
     def filter_queryset(self, queryset):

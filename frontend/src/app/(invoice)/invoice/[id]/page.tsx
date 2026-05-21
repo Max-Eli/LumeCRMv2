@@ -103,8 +103,9 @@ import {
   usePackages,
 } from '@/lib/packages';
 import { useProducts } from '@/lib/products';
-import { useServices } from '@/lib/services';
+import { type Service, useServices } from '@/lib/services';
 import {
+  type Subscription,
   useCustomerSubscriptions,
   useMembershipPlans,
 } from '@/lib/subscriptions';
@@ -1115,6 +1116,55 @@ function LifecycleSummary({ invoice }: { invoice: Invoice }) {
   return null;
 }
 
+interface RedeemServiceOption {
+  serviceId: number;
+  name: string;
+  /** Category name when this option came from a category credit. */
+  note: string;
+  remaining: number;
+}
+
+/** Flatten a subscription's credits into concrete redeemable services.
+ *  A service credit yields one option; a category credit expands to
+ *  every active service in that category. Direct service credits win
+ *  over category-derived entries for the same service (mirrors the
+ *  backend's redemption preference order). */
+function buildRedeemServiceOptions(
+  sub: Subscription | undefined,
+  services: Service[],
+): RedeemServiceOption[] {
+  if (!sub) return [];
+  const byServiceId = new Map<number, RedeemServiceOption>();
+  for (const it of sub.items) {
+    if (it.quantity_remaining <= 0) continue;
+    if (it.item_type === 'category' && it.category != null) {
+      for (const svc of services) {
+        if (svc.category?.id !== it.category) continue;
+        if (!byServiceId.has(svc.id)) {
+          byServiceId.set(svc.id, {
+            serviceId: svc.id,
+            name: svc.name,
+            note: it.category_name,
+            remaining: it.quantity_remaining,
+          });
+        }
+      }
+    }
+  }
+  for (const it of sub.items) {
+    if (it.quantity_remaining <= 0) continue;
+    if (it.item_type === 'service' && it.service != null) {
+      byServiceId.set(it.service, {
+        serviceId: it.service,
+        name: it.service_name,
+        note: '',
+        remaining: it.quantity_remaining,
+      });
+    }
+  }
+  return [...byServiceId.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 function RedeemFromMembershipPanel({
   invoice,
   customerId,
@@ -1125,6 +1175,7 @@ function RedeemFromMembershipPanel({
   const { data, isLoading } = useCustomerSubscriptions(customerId, {
     status: 'active',
   });
+  const { data: allServices } = useServices({ activeOnly: true });
   const redeem = useRedeemFromMembership(invoice.id);
 
   // Only redeemable subscriptions: ACTIVE + in-period + remaining
@@ -1141,8 +1192,9 @@ function RedeemFromMembershipPanel({
   };
 
   const selectedSub = redeemable.find((s) => String(s.id) === selectedSubId);
-  const availableServices = (selectedSub?.items ?? []).filter(
-    (it) => it.quantity_remaining > 0,
+  const serviceOptions = buildRedeemServiceOptions(
+    selectedSub,
+    allServices ?? [],
   );
 
   if (!isLoading && redeemable.length === 0) {
@@ -1218,16 +1270,35 @@ function RedeemFromMembershipPanel({
                 <SelectValue placeholder="Pick a service…" />
               </SelectTrigger>
               <SelectContent>
-                {availableServices.map((it) => (
-                  <SelectItem key={it.id} value={String(it.service)}>
-                    <span className="flex items-center justify-between gap-3 w-full">
-                      <span className="truncate">{it.service_name}</span>
-                      <span className="text-xs text-violet-700 shrink-0">
-                        {it.quantity_remaining} left
+                {serviceOptions.length === 0 ? (
+                  <div className="px-2 py-2 text-xs text-muted-foreground">
+                    {selectedSub
+                      ? 'No redeemable services this cycle.'
+                      : 'Pick a membership first.'}
+                  </div>
+                ) : (
+                  serviceOptions.map((opt) => (
+                    <SelectItem
+                      key={opt.serviceId}
+                      value={String(opt.serviceId)}
+                    >
+                      <span className="flex items-center justify-between gap-3 w-full">
+                        <span className="truncate">
+                          {opt.name}
+                          {opt.note ? (
+                            <span className="text-muted-foreground">
+                              {' '}
+                              · {opt.note}
+                            </span>
+                          ) : null}
+                        </span>
+                        <span className="text-xs text-violet-700 shrink-0">
+                          {opt.remaining} left
+                        </span>
                       </span>
-                    </span>
-                  </SelectItem>
-                ))}
+                    </SelectItem>
+                  ))
+                )}
               </SelectContent>
             </Select>
           </div>

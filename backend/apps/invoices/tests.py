@@ -2107,6 +2107,258 @@ class InvoiceMembershipRedemptionTests(TestCase):
             self.sale_invoice.reopen(by_user=self.owner, reason='oops')
 
 
+class InvoiceMembershipCategoryRedemptionTests(TestCase):
+    """Category-credit memberships — one credit covers any service in
+    the category, redeemed at that service's full a-la-carte price."""
+
+    def setUp(self):
+        from apps.memberships.models import (
+            MembershipPlan,
+            MembershipPlanItem,
+            Subscription,
+            SubscriptionItem,
+        )
+
+        self.tenant, self.owner = _make_tenant_with_owner('inv-mbr-cat')
+        self.provider_user = _make_user('inv-mbr-cat-prov@test.local')
+        self.provider = _make_membership(
+            user=self.provider_user, tenant=self.tenant,
+            role=TenantMembership.Role.PROVIDER, is_bookable=True,
+        )
+        self.customer = _make_customer(self.tenant)
+
+        self.facials = ServiceCategory.objects.create(
+            tenant=self.tenant, name='Facials',
+        )
+
+        def _facial(name, price):
+            return Service.objects.create(
+                tenant=self.tenant, category=self.facials, name=name,
+                code=name.replace(' ', '')[:8].upper(),
+                duration_minutes=30, buffer_minutes=0,
+                price_cents=price, tax_rate_percent=Decimal('0'),
+                service_type=Service.ServiceType.REGULAR,
+            )
+
+        self.basic_facial = _facial('Basic Facial', 8000)
+        self.deluxe_facial = _facial('Deluxe Facial', 12000)
+        # A service outside the category — must NOT be redeemable.
+        self.botox = _make_service(self.tenant, name='Botox', price_cents=20000)
+
+        # Sale invoice — closed, subscription ACTIVE.
+        sale_appt = _make_appointment(
+            self.tenant, customer=self.customer, service=self.basic_facial,
+            provider=self.provider, status=Appointment.Status.CHECKED_IN,
+            created_by=self.owner,
+            start=timezone.now() - dt.timedelta(days=15),
+        )
+        self.sale_invoice = Invoice.objects.get(appointment=sale_appt)
+
+        plan = MembershipPlan.objects.create(
+            tenant=self.tenant, name='Facial Club', price_cents=9000,
+        )
+        MembershipPlanItem.objects.create(
+            plan=plan, category=self.facials, quantity_per_cycle=2,
+        )
+
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+        self.client.post(
+            reverse('invoice-add-line', kwargs={'pk': self.sale_invoice.pk}),
+            data={'membership_plan_id': plan.pk},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.sale_invoice.close(by_user=self.owner, payment_method='cash')
+        self.subscription = Subscription.objects.get(
+            source_invoice_line__invoice=self.sale_invoice,
+        )
+
+        # Redemption invoice — a future appointment to redeem at.
+        redeem_appt = _make_appointment(
+            self.tenant, customer=self.customer, service=self.basic_facial,
+            provider=self.provider, status=Appointment.Status.CHECKED_IN,
+            created_by=self.owner,
+            start=timezone.now() + dt.timedelta(days=1),
+        )
+        self.redeem_invoice = Invoice.objects.get(appointment=redeem_appt)
+
+        self.Subscription = Subscription
+        self.SubscriptionItem = SubscriptionItem
+
+    def _redeem_url(self, invoice_pk):
+        return reverse(
+            'invoice-redeem-from-membership', kwargs={'pk': invoice_pk},
+        )
+
+    def test_sale_creates_category_subscription_item(self):
+        item = self.SubscriptionItem.objects.get(subscription=self.subscription)
+        self.assertIsNone(item.service_id)
+        self.assertEqual(item.category_id, self.facials.pk)
+        self.assertEqual(item.category_name, 'Facials')
+        self.assertEqual(item.service_name, '')
+        self.assertEqual(item.quantity_per_cycle, 2)
+        self.assertEqual(item.quantity_remaining, 2)
+        # A category credit has no fixed value — depends on what's redeemed.
+        self.assertEqual(item.unit_value_cents, 0)
+
+    def test_redeem_any_service_in_category(self):
+        response = self.client.post(
+            self._redeem_url(self.redeem_invoice.pk),
+            data={
+                'subscription_id': self.subscription.pk,
+                'service_id': self.deluxe_facial.pk,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        item = self.SubscriptionItem.objects.get(subscription=self.subscription)
+        self.assertEqual(item.quantity_remaining, 1)
+        line = self.redeem_invoice.line_items.order_by('-id').first()
+        self.assertEqual(line.service_id, self.deluxe_facial.pk)
+        self.assertEqual(line.unit_price_cents, 0)
+        self.assertIn('redeemed from membership', line.description)
+
+    def test_redeem_service_outside_category_rejected(self):
+        response = self.client.post(
+            self._redeem_url(self.redeem_invoice.pk),
+            data={
+                'subscription_id': self.subscription.pk,
+                'service_id': self.botox.pk,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_redeem_until_depleted_then_409(self):
+        for svc in (self.basic_facial, self.deluxe_facial):
+            response = self.client.post(
+                self._redeem_url(self.redeem_invoice.pk),
+                data={
+                    'subscription_id': self.subscription.pk,
+                    'service_id': svc.pk,
+                },
+                format='json',
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+            self.assertEqual(
+                response.status_code, status.HTTP_200_OK, response.data,
+            )
+        response = self.client.post(
+            self._redeem_url(self.redeem_invoice.pk),
+            data={
+                'subscription_id': self.subscription.pk,
+                'service_id': self.basic_facial.pk,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_409_CONFLICT)
+
+    def test_redeem_audit_records_category_credit_kind(self):
+        self.client.post(
+            self._redeem_url(self.redeem_invoice.pk),
+            data={
+                'subscription_id': self.subscription.pk,
+                'service_id': self.basic_facial.pk,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = (
+            AuditLog.objects.filter(
+                resource_type='invoice',
+                resource_id=str(self.redeem_invoice.pk),
+                action=AuditLog.Action.UPDATE,
+            )
+            .order_by('-timestamp')
+            .first()
+        )
+        self.assertEqual(log.metadata.get('event'), 'membership_redeemed')
+        self.assertEqual(log.metadata.get('credit_kind'), 'category')
+
+    def test_redemption_history_shows_redeemed_service_name(self):
+        self.client.post(
+            self._redeem_url(self.redeem_invoice.pk),
+            data={
+                'subscription_id': self.subscription.pk,
+                'service_id': self.deluxe_facial.pk,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        response = self.client.get(
+            reverse('subscription-detail', kwargs={'pk': self.subscription.pk}),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        redemptions = response.data['redemptions']
+        self.assertEqual(len(redemptions), 1)
+        # The category item has no service_name — the history must
+        # still surface the actually-redeemed service.
+        self.assertEqual(redemptions[0]['service_name'], 'Deluxe Facial')
+        self.assertEqual(redemptions[0]['credit_kind'], 'category')
+        self.assertEqual(redemptions[0]['category_name'], 'Facials')
+
+    def test_direct_service_credit_preferred_over_category(self):
+        # A plan carrying BOTH a direct Basic-Facial credit and a
+        # Facials category credit: redeeming a Basic Facial must draw
+        # the direct credit first, leaving the category credit intact.
+        from apps.memberships.models import (
+            MembershipPlan,
+            MembershipPlanItem,
+            Subscription,
+        )
+
+        plan = MembershipPlan.objects.create(
+            tenant=self.tenant, name='Overlap Club', price_cents=15000,
+        )
+        MembershipPlanItem.objects.create(
+            plan=plan, service=self.basic_facial, quantity_per_cycle=1,
+        )
+        MembershipPlanItem.objects.create(
+            plan=plan, category=self.facials, quantity_per_cycle=1,
+        )
+        sale_appt = _make_appointment(
+            self.tenant, customer=self.customer, service=self.basic_facial,
+            provider=self.provider, status=Appointment.Status.CHECKED_IN,
+            created_by=self.owner,
+            start=timezone.now() - dt.timedelta(days=10),
+        )
+        sale_invoice = Invoice.objects.get(appointment=sale_appt)
+        self.client.post(
+            reverse('invoice-add-line', kwargs={'pk': sale_invoice.pk}),
+            data={'membership_plan_id': plan.pk},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        sale_invoice.close(by_user=self.owner, payment_method='cash')
+        sub = Subscription.objects.get(
+            source_invoice_line__invoice=sale_invoice,
+        )
+
+        response = self.client.post(
+            self._redeem_url(self.redeem_invoice.pk),
+            data={
+                'subscription_id': sub.pk,
+                'service_id': self.basic_facial.pk,
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK, response.data)
+        direct = self.SubscriptionItem.objects.get(
+            subscription=sub, service=self.basic_facial,
+        )
+        category = self.SubscriptionItem.objects.get(
+            subscription=sub, category=self.facials,
+        )
+        self.assertEqual(direct.quantity_remaining, 0)
+        self.assertEqual(category.quantity_remaining, 1)
+
+
 # ── PDF rendering + download endpoint ─────────────────────────────────
 
 

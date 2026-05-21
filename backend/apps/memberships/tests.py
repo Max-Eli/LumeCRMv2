@@ -172,6 +172,38 @@ class MembershipPlanModelTests(TestCase):
                 plan=plan, service=self.facial, quantity_per_cycle=3,
             )
 
+    def test_plan_item_unique_per_category(self):
+        from django.db.utils import IntegrityError
+        plan = MembershipPlan.objects.create(
+            tenant=self.tenant, name='Cat', price_cents=100,
+        )
+        MembershipPlanItem.objects.create(
+            plan=plan, category=self.facial.category, quantity_per_cycle=1,
+        )
+        with self.assertRaises(IntegrityError):
+            MembershipPlanItem.objects.create(
+                plan=plan, category=self.facial.category, quantity_per_cycle=2,
+            )
+
+    def test_plan_item_neither_service_nor_category_rejected(self):
+        from django.db.utils import IntegrityError
+        plan = MembershipPlan.objects.create(
+            tenant=self.tenant, name='Neither', price_cents=100,
+        )
+        with self.assertRaises(IntegrityError):
+            MembershipPlanItem.objects.create(plan=plan, quantity_per_cycle=1)
+
+    def test_plan_item_both_service_and_category_rejected(self):
+        from django.db.utils import IntegrityError
+        plan = MembershipPlan.objects.create(
+            tenant=self.tenant, name='Both', price_cents=100,
+        )
+        with self.assertRaises(IntegrityError):
+            MembershipPlanItem.objects.create(
+                plan=plan, service=self.facial,
+                category=self.facial.category, quantity_per_cycle=1,
+            )
+
 
 # ── Permissions ─────────────────────────────────────────────────────
 
@@ -432,6 +464,150 @@ class MembershipPlanCRUDTests(TestCase):
             HTTP_X_TENANT_SLUG=self.tenant.slug,
         )
         self.assertEqual(response.status_code, status.HTTP_404_NOT_FOUND)
+
+
+# ── Category lines ("any service in this category") ─────────────────
+
+
+class MembershipPlanCategoryTests(TestCase):
+    """A plan line can include a whole `ServiceCategory` — any service
+    in it is redeemable. Covers create/validate + a-la-carte valuation
+    (the average price of the category's active services)."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('mbr-cat')
+        cls.facials = ServiceCategory.objects.create(
+            tenant=cls.tenant, name='Facials',
+        )
+
+        def _svc(name, price):
+            return Service.objects.create(
+                tenant=cls.tenant, category=cls.facials, name=name,
+                duration_minutes=30, price_cents=price,
+                service_type=Service.ServiceType.REGULAR,
+                tax_rate_percent=Decimal('0'),
+            )
+
+        cls.basic = _svc('Basic Facial', 8000)
+        cls.deluxe = _svc('Deluxe Facial', 12000)
+        cls.peel = _make_service(cls.tenant, name='Peel', price_cents=15000)
+
+    def setUp(self):
+        self.client = _client_for(self.owner)
+
+    def test_create_plan_with_category_line(self):
+        response = self.client.post(
+            reverse('membership-plan-list'),
+            data={
+                'name': 'Facial Club',
+                'price_cents': 9000,
+                'items_input': [
+                    {'category_id': self.facials.pk, 'quantity_per_cycle': 2},
+                ],
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(
+            response.status_code, status.HTTP_201_CREATED, response.data,
+        )
+        items = response.data['items']
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]['item_type'], 'category')
+        self.assertEqual(items[0]['category_id'], self.facials.pk)
+        self.assertEqual(items[0]['category_name'], 'Facials')
+        # avg(8000, 12000) = 10000, × 2 credits = 20000.
+        self.assertEqual(response.data['a_la_carte_total_cents'], 20000)
+
+    def test_mixed_service_and_category_lines(self):
+        response = self.client.post(
+            reverse('membership-plan-list'),
+            data={
+                'name': 'Combo Club',
+                'price_cents': 20000,
+                'items_input': [
+                    {'service_id': self.peel.pk, 'quantity_per_cycle': 1},
+                    {'category_id': self.facials.pk, 'quantity_per_cycle': 1},
+                ],
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(
+            response.status_code, status.HTTP_201_CREATED, response.data,
+        )
+        kinds = sorted(i['item_type'] for i in response.data['items'])
+        self.assertEqual(kinds, ['category', 'service'])
+        # Peel 15000 + avg facial 10000 = 25000.
+        self.assertEqual(response.data['a_la_carte_total_cents'], 25000)
+
+    def test_line_with_both_service_and_category_rejected(self):
+        response = self.client.post(
+            reverse('membership-plan-list'),
+            data={
+                'name': 'Bad',
+                'price_cents': 1000,
+                'items_input': [
+                    {
+                        'service_id': self.basic.pk,
+                        'category_id': self.facials.pk,
+                        'quantity_per_cycle': 1,
+                    },
+                ],
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_line_with_neither_service_nor_category_rejected(self):
+        response = self.client.post(
+            reverse('membership-plan-list'),
+            data={
+                'name': 'Bad',
+                'price_cents': 1000,
+                'items_input': [{'quantity_per_cycle': 1}],
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_duplicate_category_rejected(self):
+        response = self.client.post(
+            reverse('membership-plan-list'),
+            data={
+                'name': 'Dup',
+                'price_cents': 1000,
+                'items_input': [
+                    {'category_id': self.facials.pk, 'quantity_per_cycle': 1},
+                    {'category_id': self.facials.pk, 'quantity_per_cycle': 2},
+                ],
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_cross_tenant_category_rejected(self):
+        other_tenant, _ = _make_tenant('mbr-cat-other')
+        cross_cat = ServiceCategory.objects.create(
+            tenant=other_tenant, name='Other Cat',
+        )
+        response = self.client.post(
+            reverse('membership-plan-list'),
+            data={
+                'name': 'Cross',
+                'price_cents': 1000,
+                'items_input': [
+                    {'category_id': cross_cat.pk, 'quantity_per_cycle': 1},
+                ],
+            },
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_400_BAD_REQUEST)
 
 
 # ── Filtering ───────────────────────────────────────────────────────

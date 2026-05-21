@@ -256,7 +256,11 @@ function SubscriptionCard({ sub }: { sub: Subscription }) {
             return (
               <div key={it.id}>
                 <div className="flex items-baseline justify-between text-sm mb-1">
-                  <span className="font-medium">{it.service_name}</span>
+                  <span className="font-medium">
+                    {it.item_type === 'category'
+                      ? `Any ${it.category_name}`
+                      : it.service_name}
+                  </span>
                   <span className="text-muted-foreground tabular-nums">
                     {it.quantity_remaining} of {it.quantity_per_cycle} this cycle
                   </span>
@@ -301,6 +305,12 @@ function SubscriptionCard({ sub }: { sub: Subscription }) {
                   <span>
                     {r.quantity > 0 ? '−' : '+'}
                     {Math.abs(r.quantity)} {r.service_name}
+                    {r.credit_kind === 'category' && r.category_name ? (
+                      <span className="text-muted-foreground/60">
+                        {' '}
+                        · {r.category_name} credit
+                      </span>
+                    ) : null}
                   </span>
                   <span className="tabular-nums">
                     {new Date(r.redeemed_at).toLocaleDateString()}

@@ -29,13 +29,28 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { useServices } from '@/lib/services';
+import { useServiceCategories, useServices } from '@/lib/services';
 import { type BillingInterval, centsFromDollars } from '@/lib/subscriptions';
 import { cn } from '@/lib/utils';
 
+/** One inclusion line on the plan — either a single service or a
+ *  whole service category. `item_type` discriminates; only the
+ *  matching id is meaningful. */
 export interface PlanFormItemRow {
+  item_type: 'service' | 'category';
   service_id: string;
+  category_id: string;
   quantity_per_cycle: string;
+}
+
+/** A fresh, empty line row — defaults to a single-service line. */
+export function emptyPlanItemRow(): PlanFormItemRow {
+  return {
+    item_type: 'service',
+    service_id: '',
+    category_id: '',
+    quantity_per_cycle: '1',
+  };
 }
 
 export interface PlanFormValues {
@@ -83,15 +98,38 @@ export function MembershipPlanForm({
   bottomSlot,
 }: PlanFormProps) {
   const { data: services } = useServices({ activeOnly: true });
+  const { data: categories } = useServiceCategories();
   const serviceList = services ?? [];
+  const categoryList = categories ?? [];
+
+  // A category line has no single price — value it at the average
+  // a-la-carte price of the active services in it (mirrors the
+  // backend's `get_a_la_carte_total_cents`).
+  const categoryAvgCents = (categoryId: string): number => {
+    const inCat = serviceList.filter(
+      (s) => s.category && String(s.category.id) === categoryId,
+    );
+    if (inCat.length === 0) return 0;
+    return Math.round(
+      inCat.reduce((a, s) => a + s.price_cents, 0) / inCat.length,
+    );
+  };
+
+  const lineValueCents = (row: PlanFormItemRow): number => {
+    const qty = Number(row.quantity_per_cycle) || 0;
+    if (qty <= 0) return 0;
+    if (row.item_type === 'category') {
+      return categoryAvgCents(row.category_id) * qty;
+    }
+    const svc = serviceList.find((s) => String(s.id) === row.service_id);
+    return svc ? svc.price_cents * qty : 0;
+  };
 
   const priceCents = centsFromDollars(values.price_dollars || '0');
-  const aLaCarteCents = values.items.reduce((sum, row) => {
-    const svc = serviceList.find((s) => String(s.id) === row.service_id);
-    if (!svc) return sum;
-    const qty = Number(row.quantity_per_cycle) || 0;
-    return sum + svc.price_cents * qty;
-  }, 0);
+  const aLaCarteCents = values.items.reduce(
+    (sum, row) => sum + lineValueCents(row),
+    0,
+  );
   const implicitDiscountCents = aLaCarteCents - priceCents;
 
   const update = (patch: Partial<PlanFormValues>) =>
@@ -105,12 +143,7 @@ export function MembershipPlanForm({
   };
 
   const addItemRow = () =>
-    update({
-      items: [
-        ...values.items,
-        { service_id: '', quantity_per_cycle: '1' },
-      ],
-    });
+    update({ items: [...values.items, emptyPlanItemRow()] });
 
   const removeItemRow = (index: number) =>
     update({ items: values.items.filter((_, i) => i !== index) });
@@ -280,18 +313,20 @@ export function MembershipPlanForm({
           </Section>
 
           <Section
-            title="Included services"
+            title="Included credits"
             icon={<ListChecks className="size-4" />}
           >
             <p className="text-xs text-muted-foreground -mt-2 mb-3 leading-relaxed">
               How many credits the customer gets each billing cycle. v1
               is use-it-or-lose-it &mdash; unredeemed credits don&rsquo;t
-              roll forward.
+              roll forward. A <strong>category</strong> credit can be
+              redeemed against any service in that category, at that
+              service&rsquo;s full price.
             </p>
             <div className="space-y-2">
               {values.items.length === 0 ? (
                 <p className="text-sm text-muted-foreground italic">
-                  No services yet — add at least one below.
+                  No credits yet — add at least one below.
                 </p>
               ) : (
                 values.items.map((row, index) => (
@@ -299,6 +334,8 @@ export function MembershipPlanForm({
                     key={index}
                     row={row}
                     services={serviceList}
+                    categories={categoryList}
+                    lineValueCents={lineValueCents(row)}
                     onChange={(patch) => updateItem(index, patch)}
                     onRemove={() => removeItemRow(index)}
                   />
@@ -311,7 +348,7 @@ export function MembershipPlanForm({
                 className="mt-2"
               >
                 <Plus className="size-4" />
-                Add a service
+                Add a credit
               </Button>
               {errors.items ? (
                 <p className="text-sm text-destructive mt-2">{errors.items}</p>
@@ -340,6 +377,9 @@ export function MembershipPlanForm({
             aLaCarteCents={aLaCarteCents}
             implicitDiscountCents={implicitDiscountCents}
             itemCount={values.items.length}
+            hasCategoryLine={values.items.some(
+              (r) => r.item_type === 'category',
+            )}
             totalCredits={values.items.reduce(
               (s, r) => s + (Number(r.quantity_per_cycle) || 0),
               0,
@@ -368,46 +408,112 @@ export function MembershipPlanForm({
 function ItemRow({
   row,
   services,
+  categories,
+  lineValueCents,
   onChange,
   onRemove,
 }: {
   row: PlanFormItemRow;
-  services: { id: number; name: string; price_cents: number; price_dollars: string }[];
+  services: {
+    id: number;
+    name: string;
+    price_cents: number;
+    price_dollars: string;
+    category: { id: number } | null;
+  }[];
+  categories: { id: number; name: string; service_count: number }[];
+  lineValueCents: number;
   onChange: (patch: Partial<PlanFormItemRow>) => void;
   onRemove: () => void;
 }) {
-  const selected = services.find((s) => String(s.id) === row.service_id);
+  const isCategory = row.item_type === 'category';
+  const hasValue =
+    Number(row.quantity_per_cycle) > 0
+    && (isCategory ? !!row.category_id : !!row.service_id)
+    && lineValueCents > 0;
+
   return (
     <div className="grid grid-cols-12 gap-2 items-start">
-      <div className="col-span-7">
+      <div className="col-span-3">
         <Select
-          value={row.service_id}
-          onValueChange={(v) => onChange({ service_id: v ?? '' })}
+          value={row.item_type}
+          onValueChange={(v) =>
+            onChange({
+              item_type: (v as 'service' | 'category') ?? 'service',
+              // Clear both ids — switching kind invalidates the pick.
+              service_id: '',
+              category_id: '',
+            })
+          }
         >
-          <SelectTrigger>
-            <SelectValue placeholder="Pick a service…" />
+          <SelectTrigger aria-label="Credit type">
+            <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {services.length === 0 ? (
-              <div className="px-2 py-2 text-xs text-muted-foreground">
-                No active services in the catalog.
-              </div>
-            ) : (
-              services.map((svc) => (
-                <SelectItem key={svc.id} value={String(svc.id)}>
-                  <span className="flex items-center justify-between gap-3 w-full">
-                    <span className="truncate">{svc.name}</span>
-                    <span className="text-xs text-muted-foreground font-mono shrink-0">
-                      {svc.price_dollars}
-                    </span>
-                  </span>
-                </SelectItem>
-              ))
-            )}
+            <SelectItem value="service">Service</SelectItem>
+            <SelectItem value="category">Category</SelectItem>
           </SelectContent>
         </Select>
       </div>
-      <div className="col-span-3">
+      <div className="col-span-5">
+        {isCategory ? (
+          <Select
+            value={row.category_id}
+            onValueChange={(v) => onChange({ category_id: v ?? '' })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Pick a category…" />
+            </SelectTrigger>
+            <SelectContent>
+              {categories.length === 0 ? (
+                <div className="px-2 py-2 text-xs text-muted-foreground">
+                  No categories in the catalog.
+                </div>
+              ) : (
+                categories.map((cat) => (
+                  <SelectItem key={cat.id} value={String(cat.id)}>
+                    <span className="flex items-center justify-between gap-3 w-full">
+                      <span className="truncate">{cat.name}</span>
+                      <span className="text-xs text-muted-foreground shrink-0">
+                        {cat.service_count} service
+                        {cat.service_count === 1 ? '' : 's'}
+                      </span>
+                    </span>
+                  </SelectItem>
+                ))
+              )}
+            </SelectContent>
+          </Select>
+        ) : (
+          <Select
+            value={row.service_id}
+            onValueChange={(v) => onChange({ service_id: v ?? '' })}
+          >
+            <SelectTrigger>
+              <SelectValue placeholder="Pick a service…" />
+            </SelectTrigger>
+            <SelectContent>
+              {services.length === 0 ? (
+                <div className="px-2 py-2 text-xs text-muted-foreground">
+                  No active services in the catalog.
+                </div>
+              ) : (
+                services.map((svc) => (
+                  <SelectItem key={svc.id} value={String(svc.id)}>
+                    <span className="flex items-center justify-between gap-3 w-full">
+                      <span className="truncate">{svc.name}</span>
+                      <span className="text-xs text-muted-foreground font-mono shrink-0">
+                        {svc.price_dollars}
+                      </span>
+                    </span>
+                  </SelectItem>
+                ))
+              )}
+            </SelectContent>
+          </Select>
+        )}
+      </div>
+      <div className="col-span-2">
         <Input
           type="number"
           min={1}
@@ -419,11 +525,8 @@ function ItemRow({
         />
       </div>
       <div className="col-span-1 text-xs text-muted-foreground self-center font-mono">
-        {selected && Number(row.quantity_per_cycle) > 0
-          ? `$${(
-              (selected.price_cents * Number(row.quantity_per_cycle)) /
-              100
-            ).toFixed(2)}`
+        {hasValue
+          ? `${isCategory ? '~' : ''}$${(lineValueCents / 100).toFixed(2)}`
           : '—'}
       </div>
       <div className="col-span-1">
@@ -447,6 +550,7 @@ function PreviewCard({
   aLaCarteCents,
   implicitDiscountCents,
   itemCount,
+  hasCategoryLine,
   totalCredits,
   memberDiscountPercent,
 }: {
@@ -456,6 +560,7 @@ function PreviewCard({
   aLaCarteCents: number;
   implicitDiscountCents: number;
   itemCount: number;
+  hasCategoryLine: boolean;
   totalCredits: number;
   memberDiscountPercent: string;
 }) {
@@ -463,6 +568,9 @@ function PreviewCard({
     aLaCarteCents > 0
       ? Math.round((implicitDiscountCents / aLaCarteCents) * 100)
       : 0;
+  // Category lines have no fixed price — their value is an average,
+  // so any total that includes one is an estimate.
+  const approx = hasCategoryLine ? '~' : '';
   return (
     <div className="rounded-xl border bg-card p-6">
       <p className="text-xs uppercase tracking-wide text-muted-foreground mb-4">
@@ -487,7 +595,7 @@ function PreviewCard({
       <dl className="space-y-2 text-sm pt-4 border-t">
         <Row
           label="A la carte / cycle"
-          value={`$${(aLaCarteCents / 100).toFixed(2)}`}
+          value={`${approx}$${(aLaCarteCents / 100).toFixed(2)}`}
           mono
           muted
         />
@@ -495,9 +603,9 @@ function PreviewCard({
           label="Customer saves"
           value={
             implicitDiscountCents > 0
-              ? `$${(implicitDiscountCents / 100).toFixed(2)} (${discountPct}%)`
+              ? `${approx}$${(implicitDiscountCents / 100).toFixed(2)} (${approx}${discountPct}%)`
               : implicitDiscountCents < 0
-                ? `−$${Math.abs(implicitDiscountCents / 100).toFixed(2)}`
+                ? `−${approx}$${Math.abs(implicitDiscountCents / 100).toFixed(2)}`
                 : '—'
           }
           mono
@@ -509,7 +617,7 @@ function PreviewCard({
                 : 'neutral'
           }
         />
-        <Row label="Services" value={String(itemCount)} />
+        <Row label="Included lines" value={String(itemCount)} />
         <Row label="Credits / cycle" value={String(totalCredits)} />
         {memberDiscountPercent && Number(memberDiscountPercent) > 0 ? (
           <Row
@@ -650,11 +758,13 @@ export function validatePlanForm(values: PlanFormValues): PlanFormErrors {
     errors.member_discount_percent = 'Discount must be 0–100.';
   }
   if (values.items.length === 0) {
-    errors.items = 'A plan needs at least one service.';
+    errors.items = 'A plan needs at least one credit.';
   } else {
     for (const row of values.items) {
-      if (!row.service_id) {
-        errors.items = 'Pick a service for every row.';
+      const missing =
+        row.item_type === 'category' ? !row.category_id : !row.service_id;
+      if (missing) {
+        errors.items = 'Pick a service or category for every row.';
         break;
       }
       if (!row.quantity_per_cycle || Number(row.quantity_per_cycle) < 1) {
@@ -665,11 +775,16 @@ export function validatePlanForm(values: PlanFormValues): PlanFormErrors {
     if (!errors.items) {
       const seen = new Set<string>();
       for (const row of values.items) {
-        if (seen.has(row.service_id)) {
-          errors.items = 'Each service can only appear once per plan.';
+        const key =
+          row.item_type === 'category'
+            ? `c:${row.category_id}`
+            : `s:${row.service_id}`;
+        if (seen.has(key)) {
+          errors.items =
+            'Each service or category can only appear once per plan.';
           break;
         }
-        seen.add(row.service_id);
+        seen.add(key);
       }
     }
   }
@@ -687,7 +802,9 @@ export function planFormToPayload(values: PlanFormValues) {
     member_discount_percent: values.member_discount_percent || '0',
     is_active: values.is_active,
     items_input: values.items.map((row, i) => ({
-      service_id: Number(row.service_id),
+      ...(row.item_type === 'category'
+        ? { category_id: Number(row.category_id) }
+        : { service_id: Number(row.service_id) }),
       quantity_per_cycle: Number(row.quantity_per_cycle || '1'),
       sort_order: i,
     })),

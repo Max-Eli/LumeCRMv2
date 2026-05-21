@@ -30,6 +30,7 @@ import {
   type PlanFormErrors,
   type PlanFormValues,
   MembershipPlanForm,
+  emptyPlanItemRow,
   planFormToPayload,
   validatePlanForm,
 } from '../_components/plan-form';
@@ -46,10 +47,12 @@ function planToFormValues(p: MembershipPlan): PlanFormValues {
     is_active: p.is_active,
     items: p.items.length
       ? p.items.map((it) => ({
-          service_id: String(it.service_id),
+          item_type: it.item_type,
+          service_id: it.service_id != null ? String(it.service_id) : '',
+          category_id: it.category_id != null ? String(it.category_id) : '',
           quantity_per_cycle: String(it.quantity_per_cycle),
         }))
-      : [{ service_id: '', quantity_per_cycle: '1' }],
+      : [emptyPlanItemRow()],
   };
 }
 

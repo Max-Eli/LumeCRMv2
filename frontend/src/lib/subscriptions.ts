@@ -26,17 +26,26 @@ export const BILLING_INTERVAL_LABELS: Record<BillingInterval, string> = {
   annual: 'Annual',
 };
 
+/** A plan line is either a single service or a whole category.
+ *  `item_type` discriminates; only the matching id/name fields are
+ *  populated. A category line is valued at the average à-la-carte
+ *  price of the active services in that category. */
 export interface PlanItemOutput {
   id: number;
-  service_id: number;
+  item_type: 'service' | 'category';
+  service_id: number | null;
   service_name: string;
   service_price_cents: number;
+  category_id: number | null;
+  category_name: string;
   quantity_per_cycle: number;
   sort_order: number;
 }
 
+/** Exactly one of `service_id` / `category_id` must be set. */
 export interface PlanItemInput {
-  service_id: number;
+  service_id?: number | null;
+  category_id?: number | null;
   quantity_per_cycle: number;
   sort_order?: number;
 }
@@ -148,10 +157,16 @@ export type SubscriptionStatus =
   | 'expired'
   | 'cancelled';
 
+/** One credit on a subscription — a single service or a whole
+ *  category. `item_type` discriminates; for a category credit
+ *  `service` is null and any service in `category` is redeemable. */
 export interface SubscriptionItem {
   id: number;
-  service: number;
+  item_type: 'service' | 'category';
+  service: number | null;
   service_name: string;
+  category: number | null;
+  category_name: string;
   quantity_per_cycle: number;
   quantity_remaining: number;
   unit_value_cents: number;
@@ -162,7 +177,12 @@ export interface SubscriptionRedemptionLedgerRow {
   id: number;
   subscription: number;
   item: number;
+  /** The service actually redeemed — even for a category credit. */
   service_name: string;
+  /** Whether the credit drawn was a direct service or a category. */
+  credit_kind: 'service' | 'category';
+  /** The category name when `credit_kind === 'category'`, else ''. */
+  category_name: string;
   quantity: number;
   invoice_line: number | null;
   appointment: number | null;
