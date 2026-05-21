@@ -29,6 +29,7 @@ from .views import (
     MembershipsView,
     PackagesView,
     RequestMagicLinkView,
+    RescheduleAppointmentView,
 )
 
 urlpatterns = [
@@ -38,6 +39,7 @@ urlpatterns = [
     path('portal/me/', MeView.as_view(), name='portal-me'),
     path('portal/appointments/', AppointmentsView.as_view(), name='portal-appointments'),
     path('portal/appointments/<int:pk>/cancel/', CancelAppointmentView.as_view(), name='portal-appointment-cancel'),
+    path('portal/appointments/<int:pk>/reschedule/', RescheduleAppointmentView.as_view(), name='portal-appointment-reschedule'),
     path('portal/memberships/', MembershipsView.as_view(), name='portal-memberships'),
     path('portal/packages/', PackagesView.as_view(), name='portal-packages'),
     path('portal/forms/', FormsView.as_view(), name='portal-forms'),

@@ -48,8 +48,10 @@ export interface PortalAppointment {
     | 'no_show'
     | 'cancelled';
   status_display: string;
+  service_id: number;
   service_name: string;
   service_duration_minutes: number;
+  provider_id: number;
   provider_name: string;
   location_name: string;
   location_timezone: string;
@@ -150,6 +152,26 @@ export function useCancelAppointment() {
   return useMutation<PortalAppointment, Error, number>({
     mutationFn: (id) =>
       api.post<PortalAppointment>(`/api/portal/appointments/${id}/cancel/`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: APPOINTMENTS_KEY });
+    },
+  });
+}
+
+/** Move an upcoming appointment to a new start time. Service, provider
+ *  and location stay the same — only the time changes. */
+export function useRescheduleAppointment() {
+  const qc = useQueryClient();
+  return useMutation<
+    PortalAppointment,
+    Error,
+    { id: number; start_time: string }
+  >({
+    mutationFn: ({ id, start_time }) =>
+      api.post<PortalAppointment>(
+        `/api/portal/appointments/${id}/reschedule/`,
+        { start_time },
+      ),
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: APPOINTMENTS_KEY });
     },

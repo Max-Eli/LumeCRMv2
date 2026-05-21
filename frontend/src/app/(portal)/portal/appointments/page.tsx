@@ -21,10 +21,15 @@ import {
 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
+import { ApiError } from '@/lib/api';
 import {
+  type BookableSlot,
   type PortalAppointment,
+  useBookableSlots,
   useCancelAppointment,
   usePortalAppointments,
+  usePortalMe,
+  useRescheduleAppointment,
 } from '@/lib/portal';
 import { cn } from '@/lib/utils';
 
@@ -130,6 +135,7 @@ function Section({
 
 function AppointmentRow({ appointment }: { appointment: PortalAppointment }) {
   const [confirming, setConfirming] = useState(false);
+  const [rescheduling, setRescheduling] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const cancel = useCancelAppointment();
 
@@ -173,46 +179,66 @@ function AppointmentRow({ appointment }: { appointment: PortalAppointment }) {
         </div>
 
         {appointment.cancellable ? (
-          <div className="mt-4 pt-4 border-t flex items-center justify-end gap-2">
-            {error ? (
-              <p className="text-xs text-destructive flex-1">{error}</p>
-            ) : null}
-            {confirming ? (
-              <>
-                <span className="text-xs text-muted-foreground">Cancel this appointment?</span>
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setConfirming(false)}
-                  disabled={cancel.isPending}
-                >
-                  Keep
-                </Button>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  size="sm"
-                  onClick={onCancel}
-                  disabled={cancel.isPending}
-                >
-                  {cancel.isPending ? (
-                    <Loader2 className="size-3.5 animate-spin" />
-                  ) : null}
-                  Confirm cancel
-                </Button>
-              </>
-            ) : (
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                onClick={() => setConfirming(true)}
-              >
-                Cancel appointment
-              </Button>
-            )}
-          </div>
+          rescheduling ? (
+            <ReschedulePanel
+              appointment={appointment}
+              onClose={() => setRescheduling(false)}
+              onDone={() => setRescheduling(false)}
+            />
+          ) : (
+            <div className="mt-4 pt-4 border-t flex flex-wrap items-center justify-end gap-2">
+              {error ? (
+                <p className="text-xs text-destructive flex-1">{error}</p>
+              ) : null}
+              {confirming ? (
+                <>
+                  <span className="text-xs text-muted-foreground">
+                    Cancel this appointment?
+                  </span>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setConfirming(false)}
+                    disabled={cancel.isPending}
+                  >
+                    Keep
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    size="sm"
+                    onClick={onCancel}
+                    disabled={cancel.isPending}
+                  >
+                    {cancel.isPending ? (
+                      <Loader2 className="size-3.5 animate-spin" />
+                    ) : null}
+                    Confirm cancel
+                  </Button>
+                </>
+              ) : (
+                <>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setRescheduling(true)}
+                  >
+                    Reschedule
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setConfirming(true)}
+                  >
+                    Cancel appointment
+                  </Button>
+                </>
+              )}
+            </div>
+          )
         ) : null}
       </div>
     </li>
@@ -251,6 +277,177 @@ function StatusBadge({
       {display}
     </span>
   );
+}
+
+// ── Reschedule panel ────────────────────────────────────────────────
+
+
+function ReschedulePanel({
+  appointment,
+  onClose,
+  onDone,
+}: {
+  appointment: PortalAppointment;
+  onClose: () => void;
+  onDone: () => void;
+}) {
+  const { data: me } = usePortalMe();
+  const dates = useMemo(() => nextDates(14), []);
+  const [date, setDate] = useState<string>(() => dates[0].iso);
+  const [slotStart, setSlotStart] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const { data: slots, isLoading } = useBookableSlots(me?.tenant.slug, {
+    serviceId: appointment.service_id,
+    providerId: appointment.provider_id,
+    date,
+  });
+  const reschedule = useRescheduleAppointment();
+
+  const onConfirm = async () => {
+    if (!slotStart) return;
+    setError(null);
+    try {
+      await reschedule.mutateAsync({
+        id: appointment.id,
+        start_time: slotStart,
+      });
+      onDone();
+    } catch (err) {
+      if (err instanceof ApiError && err.body && typeof err.body === 'object') {
+        const body = err.body as Record<string, string | string[]>;
+        const first = Object.values(body)[0];
+        const msg = Array.isArray(first) ? first[0] : first;
+        setError(typeof msg === 'string' ? msg : 'Could not reschedule.');
+      } else {
+        setError('Could not reschedule. Try again or contact the spa.');
+      }
+    }
+  };
+
+  return (
+    <div className="mt-4 space-y-4 border-t pt-4">
+      <div className="flex items-center justify-between">
+        <p className="text-sm font-medium">Pick a new time</p>
+        <button
+          type="button"
+          onClick={onClose}
+          className="text-xs text-muted-foreground hover:text-foreground"
+        >
+          Cancel
+        </button>
+      </div>
+
+      <div className="-mx-1 flex gap-2 overflow-x-auto px-1 pb-1">
+        {dates.map((d) => {
+          const isActive = d.iso === date;
+          return (
+            <button
+              key={d.iso}
+              type="button"
+              onClick={() => {
+                setDate(d.iso);
+                setSlotStart(null);
+              }}
+              className={cn(
+                'flex min-w-[3.75rem] shrink-0 flex-col items-center justify-center rounded-xl border bg-card px-3 py-2 transition-all',
+                isActive
+                  ? 'border-transparent ring-2 ring-[var(--portal-brand,#1f2937)]'
+                  : 'hover:border-foreground/20',
+              )}
+            >
+              <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                {d.weekday}
+              </span>
+              <span className="mt-0.5 text-base font-semibold tabular-nums">
+                {d.day}
+              </span>
+              <span className="text-[10px] text-muted-foreground">{d.month}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      {isLoading ? (
+        <div className="flex justify-center py-6 text-muted-foreground">
+          <Loader2 className="size-4 animate-spin" />
+        </div>
+      ) : !slots?.length ? (
+        <p className="rounded-lg border border-dashed px-4 py-5 text-center text-sm text-muted-foreground">
+          No times available on this date. Try another day.
+        </p>
+      ) : (
+        <ul className="grid grid-cols-3 gap-2 sm:grid-cols-4">
+          {slots.map((s: BookableSlot) => {
+            const isSelected = slotStart === s.start;
+            return (
+              <li key={s.start}>
+                <button
+                  type="button"
+                  disabled={!s.available}
+                  onClick={() => setSlotStart(s.start)}
+                  className={cn(
+                    'w-full rounded-md border bg-card px-2 py-2 text-sm tabular-nums transition-all',
+                    !s.available
+                      ? 'cursor-not-allowed opacity-40'
+                      : isSelected
+                        ? 'border-transparent font-medium ring-2 ring-[var(--portal-brand,#1f2937)]'
+                        : 'hover:border-foreground/30',
+                  )}
+                >
+                  {formatSlotTime(s.start)}
+                </button>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+
+      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+
+      <div className="flex justify-end">
+        <Button
+          type="button"
+          onClick={onConfirm}
+          disabled={!slotStart || reschedule.isPending}
+          style={{ background: 'var(--portal-brand, #1f2937)', color: '#fff' }}
+        >
+          {reschedule.isPending ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : null}
+          Confirm new time
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function nextDates(count: number): Array<{
+  iso: string;
+  weekday: string;
+  day: string;
+  month: string;
+}> {
+  const out: Array<{ iso: string; weekday: string; day: string; month: string }> = [];
+  const today = new Date();
+  for (let i = 0; i < count; i++) {
+    const d = new Date(today);
+    d.setDate(today.getDate() + i);
+    out.push({
+      iso: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`,
+      weekday: d.toLocaleDateString(undefined, { weekday: 'short' }),
+      day: String(d.getDate()),
+      month: d.toLocaleDateString(undefined, { month: 'short' }),
+    });
+  }
+  return out;
+}
+
+function formatSlotTime(iso: string): string {
+  return new Date(iso).toLocaleTimeString(undefined, {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
 }
 
 function formatFullDate(iso: string): string {

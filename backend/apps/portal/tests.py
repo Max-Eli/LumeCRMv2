@@ -656,3 +656,113 @@ class PortalFormsTests(_PortalAuthenticatedTestCase):
         self.assertNotIn('base64-signature-data', body)
         self.assertNotIn('answers', response.data[0])
         self.assertNotIn('signature_data', response.data[0])
+
+
+class PortalRescheduleTests(_PortalAuthenticatedTestCase):
+    """`POST /api/portal/appointments/<id>/reschedule/` — customer
+    self-reschedule. Moves a future booked/confirmed appointment to a
+    new available slot for the same provider."""
+
+    def _give_full_schedule(self):
+        from apps.tenants.models import ProviderSchedule
+
+        ml = MembershipLocation.objects.get(
+            membership=self.provider,
+            location=self.tenant.locations.get(is_default=True),
+        )
+        ProviderSchedule.objects.update_or_create(
+            membership_location=ml,
+            defaults={
+                'weekly_hours': {
+                    d: [{'start': '09:00', 'end': '17:00'}]
+                    for d in (
+                        'monday', 'tuesday', 'wednesday', 'thursday',
+                        'friday', 'saturday', 'sunday',
+                    )
+                },
+            },
+        )
+
+    def _first_open_slot(self, appt, on_date):
+        from apps.booking.availability import compute_provider_slots
+
+        slots = compute_provider_slots(
+            provider=appt.provider, service=appt.service,
+            location=appt.location, on_date=on_date,
+            lead_minutes=self.tenant.online_booking_lead_minutes,
+            exclude_appointment_id=appt.id,
+        )
+        return slots[0].start if slots else None
+
+    def _reschedule(self, pk, start_time):
+        return self.client_with_session.post(
+            reverse('portal-appointment-reschedule', kwargs={'pk': pk}),
+            data={'start_time': start_time},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+
+    def test_reschedule_to_available_slot_succeeds(self):
+        self._give_full_schedule()
+        appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, start=djtz.now() + dt.timedelta(days=2),
+        )
+        target_date = (djtz.now() + dt.timedelta(days=5)).date()
+        new_start = self._first_open_slot(appt, target_date)
+        self.assertIsNotNone(new_start, 'expected an open slot to test against')
+
+        response = self._reschedule(appt.pk, new_start.isoformat())
+        self.assertEqual(response.status_code, 200, response.data)
+        appt.refresh_from_db()
+        self.assertEqual(appt.start_time, new_start)
+        # A reschedule preserves the appointment's length.
+        self.assertEqual(
+            appt.end_time - appt.start_time, dt.timedelta(minutes=30),
+        )
+        self.assertEqual(appt.status, Appointment.Status.BOOKED)
+
+    def test_reschedule_to_unavailable_time_rejected(self):
+        # No schedule for the provider → no slot is ever available.
+        appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, start=djtz.now() + dt.timedelta(days=2),
+        )
+        response = self._reschedule(
+            appt.pk, (djtz.now() + dt.timedelta(days=5)).isoformat(),
+        )
+        self.assertEqual(response.status_code, 400)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, Appointment.Status.BOOKED)
+
+    def test_reschedule_past_appointment_rejected(self):
+        appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, start=djtz.now() - dt.timedelta(days=2),
+        )
+        response = self._reschedule(
+            appt.pk, (djtz.now() + dt.timedelta(days=3)).isoformat(),
+        )
+        self.assertEqual(response.status_code, 400)
+
+    def test_reschedule_other_customers_appointment_404(self):
+        other = _make_customer(self.tenant, email='other-resched@test.local')
+        appt = _make_appointment(
+            tenant=self.tenant, customer=other,
+            provider=self.provider, start=djtz.now() + dt.timedelta(days=2),
+        )
+        response = self._reschedule(
+            appt.pk, (djtz.now() + dt.timedelta(days=3)).isoformat(),
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_reschedule_cancelled_appointment_rejected(self):
+        appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, start=djtz.now() + dt.timedelta(days=2),
+            status=Appointment.Status.CANCELLED,
+        )
+        response = self._reschedule(
+            appt.pk, (djtz.now() + dt.timedelta(days=3)).isoformat(),
+        )
+        self.assertEqual(response.status_code, 400)

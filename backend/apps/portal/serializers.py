@@ -67,8 +67,12 @@ class PortalAppointmentSerializer(serializers.Serializer):
     end_time = serializers.DateTimeField()
     status = serializers.CharField()
     status_display = serializers.SerializerMethodField()
+    # service_id + provider_id let the portal reschedule flow re-fetch
+    # available slots for the same service/provider.
+    service_id = serializers.IntegerField(source='service.id')
     service_name = serializers.CharField(source='service.name')
     service_duration_minutes = serializers.IntegerField(source='service.duration_minutes')
+    provider_id = serializers.IntegerField(source='provider.id')
     provider_name = serializers.SerializerMethodField()
     location_name = serializers.CharField(source='location.name')
     location_timezone = serializers.CharField(source='location.timezone')
@@ -213,3 +217,11 @@ class PortalBookingInputSerializer(serializers.Serializer):
     location_id = serializers.IntegerField(required=False)
     start_time = serializers.DateTimeField()
     notes = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class RescheduleAppointmentInputSerializer(serializers.Serializer):
+    """Body for `POST /api/portal/appointments/<id>/reschedule/` — the
+    new start time. Service, provider, and location are unchanged; a
+    reschedule is a time move, not a re-shop."""
+
+    start_time = serializers.DateTimeField()

@@ -48,6 +48,7 @@ from .serializers import (
     PortalSubscriptionSerializer,
     ProfileUpdateInputSerializer,
     RequestMagicLinkInputSerializer,
+    RescheduleAppointmentInputSerializer,
 )
 from .services import (
     consume_token,
@@ -376,6 +377,101 @@ class CancelAppointmentView(APIView):
         return Response(PortalAppointmentSerializer(appt).data)
 
 
+class RescheduleAppointmentView(APIView):
+    """`POST /api/portal/appointments/<id>/reschedule/` — customer
+    self-reschedule. Moves an existing appointment to a new start
+    time; service, provider, and location stay the same.
+
+    The new time is re-validated against the same slot calculator the
+    booking picker uses, with the appointment itself excluded from the
+    conflict set so a near-current-time move isn't blocked by its own
+    slot. Only future BOOKED/CONFIRMED appointments are reschedulable.
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def post(self, request, pk: int):
+        from django.db import transaction
+
+        from apps.booking.availability import compute_provider_slots
+
+        customer = request.customer
+        _guard_tenant_consistency(request)
+        tenant = customer.tenant
+
+        ser = RescheduleAppointmentInputSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+        new_start = ser.validated_data['start_time']
+
+        with transaction.atomic():
+            try:
+                appt = (
+                    Appointment.objects
+                    .select_for_update(of=('self',))
+                    .select_related('service', 'provider', 'location')
+                    .get(pk=pk, tenant=tenant, customer=customer)
+                )
+            except Appointment.DoesNotExist:
+                return Response(
+                    {'detail': 'Appointment not found.'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            if appt.start_time <= djtz.now():
+                raise ValidationError(
+                    {'detail': 'Past appointments cannot be rescheduled.'}
+                )
+            if appt.status not in (
+                Appointment.Status.BOOKED,
+                Appointment.Status.CONFIRMED,
+            ):
+                raise ValidationError({
+                    'detail': (
+                        'This appointment cannot be rescheduled '
+                        f'(status: {appt.get_status_display()}).'
+                    ),
+                })
+
+            # Re-validate the new slot against the live calculator,
+            # excluding this appointment so its own current slot
+            # doesn't block a nearby move.
+            available = compute_provider_slots(
+                provider=appt.provider,
+                service=appt.service,
+                location=appt.location,
+                on_date=djtz.localtime(new_start).date(),
+                lead_minutes=tenant.online_booking_lead_minutes,
+                exclude_appointment_id=appt.id,
+            )
+            if not any(s.start == new_start for s in available):
+                raise ValidationError({
+                    'start_time': 'That time is no longer available. Pick another.',
+                })
+
+            # A reschedule preserves the appointment's length — keep
+            # whatever duration it currently has. Compute the new end
+            # BEFORE reassigning start_time.
+            previous_start = appt.start_time
+            appt.end_time = new_start + (appt.end_time - appt.start_time)
+            appt.start_time = new_start
+            appt.save(update_fields=['start_time', 'end_time', 'updated_at'])
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment',
+            resource_id=appt.id,
+            request=request,
+            metadata={
+                'event': 'portal_reschedule',
+                'customer_id': customer.id,
+                'from_start': previous_start.isoformat(),
+                'to_start': new_start.isoformat(),
+            },
+        )
+
+        return Response(PortalAppointmentSerializer(appt).data)
+
+
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
@@ -602,7 +698,7 @@ class BookAppointmentView(APIView):
 
         from apps.appointments.models import Appointment
         from apps.audit.services import record
-        from apps.booking.availability import compute_available_slots
+        from apps.booking.availability import compute_provider_slots
         from apps.services.models import Service
         from apps.tenants.models import (
             Location,
@@ -667,14 +763,18 @@ class BookAppointmentView(APIView):
         start_time = data['start_time']
         end_time = start_time + timedelta(minutes=service.duration_minutes)
 
-        # Re-validate slot availability inside the transaction. Even
-        # though the frontend fetched a fresh slot list, the slot may
-        # have been booked in the meantime — last-mile race check.
-        available = compute_available_slots(
-            tenant=tenant, service=service, provider=provider,
-            location=location, on_date=start_time.astimezone(djtz.get_current_timezone()).date(),
+        # Re-validate slot availability. Even though the frontend
+        # fetched a fresh slot list, the slot may have been booked in
+        # the meantime — last-mile race check against the same
+        # calculator the public picker uses.
+        available = compute_provider_slots(
+            provider=provider,
+            service=service,
+            location=location,
+            on_date=djtz.localtime(start_time).date(),
+            lead_minutes=tenant.online_booking_lead_minutes,
         )
-        if not any(s.start_time == start_time for s in available):
+        if not any(s.start == start_time for s in available):
             raise ValidationError({
                 'start_time': 'That time is no longer available. Pick another.',
             })
