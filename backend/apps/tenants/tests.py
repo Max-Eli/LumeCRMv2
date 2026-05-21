@@ -1689,6 +1689,32 @@ class StaffInvitationTests(TestCase):
         invitation = Invitation.objects.get(email='new-hire@example.test')
         self.assertIn(invitation.token, sent.body)
 
+    def test_invite_link_targets_tenant_crm_subdomain(self):
+        """The accept link must resolve to the tenant's CRM subdomain,
+        not the bare apex — the apex serves the marketing site and
+        404s on /accept-invitation (the bug reported from the field)."""
+        from django.core import mail
+        from apps.tenants.models import Invitation
+
+        with self.settings(PUBLIC_BASE_URL='https://lumecrm.test'):
+            mail.outbox = []
+            response = self.client.post(
+                self._invite_url(),
+                data={'email': 'subdomain-hire@example.test', 'role': 'provider'},
+                format='json',
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+        self.assertEqual(response.status_code, status.HTTP_201_CREATED, response.data)
+        invitation = Invitation.objects.get(email='subdomain-hire@example.test')
+        sent = mail.outbox[0]
+        expected = (
+            f'https://{self.tenant.slug}.lumecrm.test'
+            f'/accept-invitation/{invitation.token}'
+        )
+        self.assertIn(expected, sent.body)
+        # Must NOT be the bare apex — that lands on the marketing 404.
+        self.assertNotIn('https://lumecrm.test/accept-invitation/', sent.body)
+
     def test_manager_can_invite(self):
         c = APIClient()
         c.force_login(self.manager_user)

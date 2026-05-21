@@ -6,6 +6,8 @@ canonical onboarding entry point — call it from the admin onboarding flow, sig
 view, or management command.
 """
 
+from urllib.parse import urlparse, urlunparse
+
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.core.mail import EmailMultiAlternatives
@@ -182,7 +184,22 @@ def _send_invitation_email(invitation: Invitation) -> None:
     """Render + send the invitation email. Pulled out so a future
     "resend" action can reuse it without re-creating the Invitation
     row (preserves audit trail of original invite_by + created_at)."""
-    base = settings.PUBLIC_BASE_URL.rstrip('/')
+    # The accept link must land on the tenant's CRM app — NOT the bare
+    # apex. PUBLIC_BASE_URL points at the apex, which serves the
+    # marketing site and 404s on /accept-invitation. Each tenant's CRM
+    # lives at {slug}.{apex}, so swap the hostname. Mirrors the
+    # post-OAuth redirect logic in apps.integrations.views.
+    parsed = urlparse(settings.PUBLIC_BASE_URL.rstrip('/'))
+    apex = parsed.hostname or ''
+    apex = apex[4:] if apex.startswith('www.') else apex
+    crm_host = (
+        f'{invitation.tenant.slug}.{apex}'
+        if invitation.tenant.slug
+        else apex
+    )
+    if parsed.port:
+        crm_host = f'{crm_host}:{parsed.port}'
+    base = urlunparse((parsed.scheme, crm_host, '', '', '', ''))
     accept_url = f'{base}/accept-invitation/{invitation.token}'
     invited_by_name = ''
     if invitation.invited_by_id:
