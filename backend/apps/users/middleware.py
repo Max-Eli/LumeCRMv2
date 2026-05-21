@@ -2,7 +2,7 @@
 Auth-side middleware — HIPAA technical safeguards.
 
 `IdleSessionTimeoutMiddleware` enforces an automatic logoff after a
-configurable idle window (default 15 minutes). HIPAA §164.312(a)(2)(iii)
+configurable idle window (default 30 minutes). HIPAA §164.312(a)(2)(iii)
 requires "procedures that terminate an electronic session after a
 predetermined time of inactivity" — this is that procedure.
 
@@ -18,7 +18,7 @@ surface) are exempt — they're either anonymous-only or LB-driven.
 
 Configuration:
 
-    IDLE_SESSION_TIMEOUT_SECONDS    int, default 900 (15 min)
+    IDLE_SESSION_TIMEOUT_SECONDS    int, default 1800 (30 min)
 
 We don't make this user-configurable. HIPAA's "reasonable" framing
 puts the burden on us as the system designer; per-tenant overrides
@@ -60,7 +60,7 @@ class IdleSessionTimeoutMiddleware:
         self.timeout_seconds = getattr(
             settings,
             'IDLE_SESSION_TIMEOUT_SECONDS',
-            15 * 60,
+            30 * 60,
         )
 
     def __call__(self, request: HttpRequest) -> HttpResponse:
