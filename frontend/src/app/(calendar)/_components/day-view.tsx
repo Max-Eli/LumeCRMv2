@@ -1294,6 +1294,9 @@ function AppointmentBlock({
                 style={{ color }}
               >
                 {appointment.service.name}
+                {appointment.extra_services.length > 0
+                  ? ` +${appointment.extra_services.length}`
+                  : ''}
               </p>
               <p
                 className={cn(
@@ -1374,6 +1377,9 @@ function DragOverlayBlock({
             style={{ color }}
           >
             {appointment.service.name}
+            {appointment.extra_services.length > 0
+              ? ` +${appointment.extra_services.length}`
+              : ''}
           </p>
           {heightPx >= 50 ? (
             <p className="text-xs text-foreground/80 truncate">

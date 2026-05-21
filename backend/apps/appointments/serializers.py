@@ -12,7 +12,7 @@ from apps.customers.models import Customer
 from apps.services.models import Service
 from apps.tenants.models import Location, MembershipLocation, TenantMembership
 
-from .models import Appointment
+from .models import Appointment, AppointmentService
 
 
 class _CustomerSummary(serializers.ModelSerializer):
@@ -69,10 +69,29 @@ class _ProviderSummary(serializers.ModelSerializer):
         return obj.job_title.name if obj.job_title_id else None
 
 
+class _ExtraServiceSerializer(serializers.ModelSerializer):
+    """Read shape for an additional service on an appointment."""
+
+    service = _ServiceSummary(read_only=True)
+
+    class Meta:
+        model = AppointmentService
+        fields = ['id', 'service', 'price_cents', 'duration_minutes', 'sort_order']
+        read_only_fields = fields
+
+
 class AppointmentSerializer(serializers.ModelSerializer):
     customer = _CustomerSummary(read_only=True)
     service = _ServiceSummary(read_only=True)
     provider = _ProviderSummary(read_only=True)
+
+    # Additional services on this appointment beyond the primary one.
+    # Read-only here — mutated through the add/change/remove actions.
+    extra_services = _ExtraServiceSerializer(many=True, read_only=True)
+    # Primary service price + every extra. Model property.
+    total_price_cents = serializers.IntegerField(read_only=True)
+    # False once the invoice is paid/void — services lock with payment.
+    services_editable = serializers.SerializerMethodField()
 
     customer_id = serializers.PrimaryKeyRelatedField(
         queryset=Customer.objects.all(),
@@ -123,22 +142,33 @@ class AppointmentSerializer(serializers.ModelSerializer):
             'customer', 'customer_id',
             'provider', 'provider_id',
             'service', 'service_id',
+            'extra_services',
             'location_id',
             'start_time', 'end_time', 'duration_minutes',
             'status', 'invoice_status',
             'notes',
             'source',
             'checked_in_at', 'completed_at', 'cancelled_at', 'cancelled_reason',
-            'quoted_price_cents',
+            'quoted_price_cents', 'total_price_cents', 'services_editable',
             'created_at', 'updated_at',
         ]
         read_only_fields = [
             'id',
             'customer', 'provider', 'service',
+            'extra_services', 'total_price_cents', 'services_editable',
             'duration_minutes', 'invoice_status',
             'checked_in_at', 'completed_at', 'cancelled_at',
             'created_at', 'updated_at',
         ]
+
+    def get_services_editable(self, obj: Appointment) -> bool:
+        """Services can be edited only while the invoice is still open.
+        Once payment is taken (or the invoice is voided), the booked
+        services are locked — staff reopen the invoice to change them."""
+        invoice = getattr(obj, 'invoice', None)
+        if invoice is None:
+            return True
+        return invoice.status == 'open'
 
     # Status state machine — each entry maps from-status → set of allowed
     # to-statuses. Terminal states accept no further transitions; the

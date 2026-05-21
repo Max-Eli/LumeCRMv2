@@ -160,8 +160,24 @@ class Appointment(TenantedModel):
     review_request_sms_provider_id = models.CharField(max_length=64, blank=True, default='')
 
     # Snapshot of price at booking time so subsequent service price changes
-    # don't retroactively alter quoted appointments. Cents.
+    # don't retroactively alter quoted appointments. Cents. This is the
+    # PRIMARY service's price — additional services live on
+    # `AppointmentService` rows, each carrying their own snapshot.
     quoted_price_cents = models.PositiveIntegerField(default=0)
+
+    # The invoice line that bills the primary service. Set by the
+    # invoice-creation signal so the "change service" action can update
+    # the exact line without guessing. Nullable: rows created before
+    # multi-service support, or whose line was manually removed on the
+    # invoice page, simply skip invoice sync. SET_NULL so deleting a
+    # line never cascades into the appointment.
+    primary_invoice_line = models.OneToOneField(
+        'invoices.InvoiceLineItem',
+        on_delete=models.SET_NULL,
+        related_name='+',
+        null=True,
+        blank=True,
+    )
 
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
@@ -200,3 +216,67 @@ class Appointment(TenantedModel):
         """Compute the booking length in whole minutes."""
         delta = self.end_time - self.start_time
         return int(delta.total_seconds() // 60)
+
+    @property
+    def total_price_cents(self) -> int:
+        """Primary service price plus every additional service. Used by
+        the calendar to show the full quote for a multi-service visit."""
+        extras = sum(es.price_cents for es in self.extra_services.all())
+        return self.quoted_price_cents + extras
+
+
+class AppointmentService(models.Model):
+    """An additional service performed at an appointment, beyond the
+    primary `Appointment.service`.
+
+    A single visit often covers more than one service — a Facial plus
+    a Botox touch-up. The primary service stays on the `Appointment`
+    row (so the booking flow, imports, and reports are untouched);
+    these rows are the extras the front desk adds afterward.
+
+    `price_cents` / `duration_minutes` are snapshotted at add time so a
+    later catalog edit can't move a booked appointment. `invoice_line`
+    links to the line this service generated on the still-open invoice,
+    so removing the service also backs the charge out cleanly.
+    """
+
+    appointment = models.ForeignKey(
+        Appointment,
+        on_delete=models.CASCADE,
+        related_name='extra_services',
+    )
+    service = models.ForeignKey(
+        'services.Service',
+        on_delete=models.PROTECT,
+        related_name='+',
+    )
+    price_cents = models.PositiveIntegerField(
+        default=0,
+        help_text='Snapshot of the service price when it was added.',
+    )
+    duration_minutes = models.PositiveIntegerField(
+        default=0,
+        help_text='Snapshot of the service duration when it was added.',
+    )
+    invoice_line = models.OneToOneField(
+        'invoices.InvoiceLineItem',
+        on_delete=models.SET_NULL,
+        related_name='+',
+        null=True,
+        blank=True,
+        help_text=(
+            'The invoice line this service generated. Null once the '
+            'line is removed, or when the invoice could not be synced.'
+        ),
+    )
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['sort_order', 'id']
+        indexes = [
+            models.Index(fields=['appointment', 'sort_order']),
+        ]
+
+    def __str__(self):
+        return f'{self.appointment_id} · +{self.service.name}'

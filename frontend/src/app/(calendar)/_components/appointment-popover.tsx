@@ -16,7 +16,19 @@
 
 'use client';
 
-import { Activity, CalendarClock, Check, CreditCard, ExternalLink, Undo2, X } from 'lucide-react';
+import {
+  Activity,
+  CalendarClock,
+  Check,
+  CreditCard,
+  ExternalLink,
+  Loader2,
+  Lock,
+  Plus,
+  Search,
+  Undo2,
+  X,
+} from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { useEffect, useState } from 'react';
@@ -25,6 +37,7 @@ import { toast } from 'sonner';
 import { InitialsAvatar } from '@/components/initials-avatar';
 import { StatusBadge } from '@/components/status-badge';
 import { Button, buttonVariants } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Sheet, SheetContent, SheetTrigger } from '@/components/ui/sheet';
 import { ApiError } from '@/lib/api';
@@ -35,8 +48,12 @@ import {
   STATUS_TRANSITION_VERBS,
   type Appointment,
   type AppointmentStatus,
+  useAddAppointmentService,
+  useChangeAppointmentService,
+  useRemoveAppointmentExtraService,
   useUpdateAppointment,
 } from '@/lib/appointments';
+import { useServices } from '@/lib/services';
 import { useEmailSubmission, useFormSubmissions } from '@/lib/form-submissions';
 import { openTreatmentRecordWindow, useAppointmentTreatmentRecords } from '@/lib/treatments';
 import {
@@ -263,6 +280,177 @@ function CustomerHeader({
   );
 }
 
+/** Pull a human-readable message out of an API error for the service
+ *  add/change/remove flows — 409 sends `{detail}`, 400 sends field
+ *  errors like `{service_id: [...]}`. */
+function serviceErrorMessage(err: unknown, fallback: string): string {
+  if (err instanceof ApiError && err.body && typeof err.body === 'object') {
+    const body = err.body as Record<string, unknown>;
+    if (typeof body.detail === 'string') return body.detail;
+    const first = Object.values(body)[0];
+    if (Array.isArray(first) && typeof first[0] === 'string') return first[0];
+    if (typeof first === 'string') return first;
+  }
+  return fallback;
+}
+
+/** One service row inside the popover's Services list. */
+function ServiceLine({
+  name,
+  code,
+  color,
+  priceCents,
+  durationMinutes,
+  pending,
+  changeLabel,
+  onChange,
+  onRemove,
+}: {
+  name: string;
+  code: string;
+  color: string | null;
+  priceCents: number;
+  durationMinutes: number;
+  pending: boolean;
+  changeLabel?: string;
+  onChange?: () => void;
+  onRemove?: () => void;
+}) {
+  const dot = color ?? 'currentColor';
+  return (
+    <div className="flex items-center gap-2 py-1.5">
+      <span
+        className="size-2 rounded-full shrink-0"
+        style={{ backgroundColor: dot }}
+        aria-hidden
+      />
+      <div className="min-w-0 flex-1">
+        <p className="font-medium text-sm truncate" style={{ color: dot }}>
+          {name}
+        </p>
+        {code ? (
+          <p className="text-[11px] text-muted-foreground font-mono tabular-nums">
+            {code}
+          </p>
+        ) : null}
+      </div>
+      <div className="text-right shrink-0">
+        <p className="font-mono text-sm font-semibold tabular-nums">
+          ${(priceCents / 100).toFixed(2)}
+        </p>
+        <p className="text-[11px] text-muted-foreground tabular-nums">
+          {durationMinutes}m
+        </p>
+      </div>
+      {onChange ? (
+        <button
+          type="button"
+          onClick={onChange}
+          disabled={pending}
+          className="shrink-0 text-[11px] font-medium text-muted-foreground hover:text-foreground disabled:opacity-50"
+        >
+          {changeLabel ?? 'Change'}
+        </button>
+      ) : null}
+      {onRemove ? (
+        <button
+          type="button"
+          onClick={onRemove}
+          disabled={pending}
+          aria-label={`Remove ${name}`}
+          className="shrink-0 inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-destructive transition-colors disabled:opacity-50"
+        >
+          <X className="size-3.5" />
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+/** Compact searchable service list shown inline when adding or
+ *  changing a service. Loads the active catalog lazily — only mounts
+ *  once the operator opens it. */
+function InlineServicePicker({
+  onPick,
+  onCancel,
+  pending,
+  excludeId,
+}: {
+  onPick: (serviceId: number) => void;
+  onCancel: () => void;
+  pending: boolean;
+  excludeId?: number;
+}) {
+  const { data: services, isLoading } = useServices({ activeOnly: true });
+  const [q, setQ] = useState('');
+  const needle = q.trim().toLowerCase();
+  const list = (services ?? [])
+    .filter((s) => s.id !== excludeId)
+    .filter(
+      (s) =>
+        needle === ''
+        || s.name.toLowerCase().includes(needle)
+        || (s.code ?? '').toLowerCase().includes(needle),
+    )
+    .slice(0, 50);
+
+  return (
+    <div className="rounded-md border bg-muted/30 p-2 space-y-2">
+      <div className="relative">
+        <Search className="absolute left-2 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+        <Input
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Search services…"
+          className="h-8 pl-7 text-sm"
+        />
+      </div>
+      <div className="max-h-44 overflow-y-auto">
+        {isLoading ? (
+          <p className="px-2 py-3 text-xs text-muted-foreground text-center">
+            Loading services…
+          </p>
+        ) : list.length === 0 ? (
+          <p className="px-2 py-3 text-xs text-muted-foreground text-center">
+            No services found.
+          </p>
+        ) : (
+          list.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              disabled={pending}
+              onClick={() => onPick(s.id)}
+              className="w-full flex items-center justify-between gap-3 px-2 py-1.5 rounded text-left text-sm hover:bg-muted disabled:opacity-50"
+            >
+              <span className="truncate">{s.name}</span>
+              <span className="flex items-center gap-2 shrink-0 text-xs text-muted-foreground tabular-nums">
+                <span className="font-mono">{s.duration_minutes}m</span>
+                <span className="font-mono">{s.price_dollars}</span>
+              </span>
+            </button>
+          ))
+        )}
+      </div>
+      <div className="flex items-center justify-end gap-2">
+        {pending ? (
+          <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+        ) : null}
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onCancel}
+          disabled={pending}
+        >
+          Cancel
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 function ServiceSummary({
   appointment,
   timezone,
@@ -270,36 +458,130 @@ function ServiceSummary({
   appointment: Appointment;
   timezone: string;
 }) {
-  const color = appointment.service.category_color ?? 'currentColor';
-  const price = `$${(appointment.quoted_price_cents / 100).toFixed(2)}`;
+  const editable = appointment.services_editable;
+  const addService = useAddAppointmentService(appointment.id);
+  const changeService = useChangeAppointmentService(appointment.id);
+  const removeService = useRemoveAppointmentExtraService(appointment.id);
+  const [pickerMode, setPickerMode] = useState<'add' | 'change' | null>(null);
+
+  const pending =
+    addService.isPending || changeService.isPending || removeService.isPending;
+  const hasExtras = appointment.extra_services.length > 0;
+
+  const handlePick = (serviceId: number) => {
+    const mode = pickerMode;
+    if (mode === 'add') {
+      addService.mutate(
+        { service_id: serviceId },
+        {
+          onSuccess: () => {
+            toast.success('Service added');
+            setPickerMode(null);
+          },
+          onError: (e) =>
+            toast.error(serviceErrorMessage(e, "Couldn't add this service.")),
+        },
+      );
+    } else if (mode === 'change') {
+      changeService.mutate(
+        { service_id: serviceId },
+        {
+          onSuccess: () => {
+            toast.success('Service changed');
+            setPickerMode(null);
+          },
+          onError: (e) =>
+            toast.error(
+              serviceErrorMessage(e, "Couldn't change the service."),
+            ),
+        },
+      );
+    }
+  };
+
+  const handleRemove = (extraId: number) => {
+    removeService.mutate(extraId, {
+      onSuccess: () => toast.success('Service removed'),
+      onError: (e) =>
+        toast.error(serviceErrorMessage(e, "Couldn't remove this service.")),
+    });
+  };
+
   return (
     <div className="px-4 py-3">
-      <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-1.5">
-        Appointment
-      </p>
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span
-              className="size-2 rounded-full shrink-0"
-              style={{ backgroundColor: color }}
-              aria-hidden
-            />
-            <p className="font-medium text-sm truncate" style={{ color }}>
-              {appointment.service.name}
-            </p>
-          </div>
-          <p className="text-xs text-muted-foreground mt-1 font-mono tabular-nums">
-            {appointment.service.code}
-          </p>
-        </div>
-        <div className="text-right shrink-0">
-          <p className="font-mono text-sm font-semibold tabular-nums">{price}</p>
-          <p className="text-[11px] text-muted-foreground tabular-nums">
-            {appointment.duration_minutes}m
-          </p>
-        </div>
+      <div className="flex items-center justify-between mb-1">
+        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          {hasExtras ? 'Services' : 'Appointment'}
+        </p>
+        {!editable ? (
+          <span className="inline-flex items-center gap-1 text-[10px] text-muted-foreground">
+            <Lock className="size-3" />
+            Locked — invoice {appointment.invoice_status}
+          </span>
+        ) : null}
       </div>
+
+      <ServiceLine
+        name={appointment.service.name}
+        code={appointment.service.code}
+        color={appointment.service.category_color}
+        priceCents={appointment.quoted_price_cents}
+        durationMinutes={appointment.service.duration_minutes}
+        pending={pending}
+        onChange={
+          editable
+            ? () =>
+                setPickerMode((m) => (m === 'change' ? null : 'change'))
+            : undefined
+        }
+      />
+
+      {appointment.extra_services.map((es) => (
+        <ServiceLine
+          key={es.id}
+          name={es.service.name}
+          code={es.service.code}
+          color={es.service.category_color}
+          priceCents={es.price_cents}
+          durationMinutes={es.duration_minutes}
+          pending={pending}
+          onRemove={editable ? () => handleRemove(es.id) : undefined}
+        />
+      ))}
+
+      {editable && pickerMode ? (
+        <div className="mt-2">
+          <InlineServicePicker
+            onPick={handlePick}
+            onCancel={() => setPickerMode(null)}
+            pending={pending}
+            excludeId={
+              pickerMode === 'change' ? appointment.service.id : undefined
+            }
+          />
+        </div>
+      ) : null}
+
+      {editable && pickerMode !== 'add' ? (
+        <button
+          type="button"
+          onClick={() => setPickerMode('add')}
+          disabled={pending}
+          className="mt-2 inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:underline disabled:opacity-50"
+        >
+          <Plus className="size-3.5" />
+          Add service
+        </button>
+      ) : null}
+
+      {hasExtras ? (
+        <div className="mt-2.5 flex items-baseline justify-between border-t pt-2">
+          <span className="text-xs text-muted-foreground">Total</span>
+          <span className="font-mono text-sm font-semibold tabular-nums">
+            ${(appointment.total_price_cents / 100).toFixed(2)}
+          </span>
+        </div>
+      ) : null}
 
       <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
         <div>

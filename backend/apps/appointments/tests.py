@@ -1128,3 +1128,233 @@ class AutomatedTemplatesEndpointTests(TestCase):
             HTTP_X_TENANT_SLUG=self.tenant.slug,
         )
         self.assertIn(response.status_code, (401, 403))
+
+
+# ── Editing services on a booked appointment ───────────────────────
+
+
+class AppointmentServiceEditingTests(TestCase):
+    """Add / change / remove services on an existing appointment.
+
+    Each operation keeps the calendar block length and the still-open
+    invoice in sync. Once the invoice is paid the services lock.
+    """
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant('appt-svc-edit')
+        self.provider = _make_provider(self.tenant)
+        self.customer = _make_customer(self.tenant)
+        self.category = ServiceCategory.objects.create(
+            tenant=self.tenant, name='Treatments',
+        )
+        self.facial = self._service('Facial', 'FAC30', 30, 10000)
+        self.botox = self._service('Botox', 'BTX20', 20, 20000)
+        self.peel = self._service('Peel', 'PEEL45', 45, 15000)
+        self.appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, service=self.facial,
+            start_utc=djtz.now() + dt.timedelta(days=1),
+        )
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def _service(self, name, code, minutes, price):
+        return Service.objects.create(
+            tenant=self.tenant, category=self.category,
+            name=name, code=code,
+            duration_minutes=minutes, buffer_minutes=0,
+            price_cents=price, service_type=Service.ServiceType.REGULAR,
+        )
+
+    def _invoice(self):
+        from apps.invoices.models import Invoice
+        return Invoice.objects.get(appointment=self.appt)
+
+    def _add_url(self):
+        return reverse('appointment-add-service', args=[self.appt.pk])
+
+    def _change_url(self):
+        return reverse('appointment-change-service', args=[self.appt.pk])
+
+    def _remove_url(self, es_pk):
+        return reverse(
+            'appointment-remove-extra-service', args=[self.appt.pk, es_pk],
+        )
+
+    # ── Add ──────────────────────────────────────────────────────────
+
+    def test_add_service_creates_extra_and_extends_block(self):
+        old_end = self.appt.end_time
+        resp = self.client.post(
+            self._add_url(), {'service_id': self.botox.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.extra_services.count(), 1)
+        extra = self.appt.extra_services.get()
+        self.assertEqual(extra.service_id, self.botox.pk)
+        self.assertEqual(extra.price_cents, 20000)
+        self.assertEqual(extra.duration_minutes, 20)
+        self.assertEqual(
+            self.appt.end_time, old_end + dt.timedelta(minutes=20),
+        )
+        invoice = self._invoice()
+        self.assertEqual(invoice.line_items.count(), 2)
+        self.assertEqual(extra.invoice_line.service_id, self.botox.pk)
+
+    def test_add_service_updates_total_price(self):
+        self.client.post(
+            self._add_url(), {'service_id': self.botox.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        resp = self.client.get(
+            reverse('appointment-detail', args=[self.appt.pk]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.data['total_price_cents'], 30000)
+        self.assertEqual(len(resp.data['extra_services']), 1)
+
+    def test_add_unknown_service_rejected(self):
+        resp = self.client.post(
+            self._add_url(), {'service_id': 999999},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_add_inactive_service_rejected(self):
+        self.botox.is_active = False
+        self.botox.save()
+        resp = self.client.post(
+            self._add_url(), {'service_id': self.botox.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_add_cross_tenant_service_rejected(self):
+        other_tenant, _ = _make_tenant('appt-svc-other')
+        other_cat = ServiceCategory.objects.create(
+            tenant=other_tenant, name='X',
+        )
+        other_service = Service.objects.create(
+            tenant=other_tenant, category=other_cat,
+            name='Other', code='OTH30',
+            duration_minutes=30, price_cents=5000,
+            service_type=Service.ServiceType.REGULAR,
+        )
+        resp = self.client.post(
+            self._add_url(), {'service_id': other_service.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_add_service_audit_logged(self):
+        self.client.post(
+            self._add_url(), {'service_id': self.botox.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = (
+            AuditLog.objects.filter(
+                resource_type='appointment',
+                resource_id=str(self.appt.pk),
+                action=AuditLog.Action.UPDATE,
+            )
+            .order_by('-timestamp')
+            .first()
+        )
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('event'), 'service_added')
+        self.assertEqual(log.metadata.get('service_id'), self.botox.pk)
+
+    # ── Change ───────────────────────────────────────────────────────
+
+    def test_change_service_swaps_primary_and_invoice(self):
+        resp = self.client.post(
+            self._change_url(), {'service_id': self.peel.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.service_id, self.peel.pk)
+        self.assertEqual(self.appt.quoted_price_cents, 15000)
+        line = self.appt.primary_invoice_line
+        self.assertIsNotNone(line)
+        line.refresh_from_db()
+        self.assertEqual(line.service_id, self.peel.pk)
+        self.assertEqual(line.unit_price_cents, 15000)
+
+    def test_change_service_shifts_end_time_by_duration_delta(self):
+        old_end = self.appt.end_time
+        self.client.post(
+            self._change_url(), {'service_id': self.peel.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.appt.refresh_from_db()
+        # Peel 45m − Facial 30m = +15m.
+        self.assertEqual(
+            self.appt.end_time, old_end + dt.timedelta(minutes=15),
+        )
+
+    def test_change_to_same_service_is_noop(self):
+        resp = self.client.post(
+            self._change_url(), {'service_id': self.facial.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.service_id, self.facial.pk)
+
+    # ── Remove ───────────────────────────────────────────────────────
+
+    def test_remove_extra_service(self):
+        add = self.client.post(
+            self._add_url(), {'service_id': self.botox.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        extra_id = add.data['extra_services'][0]['id']
+        self.appt.refresh_from_db()
+        end_with_extra = self.appt.end_time
+        resp = self.client.delete(
+            self._remove_url(extra_id), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.appt.refresh_from_db()
+        self.assertEqual(self.appt.extra_services.count(), 0)
+        self.assertEqual(
+            self.appt.end_time, end_with_extra - dt.timedelta(minutes=20),
+        )
+        self.assertEqual(self._invoice().line_items.count(), 1)
+
+    def test_remove_unknown_extra_service_404(self):
+        resp = self.client.delete(
+            self._remove_url(999999), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    # ── Paid-invoice lock ────────────────────────────────────────────
+
+    def test_services_locked_once_invoice_paid(self):
+        self._invoice().close(by_user=self.owner, payment_method='cash')
+        add = self.client.post(
+            self._add_url(), {'service_id': self.botox.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(add.status_code, 409)
+        change = self.client.post(
+            self._change_url(), {'service_id': self.peel.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(change.status_code, 409)
+
+    def test_services_editable_flag_reflects_invoice(self):
+        resp = self.client.get(
+            reverse('appointment-detail', args=[self.appt.pk]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertTrue(resp.data['services_editable'])
+        self._invoice().close(by_user=self.owner, payment_method='cash')
+        resp2 = self.client.get(
+            reverse('appointment-detail', args=[self.appt.pk]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertFalse(resp2.data['services_editable'])

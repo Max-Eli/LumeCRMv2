@@ -52,10 +52,24 @@ export interface AppointmentProviderSummary {
   is_bookable: boolean;
 }
 
+/** An additional service on an appointment beyond the primary one. */
+export interface AppointmentExtraService {
+  id: number;
+  service: AppointmentServiceSummary;
+  /** Price snapshot at the time the service was added. */
+  price_cents: number;
+  /** Duration snapshot at the time the service was added. */
+  duration_minutes: number;
+  sort_order: number;
+}
+
 export interface Appointment {
   id: number;
   customer: AppointmentCustomerSummary;
+  /** The primary booked service. */
   service: AppointmentServiceSummary;
+  /** Additional services added to this visit (Facial + Botox, etc.). */
+  extra_services: AppointmentExtraService[];
   provider: AppointmentProviderSummary;
   start_time: string;
   end_time: string;
@@ -73,7 +87,12 @@ export interface Appointment {
   completed_at: string | null;
   cancelled_at: string | null;
   cancelled_reason: string;
+  /** Price snapshot of the primary service only. */
   quoted_price_cents: number;
+  /** Primary service price plus every extra — the full quote. */
+  total_price_cents: number;
+  /** False once the invoice is paid/void — services are then locked. */
+  services_editable: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -200,6 +219,55 @@ export function useUpdateAppointment(id: number) {
       qc.setQueryData([...APPOINTMENTS_KEY, updated.id], updated);
       qc.invalidateQueries({ queryKey: APPOINTMENTS_KEY });
     },
+  });
+}
+
+// ── Service editing (multi-service appointments) ─────────────────────────
+//
+// An appointment is booked with one primary service; staff can adjust
+// it afterward — add an extra service, swap the primary one, or drop an
+// extra. Each mutation returns the updated appointment (block length +
+// linked invoice already re-synced server-side) and also touches the
+// invoices cache, since the open invoice gains/loses a line.
+
+function appointmentMutationCacheUpdate(qc: ReturnType<typeof useQueryClient>) {
+  return (updated: Appointment) => {
+    qc.setQueryData([...APPOINTMENTS_KEY, updated.id], updated);
+    qc.invalidateQueries({ queryKey: APPOINTMENTS_KEY });
+    // The appointment's invoice changed (a line was added/removed/edited).
+    qc.invalidateQueries({ queryKey: ['invoices'] });
+  };
+}
+
+/** Add an extra service to an appointment. */
+export function useAddAppointmentService(id: number) {
+  const qc = useQueryClient();
+  return useMutation<Appointment, Error, { service_id: number }>({
+    mutationFn: (input) =>
+      api.post<Appointment>(`/api/appointments/${id}/add-service/`, input),
+    onSuccess: appointmentMutationCacheUpdate(qc),
+  });
+}
+
+/** Swap the primary service of an appointment. */
+export function useChangeAppointmentService(id: number) {
+  const qc = useQueryClient();
+  return useMutation<Appointment, Error, { service_id: number }>({
+    mutationFn: (input) =>
+      api.post<Appointment>(`/api/appointments/${id}/change-service/`, input),
+    onSuccess: appointmentMutationCacheUpdate(qc),
+  });
+}
+
+/** Remove an extra service from an appointment. */
+export function useRemoveAppointmentExtraService(id: number) {
+  const qc = useQueryClient();
+  return useMutation<Appointment, Error, number>({
+    mutationFn: (extraServiceId) =>
+      api.delete<Appointment>(
+        `/api/appointments/${id}/extra-services/${extraServiceId}/`,
+      ),
+    onSuccess: appointmentMutationCacheUpdate(qc),
   });
 }
 

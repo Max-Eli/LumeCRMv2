@@ -18,7 +18,15 @@ from apps.tenants.permissions import P
 
 
 class AppointmentPermission(BasePermission):
-    READ_ACTIONS = frozenset({'list', 'retrieve'})
+    READ_ACTIONS = frozenset({'list', 'retrieve', 'activity'})
+
+    # Editing the services on an appointment (add / change / remove) is
+    # gated like a reschedule — it changes what was booked. Grouped with
+    # update / partial_update so the same ownership fallback applies.
+    EDIT_ACTIONS = frozenset({
+        'update', 'partial_update',
+        'add_service', 'change_service', 'remove_extra_service',
+    })
 
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
@@ -37,7 +45,7 @@ class AppointmentPermission(BasePermission):
             return membership.has(P.BOOK_APPOINTMENT)
         if view.action == 'destroy':
             return membership.has(P.CANCEL_APPOINTMENT)
-        if view.action in {'update', 'partial_update'}:
+        if view.action in self.EDIT_ACTIONS:
             # Allow the action — narrower ownership check lives in has_object_permission.
             return membership.has(P.RESCHEDULE_ANY_APPOINTMENT) or membership.has(
                 P.RESCHEDULE_OWN_APPOINTMENT,
@@ -54,7 +62,7 @@ class AppointmentPermission(BasePermission):
         if view.action in self.READ_ACTIONS:
             return True
 
-        if view.action in {'update', 'partial_update'}:
+        if view.action in self.EDIT_ACTIONS:
             if membership.has(P.RESCHEDULE_ANY_APPOINTMENT):
                 return True
             # Fall back to ownership: only the assigned provider can reschedule their own.

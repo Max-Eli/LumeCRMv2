@@ -27,10 +27,10 @@ don't retroactively alter quoted appointments.
 import datetime as dt
 from zoneinfo import ZoneInfo
 
-from django.db.models import Q
+from django.db.models import Max
 from django.utils import timezone as djtz
 from django.utils.dateparse import parse_date, parse_datetime
-from rest_framework import viewsets
+from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
@@ -39,7 +39,7 @@ from apps.audit.models import AuditLog
 from apps.audit.services import record
 from apps.tenants.context import get_current_location, get_current_tenant
 
-from .models import Appointment
+from .models import Appointment, AppointmentService
 from .permissions import AppointmentPermission
 from .serializers import AppointmentSerializer
 
@@ -72,6 +72,9 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 # can render a paid / open / void pill without N+1 fetch.
                 'invoice',
             )
+            # Additional services on the appointment — the serializer
+            # nests these; prefetch so the calendar list stays one query.
+            .prefetch_related('extra_services__service__category')
         )
         location = get_current_location()
         if location is not None:
@@ -353,6 +356,270 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             }
             for log in logs
         ])
+
+    # ── Service editing (add / change / remove) ──────────────────────────
+    #
+    # An appointment is booked with one primary `service`; the front desk
+    # often needs to adjust that afterward — the customer wants an add-on,
+    # or the wrong service was booked. These three actions handle it:
+    #
+    #   POST   /api/appointments/{id}/add-service/             {service_id}
+    #   POST   /api/appointments/{id}/change-service/          {service_id}
+    #   DELETE /api/appointments/{id}/extra-services/{es_id}/
+    #
+    # Each keeps the calendar block length and the still-open invoice in
+    # sync. Once the invoice is paid (or voided) the services lock — staff
+    # reopen the invoice through the existing flow to change anything.
+
+    @staticmethod
+    def _services_locked_response(appointment):
+        """Return a 409 Response when the appointment's services are
+        locked (invoice paid/void), else None. A missing invoice — the
+        brief window before the creation signal commits — is treated as
+        editable."""
+        invoice = getattr(appointment, 'invoice', None)
+        if invoice is None:
+            return None
+        from apps.invoices.models import Invoice
+        if invoice.status != Invoice.Status.OPEN:
+            return Response(
+                {
+                    'detail': (
+                        f"This appointment's invoice is "
+                        f'{invoice.get_status_display().lower()}; its '
+                        f'services are locked. Reopen the invoice to '
+                        f'change them.'
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        return None
+
+    @staticmethod
+    def _resolve_tenant_service(service_id):
+        """Fetch an active service in the current tenant or raise a
+        field-level 400."""
+        from apps.services.models import Service
+        if service_id in (None, ''):
+            raise ValidationError({'service_id': 'This field is required.'})
+        try:
+            service = Service.objects.for_current_tenant().get(pk=service_id)
+        except (Service.DoesNotExist, ValueError, TypeError):
+            raise ValidationError(
+                {'service_id': 'Service not found in this tenant.'},
+            )
+        if not service.is_active:
+            raise ValidationError(
+                {'service_id': f'{service.name} is no longer offered.'},
+            )
+        return service
+
+    @action(detail=True, methods=['post'], url_path='add-service')
+    def add_service(self, request, pk=None):
+        """Add an extra service to an appointment.
+
+        Snapshots the service's price + duration onto an
+        `AppointmentService` row, extends `end_time` so the calendar
+        block reflects the longer visit, and adds a matching line to the
+        still-open invoice. Refused once the invoice is paid/void.
+        """
+        import datetime as _dt
+
+        from django.db import transaction
+
+        from apps.invoices.models import InvoiceLineItem
+
+        appointment = self.get_object()
+        locked = self._services_locked_response(appointment)
+        if locked is not None:
+            return locked
+
+        service = self._resolve_tenant_service(request.data.get('service_id'))
+        invoice = getattr(appointment, 'invoice', None)
+
+        with transaction.atomic():
+            next_sort = (
+                appointment.extra_services.aggregate(m=Max('sort_order'))['m']
+                or 0
+            ) + 1
+            line = None
+            if invoice is not None:
+                line = InvoiceLineItem.objects.create(
+                    invoice=invoice,
+                    service=service,
+                    description=service.name,
+                    quantity=1,
+                    unit_price_cents=service.price_cents,
+                    tax_rate_percent=service.tax_rate_percent or 0,
+                )
+            extra = AppointmentService.objects.create(
+                appointment=appointment,
+                service=service,
+                price_cents=service.price_cents,
+                duration_minutes=service.duration_minutes,
+                invoice_line=line,
+                sort_order=next_sort,
+            )
+            # Grow the block so the calendar shows the real time commitment.
+            appointment.end_time = appointment.end_time + _dt.timedelta(
+                minutes=service.duration_minutes,
+            )
+            appointment.save(update_fields=['end_time', 'updated_at'])
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment',
+            resource_id=appointment.id,
+            request=request,
+            metadata={
+                'event': 'service_added',
+                'service_id': service.pk,
+                'service_name': service.name,
+                'price_cents': service.price_cents,
+                'appointment_service_id': extra.pk,
+                'invoice_line_id': line.pk if line is not None else None,
+            },
+        )
+        appointment.refresh_from_db()
+        return Response(self.get_serializer(appointment).data)
+
+    @action(detail=True, methods=['post'], url_path='change-service')
+    def change_service(self, request, pk=None):
+        """Swap the primary service of an appointment.
+
+        Re-snapshots `quoted_price_cents`, shifts `end_time` by the
+        duration difference, and re-points the primary invoice line at
+        the new service. Refused once the invoice is paid/void.
+        """
+        import datetime as _dt
+
+        from django.db import transaction
+
+        appointment = self.get_object()
+        locked = self._services_locked_response(appointment)
+        if locked is not None:
+            return locked
+
+        new_service = self._resolve_tenant_service(
+            request.data.get('service_id'),
+        )
+        old_service = appointment.service
+        if new_service.pk == old_service.pk:
+            # No-op — return the appointment unchanged.
+            return Response(self.get_serializer(appointment).data)
+
+        with transaction.atomic():
+            delta = (
+                new_service.duration_minutes - old_service.duration_minutes
+            )
+            new_end = appointment.end_time + _dt.timedelta(minutes=delta)
+            if new_end <= appointment.start_time:
+                # A much shorter service would collapse the block — fall
+                # back to just the new service's own length.
+                new_end = appointment.start_time + _dt.timedelta(
+                    minutes=max(new_service.duration_minutes, 5),
+                )
+            appointment.service = new_service
+            appointment.quoted_price_cents = new_service.price_cents
+            appointment.end_time = new_end
+            appointment.save(update_fields=[
+                'service', 'quoted_price_cents', 'end_time', 'updated_at',
+            ])
+            # Re-snapshot the primary invoice line when we still hold a
+            # reference to it (null on pre-multi-service rows whose link
+            # couldn't be backfilled, or a manually-removed line).
+            line = appointment.primary_invoice_line
+            invoice_synced = False
+            if line is not None:
+                line.service = new_service
+                line.description = new_service.name
+                line.unit_price_cents = new_service.price_cents
+                line.tax_rate_percent = new_service.tax_rate_percent or 0
+                line.save()
+                invoice_synced = True
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment',
+            resource_id=appointment.id,
+            request=request,
+            metadata={
+                'event': 'service_changed',
+                'from_service_id': old_service.pk,
+                'from_service_name': old_service.name,
+                'to_service_id': new_service.pk,
+                'to_service_name': new_service.name,
+                'invoice_synced': invoice_synced,
+            },
+        )
+        appointment.refresh_from_db()
+        return Response(self.get_serializer(appointment).data)
+
+    @action(
+        detail=True,
+        methods=['delete'],
+        url_path=r'extra-services/(?P<es_pk>[^/.]+)',
+    )
+    def remove_extra_service(self, request, pk=None, es_pk=None):
+        """Remove an extra service from an appointment.
+
+        Deletes the linked invoice line, shrinks `end_time` back, and
+        drops the `AppointmentService` row. Refused once the invoice is
+        paid/void.
+        """
+        import datetime as _dt
+
+        from django.db import transaction
+
+        appointment = self.get_object()
+        locked = self._services_locked_response(appointment)
+        if locked is not None:
+            return locked
+
+        try:
+            extra = (
+                appointment.extra_services
+                .select_related('service')
+                .get(pk=es_pk)
+            )
+        except (AppointmentService.DoesNotExist, ValueError, TypeError):
+            return Response(
+                {'detail': 'Service not found on this appointment.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        snapshot = {
+            'event': 'service_removed',
+            'appointment_service_id': extra.pk,
+            'service_id': extra.service_id,
+            'service_name': extra.service.name,
+            'invoice_line_id': extra.invoice_line_id,
+        }
+
+        with transaction.atomic():
+            line = extra.invoice_line
+            if line is not None:
+                invoice = line.invoice
+                line.delete()
+                invoice.recalculate_totals()
+            # Shrink the block back, but never collapse it past its start.
+            new_end = appointment.end_time - _dt.timedelta(
+                minutes=extra.duration_minutes,
+            )
+            if new_end > appointment.start_time:
+                appointment.end_time = new_end
+                appointment.save(update_fields=['end_time', 'updated_at'])
+            extra.delete()
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment',
+            resource_id=appointment.id,
+            request=request,
+            metadata=snapshot,
+        )
+        appointment.refresh_from_db()
+        return Response(self.get_serializer(appointment).data)
 
     def perform_destroy(self, instance):
         record(

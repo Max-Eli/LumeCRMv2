@@ -78,13 +78,19 @@ def create_invoice_for_appointment(sender, instance: Appointment, created: bool,
         # generate_invoice_number can lock against concurrent creates.
         # Retries on collision; see services.assign_invoice_number.
         assign_invoice_number(invoice)
-        InvoiceLineItem.objects.create(
+        line = InvoiceLineItem.objects.create(
             invoice=invoice,
             service=service,
             description=service.name,
             quantity=1,
             unit_price_cents=instance.quoted_price_cents or service.price_cents,
             tax_rate_percent=service.tax_rate_percent or 0,
+        )
+        # Remember which line bills the primary service so the calendar's
+        # "change service" action can update the exact line later. Written
+        # via QuerySet.update() to avoid re-entering this post_save handler.
+        Appointment.objects.filter(pk=instance.pk).update(
+            primary_invoice_line=line,
         )
         # Line save() rolls totals up into the invoice; reload so the audit
         # entry captures the recomputed total + the assigned invoice number.
