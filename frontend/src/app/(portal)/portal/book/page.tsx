@@ -34,7 +34,7 @@ import {
   UserCircle2,
   X,
 } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
 import { ApiError } from '@/lib/api';
@@ -57,8 +57,11 @@ type Step = 1 | 2 | 3;
 
 export default function PortalBookPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const preselectServiceId = Number(searchParams.get('service')) || null;
   const { data: me } = usePortalMe();
   const tenantSlug = me?.tenant.slug;
+  const { data: services } = useBookableServices(tenantSlug);
 
   const [step, setStep] = useState<Step>(1);
   const [service, setService] = useState<BookableService | null>(null);
@@ -66,8 +69,22 @@ export default function PortalBookPage() {
   const [date, setDate] = useState<string>(() => isoDateInTodayLocal());
   const [slot, setSlot] = useState<BookableSlot | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [appliedPreselect, setAppliedPreselect] = useState(false);
 
   const book = useBookAppointment();
+
+  // Package quick-book deep link (/portal/book?service=<id>) —
+  // preselect that service and jump straight to provider + date.
+  // Runs once, so the customer can still go Back to the service step.
+  useEffect(() => {
+    if (appliedPreselect || preselectServiceId === null || !services) return;
+    setAppliedPreselect(true);
+    const match = services.find((s) => s.id === preselectServiceId);
+    if (match) {
+      setService(match);
+      setStep(2);
+    }
+  }, [appliedPreselect, preselectServiceId, services]);
 
   const goNext = () => {
     if (step === 1 && service) setStep(2);

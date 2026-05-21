@@ -19,6 +19,7 @@ import {
   Package as PackageIcon,
   XCircle,
 } from 'lucide-react';
+import Link from 'next/link';
 import { useMemo } from 'react';
 
 import { dollarsFromCents } from '@/lib/packages';
@@ -117,18 +118,35 @@ function PackageCard({ pkg }: { pkg: PortalPackage }) {
                   >
                     {item.service_name}
                   </span>
-                  <span
-                    className={cn(
-                      'shrink-0 font-mono tabular-nums text-xs',
-                      depleted
-                        ? 'text-muted-foreground'
-                        : remaining <= 1
-                          ? 'text-amber-700 font-semibold'
-                          : 'text-foreground font-medium',
-                    )}
-                  >
-                    {remaining} of {purchased} left
-                  </span>
+                  <div className="flex shrink-0 items-center gap-3">
+                    <span
+                      className={cn(
+                        'font-mono tabular-nums text-xs',
+                        depleted
+                          ? 'text-muted-foreground'
+                          : remaining <= 1
+                            ? 'text-amber-700 font-semibold'
+                            : 'text-foreground font-medium',
+                      )}
+                    >
+                      {remaining} of {purchased} left
+                    </span>
+                    {/* Quick-book: deep-link into the booking flow with
+                        this service preselected. Active package, credits
+                        left, real service FK. */}
+                    {isActive && !depleted && item.service_id !== null ? (
+                      <Link
+                        href={`/portal/book?service=${item.service_id}`}
+                        className="rounded-md border px-2.5 py-1 text-xs font-medium transition-colors hover:bg-muted"
+                        style={{
+                          borderColor: 'var(--portal-brand, #1f2937)',
+                          color: 'var(--portal-brand, #1f2937)',
+                        }}
+                      >
+                        Book
+                      </Link>
+                    ) : null}
+                  </div>
                 </li>
               );
             })}

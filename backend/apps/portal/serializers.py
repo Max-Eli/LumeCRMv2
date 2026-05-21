@@ -139,8 +139,13 @@ class PortalSubscriptionSerializer(serializers.Serializer):
 
 
 class PortalPackageItemSerializer(serializers.Serializer):
-    """One service line of a purchased package + remaining sessions."""
+    """One service line of a purchased package + remaining sessions.
 
+    `service_id` powers the portal's package quick-book — it deep-links
+    into the booking flow with the service preselected. Null for the
+    rare legacy item whose service FK was cleared."""
+
+    service_id = serializers.IntegerField(allow_null=True)
     service_name = serializers.CharField()
     quantity_purchased = serializers.IntegerField()
     quantity_remaining = serializers.IntegerField()

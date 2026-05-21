@@ -219,6 +219,9 @@ export function usePortalMemberships() {
 export type PortalPackageStatus = 'pending' | 'active' | 'voided';
 
 export interface PortalPackageItem {
+  /** Null only for a legacy item whose service FK was cleared.
+   *  Drives the package quick-book deep link. */
+  service_id: number | null;
   service_name: string;
   quantity_purchased: number;
   quantity_remaining: number;
