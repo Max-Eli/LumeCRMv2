@@ -279,6 +279,11 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             metadata['transition'] = True
             metadata['from_status'] = old_status
             metadata['to_status'] = new_status
+            # Log the cancellation reason so the appointment activity
+            # feed can answer "why was this cancelled" — operators
+            # cancel accidental / duplicate bookings and need the trail.
+            if new_status == Appointment.Status.CANCELLED and updated.cancelled_reason:
+                metadata['cancelled_reason'] = updated.cancelled_reason
 
         # Time / provider changes: capture before/after so the activity
         # log on the appointment popover can render "Rescheduled from

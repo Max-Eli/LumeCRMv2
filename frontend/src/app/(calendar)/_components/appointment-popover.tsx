@@ -128,10 +128,16 @@ function PopoverBody({
   const update = useUpdateAppointment(appointment.id);
   const transitions = STATUS_TRANSITIONS[appointment.status];
 
-  const handleTransition = (next: AppointmentStatus) => {
+  const handleTransition = (
+    next: AppointmentStatus,
+    cancelledReason?: string,
+  ) => {
     const verb = STATUS_TRANSITION_VERBS[`${appointment.status}->${next}`];
     update.mutate(
-      { status: next },
+      {
+        status: next,
+        ...(cancelledReason ? { cancelled_reason: cancelledReason } : {}),
+      },
       {
         onSuccess: () => {
           toast.success(verb ?? `Marked ${STATUS_LABELS[next].toLowerCase()}`);
@@ -319,6 +325,19 @@ function ServiceSummary({
   );
 }
 
+/** Preset cancellation reasons. Stored verbatim in
+ *  `Appointment.cancelled_reason` and surfaced in the activity feed —
+ *  operators most often cancel accidental or duplicate bookings, so
+ *  those lead the list. */
+const CANCELLATION_REASONS = [
+  'Created by mistake',
+  'Duplicate appointment',
+  'Client requested',
+  'Client rescheduled',
+  'Provider unavailable',
+  'Other',
+] as const;
+
 function StatusTransitions({
   current,
   options,
@@ -328,8 +347,47 @@ function StatusTransitions({
   current: AppointmentStatus;
   options: AppointmentStatus[];
   disabled: boolean;
-  onTransition: (next: AppointmentStatus) => void;
+  onTransition: (next: AppointmentStatus, cancelledReason?: string) => void;
 }) {
+  // When the operator picks "Cancel", swap the transition buttons for
+  // a reason picker — the cancel doesn't fire until a reason is chosen.
+  const [pickingCancelReason, setPickingCancelReason] = useState(false);
+
+  if (pickingCancelReason) {
+    return (
+      <div className="px-4 py-3">
+        <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
+          Why are you cancelling?
+        </p>
+        <div className="flex flex-col gap-1.5">
+          {CANCELLATION_REASONS.map((reason) => (
+            <button
+              key={reason}
+              type="button"
+              disabled={disabled}
+              onClick={() => onTransition('cancelled', reason)}
+              className={cn(
+                'h-9 px-3 rounded-md text-xs font-medium text-left transition-colors border',
+                'border-border bg-card hover:bg-muted',
+                'disabled:opacity-50 disabled:cursor-not-allowed',
+              )}
+            >
+              {reason}
+            </button>
+          ))}
+        </div>
+        <button
+          type="button"
+          onClick={() => setPickingCancelReason(false)}
+          disabled={disabled}
+          className="mt-2 text-[11px] text-muted-foreground hover:text-foreground disabled:opacity-50"
+        >
+          ← Back
+        </button>
+      </div>
+    );
+  }
+
   return (
     <div className="px-4 py-3">
       <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-2">
@@ -352,7 +410,13 @@ function StatusTransitions({
             <button
               key={next}
               type="button"
-              onClick={() => onTransition(next)}
+              // Cancelling routes through the reason picker; every other
+              // transition fires immediately.
+              onClick={() =>
+                next === 'cancelled'
+                  ? setPickingCancelReason(true)
+                  : onTransition(next)
+              }
               disabled={disabled}
               className={cn(
                 'inline-flex items-center gap-1.5 h-8 px-3 rounded-md text-xs font-medium transition-colors border',

@@ -580,6 +580,44 @@ class ScheduleFitValidationTests(TestCase):
         appt.refresh_from_db()
         self.assertEqual(appt.status, Appointment.Status.CANCELLED)
 
+    def test_cancel_with_reason_is_stored_and_logged(self):
+        # Cancelling with a reason persists it on the appointment AND
+        # records it in the audit metadata so the activity log can
+        # answer "why was this cancelled".
+        from apps.appointments.models import Appointment
+        from apps.audit.models import AuditLog
+
+        appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer, provider=self.provider,
+            service=self.service, location=self.location,
+            start_utc=dt.datetime(2026, 5, 4, 14, 0, tzinfo=dt.timezone.utc),
+        )
+        response = self.client.patch(
+            reverse('appointment-detail', args=[appt.pk]),
+            data={'status': 'cancelled', 'cancelled_reason': 'Duplicate appointment'},
+            format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        appt.refresh_from_db()
+        self.assertEqual(appt.status, Appointment.Status.CANCELLED)
+        self.assertEqual(appt.cancelled_reason, 'Duplicate appointment')
+
+        log = (
+            AuditLog.objects
+            .filter(
+                resource_type='appointment', resource_id=str(appt.pk),
+                action=AuditLog.Action.UPDATE,
+            )
+            .order_by('-timestamp')
+            .first()
+        )
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('to_status'), 'cancelled')
+        self.assertEqual(
+            log.metadata.get('cancelled_reason'), 'Duplicate appointment',
+        )
+
 
 # ── Appointment SMS (confirmation + reminder) ────────────────────────
 

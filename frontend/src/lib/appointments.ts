@@ -90,6 +90,10 @@ export interface CreateAppointmentInput {
 
 export type UpdateAppointmentInput = Partial<CreateAppointmentInput> & {
   status?: AppointmentStatus;
+  /** Why an appointment was cancelled — sent alongside `status:
+   *  'cancelled'`. Stored on the appointment + logged to its
+   *  activity feed. */
+  cancelled_reason?: string;
 };
 
 const APPOINTMENTS_KEY = ['appointments'] as const;
