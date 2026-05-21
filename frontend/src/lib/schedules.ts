@@ -98,8 +98,9 @@ export function useSchedule(membershipLocationId: number | undefined) {
 }
 
 /** Replace the entire weekly schedule for one MembershipLocation.
- *  Owner+manager only. Invalidates the per-schedule cache + the
- *  bookable-memberships cache (which embeds schedule_for_location). */
+ *  Owner/manager for anyone; a contractor for their own. Invalidates
+ *  the per-schedule cache + the bookable-memberships cache (which
+ *  embeds schedule_for_location) + the self-schedule cache. */
 export function useUpdateSchedule(membershipLocationId: number) {
   const qc = useQueryClient();
   return useMutation<ScheduleResponse, Error, WeeklyHours>({
@@ -112,7 +113,34 @@ export function useUpdateSchedule(membershipLocationId: number) {
       // The calendar's bookable-providers query embeds the schedule;
       // invalidate so the overlay re-renders with the new hours.
       qc.invalidateQueries({ queryKey: ['memberships'] });
+      qc.invalidateQueries({ queryKey: MY_SCHEDULES_KEY });
     },
+  });
+}
+
+const MY_SCHEDULES_KEY = ['my-schedules'] as const;
+
+/** One location's worth of the current user's own schedule. */
+export interface MyScheduleLocation {
+  membership_location_id: number;
+  location_name: string;
+  weekly_hours: WeeklyHours;
+}
+
+export interface MySchedulesResponse {
+  /** True only for contractors — they set the days they want to work.
+   *  Other staff get a read-only view of their own schedule. */
+  can_edit: boolean;
+  locations: MyScheduleLocation[];
+}
+
+/** Fetch the current user's own weekly schedules, one per location
+ *  they're assigned to. Self-scoped — needs no MANAGE_STAFF. Backs the
+ *  contractor self-scheduling page. */
+export function useMySchedules() {
+  return useQuery<MySchedulesResponse>({
+    queryKey: MY_SCHEDULES_KEY,
+    queryFn: () => api.get<MySchedulesResponse>('/api/schedules/mine/'),
   });
 }
 

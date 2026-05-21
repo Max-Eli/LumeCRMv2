@@ -1392,12 +1392,23 @@ class ScheduleView(APIView):
     def put(self, request, pk, *args, **kwargs):
         ml = self._get_membership_location(pk)
 
-        # Permission check: MANAGE_STAFF — same gate as adding/editing
-        # employees. Owners + managers by role default; superuser bypass.
+        # Permission check: MANAGE_STAFF (owners + managers) can edit
+        # anyone's schedule. A CONTRACTOR may additionally edit their
+        # OWN schedule — they set the days they're available to work.
+        # Full/part-time staff schedules stay manager-managed.
         if not request.user.is_superuser:
             membership = getattr(request, 'tenant_membership', None)
-            if not membership or not membership.has(P.MANAGE_STAFF):
-                raise PermissionDenied('You do not have permission to edit schedules.')
+            is_manager = membership is not None and membership.has(P.MANAGE_STAFF)
+            is_own_contractor_schedule = (
+                membership is not None
+                and ml.membership_id == membership.id
+                and membership.employment_type
+                == TenantMembership.EmploymentType.CONTRACTOR
+            )
+            if not (is_manager or is_own_contractor_schedule):
+                raise PermissionDenied(
+                    'You do not have permission to edit this schedule.'
+                )
 
         serializer = ScheduleSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -1430,6 +1441,56 @@ class ScheduleView(APIView):
         )
 
         return Response({'membership_location_id': ml.id, 'weekly_hours': weekly})
+
+
+class MyScheduleView(APIView):
+    """`GET /api/schedules/mine/` — the current user's own weekly
+    schedules, one entry per location they're assigned to.
+
+    Self-scoped: resolved off `request.tenant_membership`, so it needs
+    no `MANAGE_STAFF` — a contractor can load their own availability
+    in order to edit it. `can_edit` is true only for contractors (they
+    set the days they want to work); other staff get a read-only view
+    of their own schedule.
+    """
+
+    permission_classes = [IsTenantStaff]
+
+    def get(self, request, *args, **kwargs):
+        membership = getattr(request, 'tenant_membership', None)
+        if membership is None:
+            raise PermissionDenied('No tenant membership resolved for this request.')
+
+        membership_locations = (
+            MembershipLocation.objects
+            .select_related('schedule', 'location')
+            .filter(membership=membership, is_active=True)
+            .order_by('location__name')
+        )
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='schedule',
+            request=request,
+            metadata={'event': 'own_schedule_read'},
+        )
+        return Response({
+            'can_edit': (
+                membership.employment_type
+                == TenantMembership.EmploymentType.CONTRACTOR
+            ),
+            'locations': [
+                {
+                    'membership_location_id': ml.id,
+                    'location_name': ml.location.name,
+                    'weekly_hours': (
+                        ml.schedule.weekly_hours
+                        if getattr(ml, 'schedule', None) is not None
+                        else ProviderSchedule.empty_weekly_hours()
+                    ),
+                }
+                for ml in membership_locations
+            ],
+        })
 
 
 # ── Public invitation accept endpoints ───────────────────────────────────

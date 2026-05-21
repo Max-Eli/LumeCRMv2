@@ -19,6 +19,7 @@ import {
   BarChart3,
   Building2,
   Calendar,
+  CalendarClock,
   FileText,
   Inbox,
   LayoutDashboard,
@@ -86,6 +87,15 @@ export const NAV_LINKS: NavLink[] = [
   { href: '/dashboard', label: 'Dashboard', icon: LayoutDashboard, group: 'location' },
   { href: '/calendar', label: 'Calendar', icon: Calendar, group: 'location' },
   { href: '/clients', label: 'Clients', icon: Users, group: 'location' },
+  // Contractor self-scheduling. Visible to providers (contractors are
+  // providers); the page itself is read-only for non-contractors.
+  {
+    href: '/my-schedule',
+    label: 'My schedule',
+    icon: CalendarClock,
+    group: 'location',
+    roles: ['provider'],
+  },
   // Messaging lives behind the calendar right-rail Messages tile,
   // which opens a popout window at /inbox. Intentional: front-desk
   // staff work the inbox alongside the calendar, not on a separate

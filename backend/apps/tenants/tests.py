@@ -2159,3 +2159,86 @@ def _make_tenant_pair(slug):
         status=Tenant.Status.ACTIVE,
     )
     return tenant, owner
+
+
+class ContractorSelfScheduleTests(TestCase):
+    """Contractors can edit their OWN ProviderSchedule; everyone else's
+    schedule editing stays manager-gated. `GET /api/schedules/mine/` is
+    self-scoped so a contractor can load their own availability."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant('contractor-sched')
+        self.contractor_user = _make_user('contractor@test.local')
+        self.contractor = _make_membership(
+            user=self.contractor_user, tenant=self.tenant,
+            role=TenantMembership.Role.PROVIDER, is_bookable=True,
+            employment_type=TenantMembership.EmploymentType.CONTRACTOR,
+        )
+        self.contractor_ml = self.contractor.location_assignments.first()
+
+        self.staff_user = _make_user('fulltime@test.local')
+        self.staff = _make_membership(
+            user=self.staff_user, tenant=self.tenant,
+            role=TenantMembership.Role.PROVIDER, is_bookable=True,
+            employment_type=TenantMembership.EmploymentType.FULL_TIME,
+        )
+        self.staff_ml = self.staff.location_assignments.first()
+
+    def _put(self, user, ml_id, weekly):
+        client = APIClient()
+        client.force_login(user)
+        return client.put(
+            reverse('provider-schedule', args=[ml_id]),
+            data={'weekly_hours': weekly}, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+
+    def test_contractor_can_edit_own_schedule(self):
+        resp = self._put(
+            self.contractor_user, self.contractor_ml.id,
+            _make_schedule_payload(monday_blocks=[{'start': '10:00', 'end': '15:00'}]),
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        self.assertEqual(
+            resp.data['weekly_hours']['monday'],
+            [{'start': '10:00', 'end': '15:00'}],
+        )
+
+    def test_contractor_cannot_edit_another_persons_schedule(self):
+        resp = self._put(
+            self.contractor_user, self.staff_ml.id,
+            _make_schedule_payload(monday_blocks=[{'start': '10:00', 'end': '15:00'}]),
+        )
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_full_time_staff_cannot_self_edit_schedule(self):
+        # A non-contractor's schedule stays manager-managed.
+        resp = self._put(self.staff_user, self.staff_ml.id, _make_schedule_payload())
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_owner_can_still_edit_anyones_schedule(self):
+        resp = self._put(
+            self.owner, self.contractor_ml.id,
+            _make_schedule_payload(monday_blocks=[{'start': '09:00', 'end': '12:00'}]),
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+
+    def test_mine_endpoint_lists_own_schedule_for_contractor(self):
+        client = APIClient()
+        client.force_login(self.contractor_user)
+        resp = client.get(
+            reverse('my-schedules'), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertTrue(resp.data['can_edit'])
+        ml_ids = {loc['membership_location_id'] for loc in resp.data['locations']}
+        self.assertIn(self.contractor_ml.id, ml_ids)
+
+    def test_mine_endpoint_can_edit_false_for_non_contractor(self):
+        client = APIClient()
+        client.force_login(self.staff_user)
+        resp = client.get(
+            reverse('my-schedules'), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertFalse(resp.data['can_edit'])

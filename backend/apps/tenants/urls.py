@@ -5,6 +5,7 @@ from .views import (
     JobTitleViewSet,
     LocationViewSet,
     MembershipViewSet,
+    MyScheduleView,
     PublicBrandingView,
     ScheduleView,
     TenantSettingsView,
@@ -23,6 +24,10 @@ urlpatterns = [
     # Public branding for unauthenticated surfaces (login + portal + booking
     # landing). Subdomain-resolved — no slug, no auth required.
     path('public/branding/', PublicBrandingView.as_view(), name='public-branding'),
+    # The current user's own schedules across their locations — used by
+    # the contractor self-scheduling page. Declared before the
+    # `<int:pk>` route so "mine" never resolves as a pk.
+    path('schedules/mine/', MyScheduleView.as_view(), name='my-schedules'),
     # Provider schedule per MembershipLocation. Surface is GET / PUT
     # against the membership-location id, with a canonical empty shape
     # returned when no schedule row exists yet.
