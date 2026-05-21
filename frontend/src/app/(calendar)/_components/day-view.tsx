@@ -1038,6 +1038,49 @@ function TimeGridLines({ hourHeight, hours }: { hourHeight: number; hours: numbe
 
 // ── Appointment block (draggable + popover trigger) ──────────────────────
 
+/** Stage-aware colors for an appointment block. The block visibly
+ *  progresses through its lifecycle: a light category tint while
+ *  booked (unchanged from before), a firmer category fill once
+ *  confirmed, an amber "active" fill at check-in, and a deep Lumè
+ *  burgundy once the visit is completed / the invoice is paid.
+ *  Cancelled + no-show keep their faded transparent treatment. */
+const STAGE_CHECKED_IN_COLOR = '#d97706'; // amber-600 — "client is here"
+const STAGE_SETTLED_COLOR = '#95122c'; // Lumè burgundy — "done + paid"
+
+function appointmentStageStyle(appointment: Appointment): {
+  borderColor: string;
+  background: string;
+} {
+  const category = appointment.service.category_color ?? 'hsl(220 9% 46%)';
+
+  if (appointment.status === 'cancelled' || appointment.status === 'no_show') {
+    return { borderColor: category, background: 'transparent' };
+  }
+  if (appointment.status === 'completed' || appointment.invoice_status === 'paid') {
+    return {
+      borderColor: STAGE_SETTLED_COLOR,
+      background: `color-mix(in oklch, ${STAGE_SETTLED_COLOR} 20%, var(--card))`,
+    };
+  }
+  if (appointment.status === 'checked_in') {
+    return {
+      borderColor: STAGE_CHECKED_IN_COLOR,
+      background: `color-mix(in oklch, ${STAGE_CHECKED_IN_COLOR} 16%, var(--card))`,
+    };
+  }
+  if (appointment.status === 'confirmed') {
+    return {
+      borderColor: category,
+      background: `color-mix(in oklch, ${category} 14%, var(--card))`,
+    };
+  }
+  // Booked — the default, tentative state. Unchanged from before.
+  return {
+    borderColor: category,
+    background: `color-mix(in oklch, ${category} 6%, var(--card))`,
+  };
+}
+
 function AppointmentBlock({
   appointment,
   timezone,
@@ -1152,6 +1195,7 @@ function AppointmentBlock({
       : heightPx;
 
   const color = appointment.service.category_color ?? 'hsl(220 9% 46%)';
+  const stage = appointmentStageStyle(appointment);
   const cancelled = appointment.status === 'cancelled' || appointment.status === 'no_show';
 
   const tightVertical = heightPx < 50;
@@ -1206,8 +1250,8 @@ function AppointmentBlock({
       style={{
         top: `${topPx}px`,
         height: `${effectiveHeightPx}px`,
-        borderLeft: `3px solid ${color}`,
-        backgroundColor: cancelled ? 'transparent' : `color-mix(in oklch, ${color} 6%, var(--card))`,
+        borderLeft: `3px solid ${stage.borderColor}`,
+        backgroundColor: stage.background,
         transform: transformStyle,
         ...horizontalStyle,
       }}
@@ -1301,6 +1345,7 @@ function DragOverlayBlock({
 }) {
   const heightPx = Math.max(24, appointment.duration_minutes * pxPerMin);
   const color = appointment.service.category_color ?? 'hsl(220 9% 46%)';
+  const stage = appointmentStageStyle(appointment);
   const tight = heightPx < 50 || isNarrow;
 
   return (
@@ -1309,8 +1354,8 @@ function DragOverlayBlock({
       style={{
         width: widthPx - 8, // match the in-column block width (left/right inset 1 = 8 total)
         height: heightPx,
-        borderLeft: `3px solid ${color}`,
-        backgroundColor: `color-mix(in oklch, ${color} 8%, var(--card))`,
+        borderLeft: `3px solid ${stage.borderColor}`,
+        backgroundColor: stage.background,
       }}
     >
       <div className={cn('flex items-start gap-1.5', tight ? 'p-1.5' : 'p-2')}>
