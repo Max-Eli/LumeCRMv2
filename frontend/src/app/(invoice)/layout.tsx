@@ -10,8 +10,10 @@
  * Mirrors the `(popout)` and `(calendar)` patterns: own auth gate,
  * full-height container, each page renders its own header.
  *
- * URL contract: `/invoice/[appointmentId]`. Open the page with
- * `target="_blank"` so it lives in its own browser tab/window.
+ * URL contract: `/invoice/[id]` — `[id]` is an appointment id by
+ * default, or an invoice id when `?by=invoice` is set (standalone
+ * invoices with no appointment, e.g. custom packages). Open the page
+ * with `target="_blank"` so it lives in its own browser tab/window.
  */
 
 'use client';

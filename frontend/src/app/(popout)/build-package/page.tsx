@@ -16,10 +16,10 @@
  *   2. Compose the package — name, service rows with quantities,
  *      price, validity period.
  *   3. Save. The backend atomically creates a draft Invoice + the
- *      PurchasedPackage (with source_template=NULL). The success
- *      screen routes the operator straight to the customer's
- *      Wallet tab to take payment — closing the invoice flips the
- *      package from PENDING → ACTIVE.
+ *      PurchasedPackage (with source_template=NULL). The popout then
+ *      navigates straight to the take-payment surface for that
+ *      invoice (`/invoice/<id>?by=invoice&action=pay`) — closing the
+ *      invoice flips the package from PENDING → ACTIVE.
  */
 
 'use client';
@@ -31,25 +31,17 @@ import {
   Check,
   Layers,
   Loader2,
-  Package as PackageIcon,
   Plus,
   Search,
   Trash2,
   UserRound,
 } from 'lucide-react';
-import Link from 'next/link';
+import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
 
 import { InitialsAvatar } from '@/components/initials-avatar';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from '@/components/ui/select';
 import { ApiError } from '@/lib/api';
 import { useCustomers, type CustomerListItem } from '@/lib/customers';
 import {
@@ -57,7 +49,6 @@ import {
   dollarsFromCents,
   useBuildCustomPackage,
   useCustomerPurchasedPackages,
-  type BuildCustomPackageResult,
   type PurchasedPackage,
 } from '@/lib/packages';
 import { useServices, type Service } from '@/lib/services';
@@ -65,7 +56,6 @@ import { cn } from '@/lib/utils';
 
 export default function BuildPackagePopoutPage() {
   const [customer, setCustomer] = useState<CustomerListItem | null>(null);
-  const [success, setSuccess] = useState<BuildCustomPackageResult | null>(null);
 
   return (
     <div className="flex flex-col h-screen bg-muted/30">
@@ -87,20 +77,12 @@ export default function BuildPackagePopoutPage() {
       </header>
 
       <main className="flex-1 min-h-0 overflow-y-auto">
-        {success ? (
-          <SuccessView
-            result={success}
-            onBuildAnother={() => {
-              setSuccess(null);
-            }}
-          />
-        ) : !customer ? (
+        {!customer ? (
           <CustomerPickerStep onPick={setCustomer} />
         ) : (
           <BuilderStep
             customer={customer}
             onChangeCustomer={() => setCustomer(null)}
-            onCreated={setSuccess}
           />
         )}
       </main>
@@ -220,12 +202,11 @@ interface FormErrors {
 function BuilderStep({
   customer,
   onChangeCustomer,
-  onCreated,
 }: {
   customer: CustomerListItem;
   onChangeCustomer: () => void;
-  onCreated: (result: BuildCustomPackageResult) => void;
 }) {
+  const router = useRouter();
   const [name, setName] = useState('');
   const [priceDollars, setPriceDollars] = useState('');
   const [validityDays, setValidityDays] = useState('365');
@@ -298,7 +279,10 @@ function BuilderStep({
           quantity: Number(r.quantity),
         })),
       });
-      onCreated(result);
+      // Straight to the take-payment surface for the new invoice —
+      // `?action=pay` opens the pay form on arrival. No detour through
+      // the customer profile.
+      router.push(`/invoice/${result.invoice_id}?by=invoice&action=pay`);
     } catch (err) {
       if (err instanceof ApiError && err.body && typeof err.body === 'object') {
         const body = err.body as Record<string, string | string[]>;
@@ -509,35 +493,12 @@ function ServiceRowEditor({
   return (
     <li className="flex items-start gap-2">
       <div className="flex-1 min-w-0">
-        <Select
-          value={row.service_id || undefined}
-          onValueChange={(v) => onChange({ ...row, service_id: v ?? '' })}
-        >
-          <SelectTrigger>
-            <SelectValue
-              placeholder={servicesLoading ? 'Loading services…' : 'Pick a service'}
-            >
-              {(v) => {
-                if (!v) {
-                  return servicesLoading ? 'Loading services…' : 'Pick a service';
-                }
-                const picked = services.find((s) => String(s.id) === v);
-                if (!picked) return v;
-                return `${picked.name} · $${dollarsFromCents(picked.price_cents)}`;
-              }}
-            </SelectValue>
-          </SelectTrigger>
-          <SelectContent>
-            {services.map((s) => (
-              <SelectItem key={s.id} value={String(s.id)}>
-                {s.name}{' '}
-                <span className="text-xs text-muted-foreground">
-                  · ${dollarsFromCents(s.price_cents)}
-                </span>
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+        <ServiceCombobox
+          value={row.service_id}
+          services={services}
+          servicesLoading={servicesLoading}
+          onSelect={(serviceId) => onChange({ ...row, service_id: serviceId })}
+        />
       </div>
       <Input
         type="number"
@@ -562,6 +523,109 @@ function ServiceRowEditor({
         <span className="size-10 shrink-0" aria-hidden />
       )}
     </li>
+  );
+}
+
+/** Searchable service picker — type to filter by name instead of
+ *  scrolling a long dropdown. Once a service is picked the row
+ *  collapses to a compact summary with a "Change" affordance. */
+function ServiceCombobox({
+  value,
+  services,
+  servicesLoading,
+  onSelect,
+}: {
+  value: string;
+  services: Service[];
+  servicesLoading: boolean;
+  onSelect: (serviceId: string) => void;
+}) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const selected = services.find((s) => String(s.id) === value) ?? null;
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const pool = q
+      ? services.filter((s) => s.name.toLowerCase().includes(q))
+      : services;
+    return pool.slice(0, 8);
+  }, [query, services]);
+
+  if (selected) {
+    return (
+      <div className="flex h-10 items-center justify-between gap-2 rounded-md border bg-card px-3 text-sm">
+        <span className="truncate">
+          {selected.name}
+          <span className="text-muted-foreground">
+            {' · $'}
+            {dollarsFromCents(selected.price_cents)}
+          </span>
+        </span>
+        <button
+          type="button"
+          onClick={() => {
+            onSelect('');
+            setQuery('');
+            setOpen(true);
+          }}
+          className="shrink-0 text-xs text-muted-foreground hover:text-foreground"
+        >
+          Change
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="relative">
+      <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+      <Input
+        value={query}
+        onChange={(e) => {
+          setQuery(e.target.value);
+          setOpen(true);
+        }}
+        onFocus={() => setOpen(true)}
+        onBlur={() => window.setTimeout(() => setOpen(false), 120)}
+        placeholder={servicesLoading ? 'Loading services…' : 'Search services…'}
+        className="pl-9"
+        aria-label="Search services"
+      />
+      {open && !servicesLoading ? (
+        <ul className="absolute z-20 mt-1 max-h-60 w-full overflow-y-auto rounded-md border bg-card shadow-md">
+          {matches.length === 0 ? (
+            <li className="px-3 py-2 text-xs text-muted-foreground">
+              {services.length === 0
+                ? 'No active services.'
+                : `No services match “${query}”.`}
+            </li>
+          ) : (
+            matches.map((s) => (
+              <li key={s.id}>
+                <button
+                  type="button"
+                  // Fire before the input's blur so the click registers.
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    onSelect(String(s.id));
+                    setQuery('');
+                    setOpen(false);
+                  }}
+                  className="flex w-full items-center justify-between gap-3 px-3 py-2 text-left text-sm hover:bg-muted"
+                >
+                  <span className="truncate">{s.name}</span>
+                  <span className="shrink-0 font-mono text-xs text-muted-foreground">
+                    ${dollarsFromCents(s.price_cents)}
+                  </span>
+                </button>
+              </li>
+            ))
+          )}
+        </ul>
+      ) : null}
+    </div>
   );
 }
 
@@ -663,72 +727,3 @@ function ExistingPackagesCard({
   );
 }
 
-// ── Success view ──────────────────────────────────────────────────
-
-
-function SuccessView({
-  result,
-  onBuildAnother,
-}: {
-  result: BuildCustomPackageResult;
-  onBuildAnother: () => void;
-}) {
-  const pkg = result.purchased_package;
-  // Standalone invoices don't have a dedicated detail page yet
-  // (Phase 2A POS work). Send the operator to the customer's
-  // Wallet tab — the new invoice appears there and payment flows
-  // through the existing close-invoice path.
-  const walletHref = `/clients/${result.customer_id}?tab=wallet`;
-
-  return (
-    <div className="max-w-xl mx-auto px-6 py-12 text-center">
-      <div
-        className="size-14 mx-auto inline-flex items-center justify-center rounded-full bg-emerald-100 text-emerald-700 mb-4"
-        aria-hidden
-      >
-        <Check className="size-6" />
-      </div>
-      <h2 className="text-2xl font-serif font-semibold tracking-tight">
-        Package created
-      </h2>
-      <p className="text-sm text-muted-foreground mt-2">
-        <span className="font-medium text-foreground">{pkg.name}</span> ·
-        ${dollarsFromCents(pkg.price_cents)}
-      </p>
-      {result.invoice_number ? (
-        <p className="text-xs text-muted-foreground mt-1">
-          Invoice <span className="font-mono">{result.invoice_number}</span>
-        </p>
-      ) : null}
-
-      <div className="mt-6 rounded-xl border bg-muted/40 px-4 py-3 text-sm text-muted-foreground inline-flex items-center gap-2">
-        <PackageIcon className="size-4" />
-        <span>
-          Status: <span className="font-medium text-foreground">Pending</span> —
-          activates as soon as the invoice is paid.
-        </span>
-      </div>
-
-      <div className="mt-6 space-y-2">
-        <Button
-          render={<Link href={walletHref} target="_blank" />}
-          nativeButton={false}
-          className="w-full"
-          style={{ background: 'var(--portal-brand, currentColor)' }}
-        >
-          Take payment now
-          <ArrowUpRight className="size-4" />
-        </Button>
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onBuildAnother}
-          className="w-full"
-        >
-          <Plus className="size-4" />
-          Build another
-        </Button>
-      </div>
-    </div>
-  );
-}

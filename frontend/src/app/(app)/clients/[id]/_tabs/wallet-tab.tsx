@@ -27,6 +27,7 @@ import {
   type InvoiceStatus,
   formatMoneyCents,
   openInvoiceWindow,
+  openStandaloneInvoiceWindow,
   PAYMENT_METHOD_LABELS,
   useCustomerInvoices,
 } from '@/lib/invoices';
@@ -228,16 +229,19 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
       ? invoice.closed_at
       : invoice.created_at,
   );
-  // Invoice detail opens in a separate popup window via
-  // `openInvoiceWindow` so the operator's checkout context lives
-  // outside the CRM dashboard chrome. Rows without an appointment
-  // (manual invoices, Phase 2A) render as a non-interactive div.
+  // Invoice detail opens in a separate popup window so the operator's
+  // checkout context lives outside the CRM dashboard chrome. An
+  // appointment invoice opens by appointment id; a standalone invoice
+  // (custom package — no appointment) opens by its own invoice id.
   const appointmentId = invoice.appointment?.id ?? null;
-  const interactive = appointmentId !== null;
+  const openDetail = () =>
+    appointmentId !== null
+      ? openInvoiceWindow(appointmentId)
+      : openStandaloneInvoiceWindow(invoice.id);
 
   const sharedClasses = cn(
     'flex items-center gap-4 px-4 py-3 transition-colors group w-full text-left',
-    interactive ? 'hover:bg-muted/40 cursor-pointer' : '',
+    'hover:bg-muted/40 cursor-pointer',
   );
 
   const inner = (
@@ -274,21 +278,12 @@ function InvoiceRow({ invoice }: { invoice: Invoice }) {
           </div>
         ) : null}
       </div>
-      {interactive ? (
-        <ChevronRight className="size-4 text-muted-foreground/60 group-hover:text-foreground transition-colors shrink-0" />
-      ) : null}
+      <ChevronRight className="size-4 text-muted-foreground/60 group-hover:text-foreground transition-colors shrink-0" />
     </>
   );
 
-  if (!interactive || appointmentId === null) {
-    return <div className={sharedClasses}>{inner}</div>;
-  }
   return (
-    <button
-      type="button"
-      onClick={() => openInvoiceWindow(appointmentId)}
-      className={sharedClasses}
-    >
+    <button type="button" onClick={openDetail} className={sharedClasses}>
       {inner}
     </button>
   );

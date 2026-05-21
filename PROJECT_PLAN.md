@@ -1205,6 +1205,7 @@ We're building forward through Phase 1 features and **deliberately deferring pol
 - [ ] **Email invoice to client** (requires SES + Phase 1F email plumbing).
 - [ ] **Refund workflow** with negative-amount line items, ledger-tracked.
 - [ ] **Multi-line invoices** (add-ons, retail) — Phase 2A POS scope.
+- [ ] **Unify the take-payment route on invoice ID** — `/invoice/[id]` is keyed by appointment id; standalone invoices (custom packages) ride a `?by=invoice` mode bolted on 2026-05-20. The clean design keys every invoice by its own id (`/invoice/<invoiceId>`), dropping the dual-mode — but it means migrating every `openInvoiceWindow` caller, incl. the calendar "Take payment" popover (critical path). Deferred for risk; works as-is.
 
 ### New Appointment sheet
 

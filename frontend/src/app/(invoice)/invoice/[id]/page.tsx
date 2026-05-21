@@ -1,13 +1,19 @@
 /**
- * Invoice / take-payment page for a single appointment.
+ * Invoice / take-payment page.
  *
- * URL: `/invoice/<appointmentId>` (the `[id]` param IS the
- * appointment id). Lives in the `(invoice)` route group — its own
- * window, no CRM sidebar, no top bar. Operators open it from the
- * calendar appointment popover ("Take payment") or the customer
- * wallet tab, always in a new tab. The standalone surface keeps the
- * checkout context focused and reads cleanly on mobile (operators
- * frequently take payment at the front desk on a tablet or phone).
+ * Two modes, by URL:
+ *   - `/invoice/<appointmentId>` — `[id]` is an appointment id; loads
+ *     that appointment + its 1:1 invoice. The common case.
+ *   - `/invoice/<invoiceId>?by=invoice` — `[id]` is an invoice id;
+ *     loads a standalone invoice that has no appointment (e.g. a
+ *     custom package). Same checkout surface, appointment-less.
+ *
+ * Lives in the `(invoice)` route group — its own window, no CRM
+ * sidebar, no top bar. Operators open it from the calendar
+ * appointment popover ("Take payment") or the customer wallet tab,
+ * always in a new tab. The standalone surface keeps the checkout
+ * context focused and reads cleanly on mobile (operators frequently
+ * take payment at the front desk on a tablet or phone).
  *
  * `?action=pay` (or `reopen` / `void`) auto-focuses the matching
  * mode on first render so the popover's CTA lands the operator in
@@ -79,6 +85,7 @@ import {
   useApplyGiftCard,
   useCloseInvoice,
   useEmailInvoice,
+  useInvoice,
   useInvoiceForAppointment,
   useRedeemFromMembership,
   useRedeemFromPackage,
@@ -282,21 +289,35 @@ interface InvoicePageProps {
 export default function AppointmentInvoicePage({ params }: InvoicePageProps) {
   const { id: idStr } = use(params);
   const id = Number(idStr);
+  const searchParams = useSearchParams();
+  // `?by=invoice` → `[id]` is an invoice id (a standalone invoice with
+  // no appointment — e.g. a custom package). Default → `[id]` is an
+  // appointment id, and we load that appointment plus its 1:1 invoice.
+  const byInvoice = searchParams.get('by') === 'invoice';
 
-  const { data: appointment, isLoading: loadingAppt } = useAppointment(id);
-  const { data: invoice, isLoading: loadingInvoice, error } = useInvoiceForAppointment(id);
+  const { data: appointment, isLoading: loadingAppt } = useAppointment(
+    byInvoice ? undefined : id,
+  );
+  const apptInvoice = useInvoiceForAppointment(byInvoice ? undefined : id);
+  const standaloneInvoice = useInvoice(byInvoice ? id : undefined);
 
-  if (loadingAppt || loadingInvoice) {
+  const invoice = byInvoice ? standaloneInvoice.data : apptInvoice.data;
+  const loadingInvoice = byInvoice
+    ? standaloneInvoice.isLoading
+    : apptInvoice.isLoading;
+  const error = byInvoice ? standaloneInvoice.error : apptInvoice.error;
+
+  if (loadingInvoice || (!byInvoice && loadingAppt)) {
     return <Loading />;
   }
-  if (error || !appointment) {
+  if (error || (!byInvoice && !appointment)) {
     return <Error />;
   }
   if (!invoice) {
     return <Missing />;
   }
 
-  return <InvoiceBody appointment={appointment} invoice={invoice} />;
+  return <InvoiceBody appointment={appointment ?? null} invoice={invoice} />;
 }
 
 // ── Body ─────────────────────────────────────────────────────────────────
@@ -305,7 +326,8 @@ function InvoiceBody({
   appointment,
   invoice,
 }: {
-  appointment: NonNullable<ReturnType<typeof useAppointment>['data']>;
+  /** Null for standalone invoices (custom packages) — no appointment. */
+  appointment: NonNullable<ReturnType<typeof useAppointment>['data']> | null;
   invoice: Invoice;
 }) {
   const searchParams = useSearchParams();
@@ -338,7 +360,11 @@ function InvoiceBody({
 
       <Card>
         <CardContent className="p-0">
-          <ContextSection appointment={appointment} timezone={tz} />
+          <ContextSection
+            appointment={appointment}
+            invoice={invoice}
+            timezone={tz}
+          />
           <Divider />
           <LineItemsTable invoice={invoice} canEdit={canEditLines} />
           {canEditLines && invoice.status === 'open' ? (
@@ -433,7 +459,7 @@ function InvoiceHeader({
   invoice,
   timezone,
 }: {
-  appointment: NonNullable<ReturnType<typeof useAppointment>['data']>;
+  appointment: NonNullable<ReturnType<typeof useAppointment>['data']> | null;
   invoice: Invoice;
   timezone: string;
 }) {
@@ -457,11 +483,25 @@ function InvoiceHeader({
             </StatusBadge>
           </div>
           <p className="text-xs sm:text-sm text-muted-foreground mt-2 leading-relaxed">
-            <span className="font-medium text-foreground/90">{appointment.customer.full_name}</span>
+            <span className="font-medium text-foreground/90">
+              {appointment
+                ? appointment.customer.full_name
+                : invoice.customer.full_name}
+            </span>
             <span className="mx-1.5 text-muted-foreground/50">·</span>
-            {appointment.service.name}
-            <span className="mx-1.5 text-muted-foreground/50">·</span>
-            <span className="tabular-nums">{formatLongDateTime(appointment.start_time, timezone)}</span>
+            {appointment ? (
+              <>
+                {appointment.service.name}
+                <span className="mx-1.5 text-muted-foreground/50">·</span>
+                <span className="tabular-nums">
+                  {formatLongDateTime(appointment.start_time, timezone)}
+                </span>
+              </>
+            ) : (
+              <span className="tabular-nums">
+                Created {formatLongDateTime(invoice.created_at, timezone)}
+              </span>
+            )}
           </p>
         </div>
       </div>
@@ -477,11 +517,33 @@ function InvoiceHeader({
 
 function ContextSection({
   appointment,
+  invoice,
   timezone,
 }: {
-  appointment: NonNullable<ReturnType<typeof useAppointment>['data']>;
+  appointment: NonNullable<ReturnType<typeof useAppointment>['data']> | null;
+  invoice: Invoice;
   timezone: string;
 }) {
+  // Standalone invoice (custom package) — no appointment, so show the
+  // customer + creation date. The line-items table below carries the
+  // "what was sold" detail.
+  if (!appointment) {
+    return (
+      <dl className="grid grid-cols-[max-content_1fr] gap-x-4 sm:gap-x-6 gap-y-2 px-4 sm:px-6 py-5 text-sm">
+        <dt className="text-muted-foreground">Customer</dt>
+        <dd className="font-medium">{invoice.customer.full_name}</dd>
+
+        <dt className="text-muted-foreground">Type</dt>
+        <dd>Custom invoice</dd>
+
+        <dt className="text-muted-foreground">Created</dt>
+        <dd className="font-mono tabular-nums">
+          {formatLongDateTime(invoice.created_at, timezone)}
+        </dd>
+      </dl>
+    );
+  }
+
   const provider = appointment.provider;
   const providerName =
     `${provider.user_first_name ?? ''} ${provider.user_last_name ?? ''}`.trim() ||
@@ -1754,9 +1816,12 @@ function PayForm({
       },
       {
         onSuccess: () => {
-          toast.success('Payment recorded · appointment marked completed', {
-            icon: <CheckCircle2 className="size-4" />,
-          });
+          toast.success(
+            invoice.appointment
+              ? 'Payment recorded · appointment marked completed'
+              : 'Payment recorded',
+            { icon: <CheckCircle2 className="size-4" /> },
+          );
           onDone();
         },
         onError: (err) => {
@@ -1843,7 +1908,11 @@ function ReopenForm({
       { reason: trimmed },
       {
         onSuccess: () => {
-          toast.success('Invoice reopened · appointment back to checked-in');
+          toast.success(
+            invoice.appointment
+              ? 'Invoice reopened · appointment back to checked-in'
+              : 'Invoice reopened',
+          );
           onDone();
         },
         onError: (err) => {
@@ -1861,8 +1930,10 @@ function ReopenForm({
             Reopen invoice
           </p>
           <p className="text-sm text-muted-foreground mt-1">
-            Reverts the appointment to checked-in so payment can be re-collected
-            or amended. The reason is recorded in the audit log.
+            {invoice.appointment
+              ? 'Reverts the appointment to checked-in so payment can be re-collected or amended.'
+              : 'Reopens the invoice so payment can be re-collected or amended.'}{' '}
+            The reason is recorded in the audit log.
           </p>
         </div>
         <label className="block text-sm">

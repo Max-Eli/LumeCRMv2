@@ -32,21 +32,39 @@ import { ApiError, api } from './api';
  *  has set their preferences that way. Mobile browsers always open
  *  it as a tab — there's no concept of a window on a phone — which
  *  is the right behavior there anyway. */
+const INVOICE_WINDOW_FEATURES = [
+  'popup=yes',
+  'width=1080',
+  'height=920',
+  'resizable=yes',
+  'scrollbars=yes',
+].join(',');
+
+function openInvoicePath(path: string): void {
+  // `_blank` so each open invoice gets its own window — using a
+  // named target would reuse one window and clobber the operator's
+  // existing checkout.
+  window.open(path, '_blank', INVOICE_WINDOW_FEATURES);
+}
+
 export function openInvoiceWindow(appointmentId: number, action?: 'pay' | 'reopen' | 'void'): void {
   const path = action
     ? `/invoice/${appointmentId}?action=${action}`
     : `/invoice/${appointmentId}`;
-  const features = [
-    'popup=yes',
-    'width=1080',
-    'height=920',
-    'resizable=yes',
-    'scrollbars=yes',
-  ].join(',');
-  // `_blank` so each open invoice gets its own window — using a
-  // named target would reuse one window and clobber the operator's
-  // existing checkout.
-  window.open(path, '_blank', features);
+  openInvoicePath(path);
+}
+
+/** Open a standalone invoice (no appointment — e.g. a custom package)
+ *  in the take-payment window. Routes to the `?by=invoice` mode of the
+ *  invoice page, which loads by invoice id rather than appointment id. */
+export function openStandaloneInvoiceWindow(
+  invoiceId: number,
+  action?: 'pay' | 'reopen' | 'void',
+): void {
+  const path = action
+    ? `/invoice/${invoiceId}?by=invoice&action=${action}`
+    : `/invoice/${invoiceId}?by=invoice`;
+  openInvoicePath(path);
 }
 
 // ── Types ────────────────────────────────────────────────────────────────
