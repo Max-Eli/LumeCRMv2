@@ -74,7 +74,7 @@ A modern, HIPAA-compliant, multi-tenant CRM for medical spas and salons. Competi
 - [ ] Postgres RLS policies applied to every PHI table
 - [ ] Audit log table (append-only) capturing every PHI read/write with `tenant_id`, `user_id`, `action`, `resource`, `ip`, `timestamp`
 - [ ] MFA enforced on all staff accounts
-- [ ] 15-min idle session timeout
+- [ ] 30-min idle session timeout
 - [ ] TLS 1.2+ everywhere; no HTTP fallback
 - [ ] Encrypted RDS backups, retention policy documented
 - [ ] S3 buckets private, KMS-encrypted, no public access

@@ -86,7 +86,7 @@ USE_X_FORWARDED_PORT = True
 #
 # Every cookie that isn't already HttpOnly + Secure is a phishing /
 # session-hijack vector. The session-cookie age caps at 8 hours so a
-# stolen laptop can't authenticate indefinitely; an idle gap of 15
+# stolen laptop can't authenticate indefinitely; an idle gap of 30
 # minutes also kills it (configured in middleware — see
 # apps.users.middleware.IdleSessionTimeoutMiddleware, Phase 0c).
 
@@ -102,7 +102,7 @@ SESSION_COOKIE_HTTPONLY = True
 # Setting this to True silently breaks every login + form submission.
 CSRF_COOKIE_HTTPONLY = False
 # 8-hour max session lifetime; the idle-timeout middleware applies a
-# 15-minute idle cap independently.
+# 30-minute idle cap independently.
 SESSION_COOKIE_AGE = 8 * 60 * 60
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False
 # SameSite=Lax is the standard default. Strict breaks legitimate
@@ -302,11 +302,11 @@ INSTALLED_APPS = list(INSTALLED_APPS) + [  # noqa: F405
 # they're verified for the current session).
 #
 # IdleSessionTimeoutMiddleware enforces HIPAA §164.312(a)(2)(iii) —
-# 15-min idle cap. Sits AFTER auth so it has a populated request.user.
+# 30-min idle cap. Sits AFTER auth so it has a populated request.user.
 _middleware_with_otp = list(MIDDLEWARE)
 _auth_idx = _middleware_with_otp.index('django.contrib.auth.middleware.AuthenticationMiddleware')
 _middleware_with_otp.insert(_auth_idx + 1, 'django_otp.middleware.OTPMiddleware')
 _middleware_with_otp.insert(_auth_idx + 2, 'apps.users.middleware.IdleSessionTimeoutMiddleware')
 MIDDLEWARE = _middleware_with_otp
 
-IDLE_SESSION_TIMEOUT_SECONDS = env.int('IDLE_SESSION_TIMEOUT_SECONDS', default=15 * 60)
+IDLE_SESSION_TIMEOUT_SECONDS = env.int('IDLE_SESSION_TIMEOUT_SECONDS', default=30 * 60)
