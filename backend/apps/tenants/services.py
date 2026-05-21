@@ -180,27 +180,34 @@ def invite_staff(
     return invitation
 
 
+def tenant_crm_base_url(tenant) -> str:
+    """Absolute base URL of a tenant's CRM app — no trailing slash.
+
+    `settings.PUBLIC_BASE_URL` points at the bare apex, which serves
+    the marketing site; CRM routes and public tokenized surfaces
+    (`/accept-invitation`, `/sign`, `/book/manage`) all 404 there.
+    Each tenant's CRM lives at `{slug}.{apex}`, so swap the hostname.
+    Mirrors the post-OAuth redirect logic in apps.integrations.views.
+    """
+    parsed = urlparse(settings.PUBLIC_BASE_URL.rstrip('/'))
+    apex = parsed.hostname or ''
+    apex = apex[4:] if apex.startswith('www.') else apex
+    host = f'{tenant.slug}.{apex}' if (tenant.slug and apex) else apex
+    if parsed.port:
+        host = f'{host}:{parsed.port}'
+    return urlunparse((parsed.scheme, host, '', '', '', ''))
+
+
 def _send_invitation_email(invitation: Invitation) -> None:
     """Render + send the invitation email. Pulled out so a future
     "resend" action can reuse it without re-creating the Invitation
     row (preserves audit trail of original invite_by + created_at)."""
-    # The accept link must land on the tenant's CRM app — NOT the bare
-    # apex. PUBLIC_BASE_URL points at the apex, which serves the
-    # marketing site and 404s on /accept-invitation. Each tenant's CRM
-    # lives at {slug}.{apex}, so swap the hostname. Mirrors the
-    # post-OAuth redirect logic in apps.integrations.views.
-    parsed = urlparse(settings.PUBLIC_BASE_URL.rstrip('/'))
-    apex = parsed.hostname or ''
-    apex = apex[4:] if apex.startswith('www.') else apex
-    crm_host = (
-        f'{invitation.tenant.slug}.{apex}'
-        if invitation.tenant.slug
-        else apex
+    # The accept link must land on the tenant's CRM app, not the bare
+    # apex (which serves the marketing site and 404s on CRM routes).
+    accept_url = (
+        f'{tenant_crm_base_url(invitation.tenant)}'
+        f'/accept-invitation/{invitation.token}'
     )
-    if parsed.port:
-        crm_host = f'{crm_host}:{parsed.port}'
-    base = urlunparse((parsed.scheme, crm_host, '', '', '', ''))
-    accept_url = f'{base}/accept-invitation/{invitation.token}'
     invited_by_name = ''
     if invitation.invited_by_id:
         u = invitation.invited_by

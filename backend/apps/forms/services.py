@@ -21,13 +21,13 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
 from django.template.loader import render_to_string
 from django.utils import timezone as djtz
 
 from apps.appointments.models import Appointment
+from apps.tenants.services import tenant_crm_base_url
 
 from .models import FormSubmission, FormTemplate, ServiceFormAssignment
 
@@ -237,9 +237,9 @@ def email_signed_copy(
         })
 
     # The /sign/<token> URL serves the same signed read-only view
-    # the operator sees — sharing it with the customer just means
-    # they hit the public route. Build absolute URL from settings.
-    fill_url = f"{settings.PUBLIC_BASE_URL.rstrip('/')}/sign/{submission.token}"
+    # the operator sees. /sign is a CRM-app route — build it against
+    # the tenant's CRM subdomain, not the bare apex (marketing site).
+    fill_url = f"{tenant_crm_base_url(customer.tenant)}/sign/{submission.token}"
 
     signed_at_local = submission.signed_at
     signed_date_str = (

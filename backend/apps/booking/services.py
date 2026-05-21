@@ -17,7 +17,6 @@ from __future__ import annotations
 import logging
 import secrets
 
-from django.conf import settings
 from django.core.mail import EmailMultiAlternatives
 from django.db import transaction
 from django.template.loader import render_to_string
@@ -27,6 +26,7 @@ from apps.appointments.models import Appointment
 from apps.customers.models import Customer
 from apps.services.models import Service
 from apps.tenants.models import Location, Tenant, TenantMembership
+from apps.tenants.services import tenant_crm_base_url
 
 logger = logging.getLogger(__name__)
 
@@ -245,8 +245,11 @@ def send_booking_confirmation(
     ]
     location_address = ', '.join(p for p in address_parts if p.strip())
 
+    # /book/manage is a CRM-app route — build it against the tenant's
+    # CRM subdomain, not the bare apex (which serves the marketing site
+    # and 404s on CRM routes).
     manage_url = (
-        f"{settings.PUBLIC_BASE_URL.rstrip('/')}/book/manage/{appointment.booking_token}"
+        f"{tenant_crm_base_url(tenant)}/book/manage/{appointment.booking_token}"
     )
 
     # Subject + headline differ by kind. Keep the template the same so
