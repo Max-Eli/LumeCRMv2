@@ -1,7 +1,7 @@
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
-import { Heart, MapPin, Megaphone, Shield, User } from 'lucide-react';
+import { Check, Gift, Heart, MapPin, Megaphone, Shield, User } from 'lucide-react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useForm } from 'react-hook-form';
@@ -23,7 +23,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { ApiError } from '@/lib/api';
-import { useCreateCustomer } from '@/lib/customers';
+import { useCreateCustomer, useResolveReferral } from '@/lib/customers';
 
 const schema = z.object({
   first_name: z.string().min(1, 'First name is required').max(100),
@@ -53,6 +53,9 @@ const schema = z.object({
   // defensible under TCPA / CAN-SPAM.
   email_marketing_opt_in: z.boolean(),
   sms_marketing_opt_in: z.boolean(),
+  // Optional referral capture (1A.2) — an existing client's code.
+  // Resolved + validated server-side; an unknown code is a 400.
+  referred_by_code: z.string().max(12).optional(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -83,6 +86,7 @@ export default function NewClientPage() {
       sms_opt_in: true,
       email_marketing_opt_in: true,
       sms_marketing_opt_in: true,
+      referred_by_code: '',
     },
   });
 
@@ -100,6 +104,7 @@ export default function NewClientPage() {
       date_of_birth: values.date_of_birth || null,
       sex: values.sex || undefined,
       state: values.state ? values.state.toUpperCase() : '',
+      referred_by_code: values.referred_by_code?.trim() || undefined,
     };
 
     create.mutate(payload, {
@@ -219,6 +224,28 @@ export default function NewClientPage() {
                   </Select>
                 </Field>
               </div>
+            </Section>
+
+            <Section title="Referral" icon={<Gift className="size-4" />}>
+              <Field>
+                <FieldLabel htmlFor="referred_by_code">
+                  Referred by code <Optional />
+                </FieldLabel>
+                <Input
+                  id="referred_by_code"
+                  placeholder="8-character client referral code"
+                  autoCapitalize="characters"
+                  autoComplete="off"
+                  maxLength={8}
+                  {...form.register('referred_by_code')}
+                />
+                <ReferralCodeFeedback code={watched.referred_by_code ?? ''} />
+                {form.formState.errors.referred_by_code ? (
+                  <FieldError>
+                    {form.formState.errors.referred_by_code.message}
+                  </FieldError>
+                ) : null}
+              </Field>
             </Section>
 
             <Section title="Address" icon={<MapPin className="size-4" />}>
@@ -424,6 +451,44 @@ function Required() {
 
 function Optional() {
   return <span className="text-muted-foreground/70 text-xs font-normal ml-1">(optional)</span>;
+}
+
+/** Live feedback under the "Referred by code" input — resolves the
+ *  code to a client name as the operator types the 8th character. */
+function ReferralCodeFeedback({ code }: { code: string }) {
+  const trimmed = code.trim();
+  const lookup = useResolveReferral(trimmed);
+
+  if (trimmed.length === 0) return null;
+  if (trimmed.length < 8) {
+    return (
+      <p className="text-xs text-muted-foreground mt-1.5">
+        Referral codes are 8 characters.
+      </p>
+    );
+  }
+  if (lookup.isLoading) {
+    return <p className="text-xs text-muted-foreground mt-1.5">Checking code…</p>;
+  }
+  if (lookup.isError) {
+    return (
+      <p className="text-xs text-muted-foreground mt-1.5">
+        Couldn&apos;t verify the code right now — you can still save.
+      </p>
+    );
+  }
+  if (lookup.data) {
+    return (
+      <p className="text-xs font-medium text-emerald-600 mt-1.5 flex items-center gap-1">
+        <Check className="size-3.5" /> Referred by {lookup.data.full_name}
+      </p>
+    );
+  }
+  return (
+    <p className="text-xs text-destructive mt-1.5">
+      No client found with that referral code.
+    </p>
+  );
 }
 
 function CheckboxRow({

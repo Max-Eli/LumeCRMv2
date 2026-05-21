@@ -1,4 +1,6 @@
 from django.contrib import admin
+from django.urls import reverse
+from django.utils.html import format_html_join
 
 from .models import Customer, CustomerTag
 
@@ -22,8 +24,11 @@ class CustomerAdmin(admin.ModelAdmin):
         'first_name', 'last_name', 'preferred_name',
         'email', 'phone', 'external_id', 'referral_code',
     )
-    autocomplete_fields = ('tenant', 'tags')
-    readonly_fields = ('referral_code', 'created_at', 'updated_at')
+    autocomplete_fields = ('tenant', 'tags', 'referred_by')
+    readonly_fields = (
+        'referral_code', 'referred_customers_list',
+        'created_at', 'updated_at',
+    )
     fieldsets = (
         ('Identity', {
             'fields': ('tenant', 'first_name', 'last_name', 'preferred_name', 'email', 'phone', 'status', 'tags'),
@@ -44,6 +49,9 @@ class CustomerAdmin(admin.ModelAdmin):
         ('CRM', {
             'fields': ('notes', 'referral_source', 'email_opt_in', 'sms_opt_in'),
         }),
+        ('Referrals', {
+            'fields': ('referral_code', 'referred_by', 'referred_customers_list'),
+        }),
         ('Provenance', {
             'fields': ('external_id', 'external_source', 'imported_at'),
             'classes': ('collapse',),
@@ -53,3 +61,21 @@ class CustomerAdmin(admin.ModelAdmin):
             'classes': ('collapse',),
         }),
     )
+
+    @admin.display(description='Clients referred by this client')
+    def referred_customers_list(self, obj):
+        """Reverse-lookup — every client who used this client's referral
+        code at intake, as links to their admin pages."""
+        if obj.pk is None:
+            return '—'
+        referred = obj.referred_customers.all()
+        if not referred:
+            return '—'
+        return format_html_join(
+            ', ',
+            '<a href="{}">{}</a>',
+            (
+                (reverse('admin:customers_customer_change', args=[c.pk]), str(c))
+                for c in referred
+            ),
+        )

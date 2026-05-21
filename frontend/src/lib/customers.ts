@@ -11,7 +11,7 @@
 
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
-import { api } from './api';
+import { ApiError, api } from './api';
 
 /** Acquisition source — first-touch attribution per customer. ADR 0027 §8a.
  *  Immutable after create; powers the acquisition reports. */
@@ -45,6 +45,16 @@ export interface CustomerListItem {
   is_social_guest?: boolean;
   instagram_handle?: string;
   acquisition_source?: CustomerAcquisitionSource;
+}
+
+/** Minimal customer reference used by both ends of a referral link —
+ *  the `referred_by` pointer and the `referred_customers` list. No PHI. */
+export interface ReferralCustomerLink {
+  id: number;
+  full_name: string;
+  referral_code: string;
+  status: 'active' | 'inactive' | 'blocked';
+  created_at: string;
 }
 
 /** Full customer record. Includes medical PHI — show only to authorized roles. */
@@ -83,6 +93,10 @@ export interface CustomerDetail extends CustomerListItem {
   email_marketing_suppression_source: string;
   sms_marketing_suppression_source: string;
   referral_code: string;
+  /** Who referred this client (1A.2). Null if not referred. */
+  referred_by: ReferralCustomerLink | null;
+  /** Clients this client referred in — newest first. */
+  referred_customers: ReferralCustomerLink[];
   external_id: string;
   external_source: string;
   imported_at: string | null;
@@ -128,6 +142,9 @@ export interface CreateCustomerInput {
   sms_marketing_opt_in?: boolean;
   status?: 'active' | 'inactive' | 'blocked';
   tag_ids?: number[];
+  /** An existing client's referral code (1A.2). Resolved server-side
+   *  to set `referred_by`; an unknown code is a 400 on this field. */
+  referred_by_code?: string;
 }
 
 /** Role-based UI gate for PHI sections on the customer detail screen.
@@ -172,6 +189,38 @@ export function useCustomer(id: number | undefined) {
     queryKey: id ? customerKey(id) : ['customers', 'disabled'],
     queryFn: () => api.get<CustomerDetail>(`/api/customers/${id}/`),
     enabled: typeof id === 'number' && id > 0,
+  });
+}
+
+/** Result of resolving a referral code — the matched client's id + name. */
+export interface ReferralResolveResult {
+  id: number;
+  full_name: string;
+}
+
+/**
+ * Live-resolve a referral code for the new-client form's "Referred by"
+ * field. Returns the matched client on a hit, `null` when the code
+ * matches nothing (a 404 from the endpoint). Only fires once the code
+ * is a complete 8-character code, so typing doesn't spam the endpoint.
+ */
+export function useResolveReferral(code: string) {
+  const normalized = code.trim().toUpperCase();
+  return useQuery<ReferralResolveResult | null>({
+    queryKey: ['referral-resolve', normalized],
+    enabled: normalized.length === 8,
+    staleTime: 60 * 1000,
+    retry: false,
+    queryFn: async () => {
+      try {
+        return await api.get<ReferralResolveResult>(
+          `/api/customers/resolve-referral/?code=${encodeURIComponent(normalized)}`,
+        );
+      } catch (err) {
+        if (err instanceof ApiError && err.status === 404) return null;
+        throw err;
+      }
+    },
   });
 }
 

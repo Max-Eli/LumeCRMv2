@@ -263,3 +263,157 @@ class SocialGuestListFilterTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertEqual(response.data['id'], self.social_guest.id)
         self.assertTrue(response.data['is_social_guest'])
+
+
+class CustomerReferralTests(TestCase):
+    """Phase 1A.2 — referral capture layer: the `referred_by` link, the
+    `referred_by_code` intake input, the `referred_customers` reverse
+    list, and the resolve-referral lookup endpoint."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('ref-cap')
+        cls.other_tenant, cls.other_owner = _make_tenant('ref-other')
+        # An established client whose code new clients can use.
+        cls.referrer = Customer.objects.create(
+            tenant=cls.tenant, first_name='Rita', last_name='Referrer',
+            email='rita@test.local',
+        )
+        cls.headers = {'HTTP_X_TENANT_SLUG': cls.tenant.slug}
+        cls.list_url = reverse('customer-list')
+        cls.resolve_url = reverse('customer-resolve-referral')
+
+    def test_create_with_valid_code_links_referrer(self):
+        resp = _client(self.owner).post(
+            self.list_url,
+            {'first_name': 'New', 'last_name': 'Client',
+             'referred_by_code': self.referrer.referral_code},
+            format='json', **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['referred_by']['id'], self.referrer.id)
+        created = Customer.objects.get(pk=resp.data['id'])
+        self.assertEqual(created.referred_by_id, self.referrer.id)
+
+    def test_create_with_lowercase_code_resolves(self):
+        """Codes are stored uppercase; intake input is case-insensitive."""
+        resp = _client(self.owner).post(
+            self.list_url,
+            {'first_name': 'Lower', 'last_name': 'Case',
+             'referred_by_code': self.referrer.referral_code.lower()},
+            format='json', **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertEqual(resp.data['referred_by']['id'], self.referrer.id)
+
+    def test_unknown_code_is_rejected(self):
+        resp = _client(self.owner).post(
+            self.list_url,
+            {'first_name': 'No', 'last_name': 'Match',
+             'referred_by_code': 'ZZZZ9999'},
+            format='json', **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('referred_by_code', resp.data)
+
+    def test_blank_code_creates_without_referrer(self):
+        resp = _client(self.owner).post(
+            self.list_url,
+            {'first_name': 'Solo', 'last_name': 'Client',
+             'referred_by_code': ''},
+            format='json', **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED)
+        self.assertIsNone(resp.data['referred_by'])
+
+    def test_code_from_another_tenant_does_not_resolve(self):
+        """Tenant isolation — a real code from another spa is 'not found'."""
+        foreign = Customer.objects.create(
+            tenant=self.other_tenant, first_name='Foreign', last_name='Client',
+            email='foreign@test.local',
+        )
+        resp = _client(self.owner).post(
+            self.list_url,
+            {'first_name': 'Cross', 'last_name': 'Tenant',
+             'referred_by_code': foreign.referral_code},
+            format='json', **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_detail_includes_referred_customers(self):
+        """A referred client appears in the referrer's reverse list."""
+        Customer.objects.create(
+            tenant=self.tenant, first_name='Brought', last_name='In',
+            email='brought@test.local', referred_by=self.referrer,
+        )
+        resp = _client(self.owner).get(
+            reverse('customer-detail', kwargs={'pk': self.referrer.pk}),
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        referred = resp.data['referred_customers']
+        self.assertEqual(len(referred), 1)
+        self.assertEqual(referred[0]['full_name'], 'Brought In')
+
+    def test_self_referral_rejected_on_update(self):
+        resp = _client(self.owner).patch(
+            reverse('customer-detail', kwargs={'pk': self.referrer.pk}),
+            {'referred_by_code': self.referrer.referral_code},
+            format='json', **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_resolve_referral_endpoint_hit(self):
+        resp = _client(self.owner).get(
+            f'{self.resolve_url}?code={self.referrer.referral_code}',
+            **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        self.assertEqual(resp.data['id'], self.referrer.id)
+        self.assertEqual(resp.data['full_name'], 'Rita Referrer')
+
+    def test_resolve_referral_endpoint_miss(self):
+        resp = _client(self.owner).get(
+            f'{self.resolve_url}?code=ZZZZ9999', **self.headers,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_404_NOT_FOUND)
+
+
+class CustomerSearchTests(TestCase):
+    """The customer list `?q=` search must handle a full-name query.
+    Each term is matched against any field; matching the whole string
+    against each field finds nothing for a 'first last' search."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('cust-search')
+        cls.laura = Customer.objects.create(
+            tenant=cls.tenant, first_name='Laura', last_name='Lou',
+            email='laura@test.local',
+        )
+        # Decoy — shares the 'laura' term but not 'lou'.
+        Customer.objects.create(
+            tenant=cls.tenant, first_name='Laura', last_name='Smith',
+            email='lauras@test.local',
+        )
+        cls.url = reverse('customer-list')
+        cls.headers = {'HTTP_X_TENANT_SLUG': cls.tenant.slug}
+
+    def _search(self, q: str) -> set[int]:
+        resp = _client(self.owner).get(self.url, {'q': q}, **self.headers)
+        self.assertEqual(resp.status_code, status.HTTP_200_OK)
+        rows = resp.data['results'] if isinstance(resp.data, dict) else resp.data
+        return {row['id'] for row in rows}
+
+    def test_full_name_search_finds_customer(self):
+        self.assertIn(self.laura.id, self._search('laura lou'))
+
+    def test_full_name_search_is_order_independent(self):
+        self.assertIn(self.laura.id, self._search('lou laura'))
+
+    def test_full_name_search_excludes_partial_match(self):
+        # 'Laura Smith' shares 'laura' but not 'lou' — must not appear.
+        self.assertEqual(self._search('laura lou'), {self.laura.id})
+
+    def test_single_term_search_still_works(self):
+        self.assertIn(self.laura.id, self._search('laura'))

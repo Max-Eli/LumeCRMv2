@@ -62,12 +62,17 @@ class CustomerViewSet(viewsets.ModelViewSet):
         qs = (
             Customer.objects
             .for_current_tenant()
+            .select_related('referred_by')
             .prefetch_related('tags')
         )
         if self.action == 'list':
             include = (self.request.query_params.get('include_social_guests') or '').strip().lower()
             if include not in ('1', 'true', 'yes', 'on'):
                 qs = qs.filter(is_social_guest=False)
+        else:
+            # Detail + action payloads carry the referral reverse side
+            # (everyone this client referred); prefetch to avoid N+1.
+            qs = qs.prefetch_related('referred_customers')
         return qs
 
     def get_serializer_class(self):
@@ -81,13 +86,20 @@ class CustomerViewSet(viewsets.ModelViewSet):
         status_filter = (params.get('status') or '').strip()
 
         if q:
-            queryset = queryset.filter(
-                Q(first_name__icontains=q)
-                | Q(last_name__icontains=q)
-                | Q(preferred_name__icontains=q)
-                | Q(email__icontains=q)
-                | Q(phone__icontains=q)
-            )
+            # Match each whitespace-separated term against any name or
+            # contact field, AND-ed across terms. A full-name search
+            # ("laura lou") only works this way — matching the whole
+            # string against each field individually finds nothing,
+            # because no single field holds both words. Term order is
+            # irrelevant ("lou laura" matches too).
+            for term in q.split():
+                queryset = queryset.filter(
+                    Q(first_name__icontains=term)
+                    | Q(last_name__icontains=term)
+                    | Q(preferred_name__icontains=term)
+                    | Q(email__icontains=term)
+                    | Q(phone__icontains=term)
+                )
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         return queryset
@@ -153,6 +165,36 @@ class CustomerViewSet(viewsets.ModelViewSet):
             metadata={'last_name': instance.last_name},
         )
         instance.delete()
+
+    @action(detail=False, methods=['get'], url_path='resolve-referral')
+    def resolve_referral(self, request):
+        """Resolve a referral code to a client — backs the new-client
+        form's live "Referred by" lookup.
+
+        `GET /api/customers/resolve-referral/?code=ABCD2345`
+
+        Returns `{id, full_name}` on a hit, 404 on a miss. Tenant-scoped,
+        so a code from another spa never resolves. This returns identity
+        only (a name), not PHI, so it is not audited — the customer
+        create/update call that consumes the resolved code IS audited.
+        """
+        code = (request.query_params.get('code') or '').strip().upper()
+        if not code:
+            raise ValidationError({'code': 'A referral code is required.'})
+        tenant = get_current_tenant()
+        if tenant is None:
+            raise PermissionDenied('No tenant context resolved for this request.')
+        referrer = (
+            Customer.objects
+            .filter(tenant=tenant, referral_code=code)
+            .first()
+        )
+        if referrer is None:
+            return Response(
+                {'detail': 'No client found with that referral code.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response({'id': referrer.id, 'full_name': referrer.full_name})
 
     @action(
         detail=True,

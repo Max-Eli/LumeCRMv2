@@ -821,6 +821,10 @@ function ProfileTab({ customer }: { customer: CustomerDetail }) {
 // ── Referrals tab ────────────────────────────────────────────────────────
 
 function ReferralsTab({ customer }: { customer: CustomerDetail }) {
+  const referredBy = customer.referred_by;
+  const referred = customer.referred_customers ?? [];
+  const firstName = customer.first_name || 'This client';
+
   return (
     <div className="space-y-6">
       <Card>
@@ -836,32 +840,85 @@ function ReferralsTab({ customer }: { customer: CustomerDetail }) {
             </code>
           </div>
           <p className="text-sm text-muted-foreground">
-            Share this code with potential clients. Once reward redemption ships in Phase 2H,
-            successful referrals can credit both the referrer and the new client according to
-            your tenant's referral program settings.
+            Share this code with potential clients. When a new client enters it on
+            their intake form, the referral is recorded here. Reward redemption —
+            credit for both the referrer and the new client — ships in Phase 2H.
           </p>
         </CardContent>
       </Card>
 
-      <Card className="bg-muted/30">
+      <Card>
         <CardHeader>
           <CardTitle className="text-sm font-medium uppercase tracking-wide">
-            Referral history
+            Referred by
           </CardTitle>
         </CardHeader>
-        <CardContent className="text-sm text-muted-foreground space-y-2">
-          <p>
-            <strong className="text-foreground">Referred by:</strong> coming with Phase 1A.2 (the
-            "Referred by code" input on the new-client form).
-          </p>
-          <p>
-            <strong className="text-foreground">People they've referred:</strong> coming with
-            Phase 1A.2.
-          </p>
-          <p>
-            <strong className="text-foreground">Reward credit balance + redemption history:</strong>{' '}
-            coming with Phase 2H.
-          </p>
+        <CardContent>
+          {referredBy ? (
+            <Link
+              href={`/clients/${referredBy.id}`}
+              className="group -m-2 flex items-center gap-3 rounded-md p-2 transition-colors hover:bg-muted/60"
+            >
+              <InitialsAvatar name={referredBy.full_name} size="sm" />
+              <div className="min-w-0">
+                <p className="truncate text-sm font-medium group-hover:underline">
+                  {referredBy.full_name}
+                </p>
+                <p className="font-mono text-xs text-muted-foreground">
+                  {referredBy.referral_code}
+                </p>
+              </div>
+            </Link>
+          ) : (
+            <p className="text-sm text-muted-foreground">
+              {firstName} wasn&apos;t referred by an existing client.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-sm font-medium uppercase tracking-wide">
+            People they&apos;ve referred
+            {referred.length > 0 ? (
+              <span className="rounded-full bg-muted px-2 py-0.5 text-xs font-normal normal-case tracking-normal text-muted-foreground">
+                {referred.length}
+              </span>
+            ) : null}
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          {referred.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No referrals yet. When someone enters {firstName}&apos;s code on
+              their intake form, they&apos;ll appear here.
+            </p>
+          ) : (
+            <ul className="-my-2 divide-y">
+              {referred.map((c) => (
+                <li key={c.id}>
+                  <Link
+                    href={`/clients/${c.id}`}
+                    className="group flex items-center gap-3 py-3"
+                  >
+                    <InitialsAvatar name={c.full_name} size="sm" />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate text-sm font-medium group-hover:underline">
+                        {c.full_name}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        Joined {formatDate(c.created_at)}
+                      </p>
+                    </div>
+                    <StatusBadge tone={customerStatusTone(c.status)}>
+                      {c.status}
+                    </StatusBadge>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
         </CardContent>
       </Card>
     </div>

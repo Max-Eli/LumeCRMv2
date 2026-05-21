@@ -28,6 +28,9 @@ class CustomerPermission(BasePermission):
         'destroy': P.DELETE_CLIENT_RECORD,
         # Social-guest → real-customer merge (ADR 0027 §8b).
         'merge_into': P.EDIT_CLIENT_RECORD,
+        # Referral-code lookup for the new-client form (1A.2) — a
+        # read-tier action, gated like list/retrieve.
+        'resolve_referral': P.VIEW_CLIENT_LIST,
     }
 
     def has_permission(self, request, view):

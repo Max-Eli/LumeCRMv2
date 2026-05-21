@@ -46,6 +46,19 @@ class CustomerTagSerializer(serializers.ModelSerializer):
         fields = ['id', 'name', 'color', 'sort_order']
 
 
+class ReferralCustomerSerializer(serializers.ModelSerializer):
+    """Minimal customer reference used by both ends of a referral link —
+    the `referred_by` pointer and the `referred_customers` list on the
+    detail record. Identity only (name + code + status), no PHI."""
+
+    full_name = serializers.CharField(read_only=True)
+
+    class Meta:
+        model = Customer
+        fields = ['id', 'full_name', 'referral_code', 'status', 'created_at']
+        read_only_fields = fields
+
+
 class CustomerListSerializer(serializers.ModelSerializer):
     """Minimal customer record for the list endpoint — no medical PHI."""
 
@@ -88,6 +101,20 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
         required=False,
         source='tags',
     )
+    # Referrals (1A.2). `referred_by` is the nested referrer for display;
+    # `referred_by_code` is the write-only intake input — an existing
+    # client's referral code, resolved tenant-scoped in validation.
+    # `referred_customers` is the reverse side: everyone this client
+    # brought in.
+    referred_by = ReferralCustomerSerializer(read_only=True)
+    referred_by_code = serializers.CharField(
+        write_only=True,
+        required=False,
+        allow_blank=True,
+        source='referred_by',
+        help_text="An existing client's referral code; resolves to that client.",
+    )
+    referred_customers = ReferralCustomerSerializer(many=True, read_only=True)
 
     class Meta:
         model = Customer
@@ -118,8 +145,10 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
             'email_marketing_suppression_source', 'sms_marketing_suppression_source',
             # Status + tags
             'status', 'tags', 'tag_ids',
-            # Referral (read-only)
+            # Referrals (1A.2) — code is auto-generated/read-only;
+            # referred_by_code is the write-only intake input.
             'referral_code',
+            'referred_by', 'referred_by_code', 'referred_customers',
             # Provenance (read-only)
             'external_id', 'external_source', 'imported_at',
             # Acquisition (ADR 0027 §8a) — first-touch, read-only
@@ -177,6 +206,38 @@ class CustomerDetailSerializer(serializers.ModelSerializer):
             for f in PHI_FIELDS:
                 data.pop(f, None)
         return data
+
+    def validate_referred_by_code(self, value: str):
+        """Resolve a referral code to a Customer in the current tenant.
+
+        Empty input means 'no referrer' (clears the link on update).
+        An unknown code is a hard error — surfaced verbatim as the
+        new-client form's 'code not found' message. A client cannot be
+        their own referrer. The lookup is tenant-scoped so a code from
+        another spa never resolves."""
+        code = (value or '').strip().upper()
+        if not code:
+            return None
+        request = self.context.get('request')
+        tenant = getattr(request, 'tenant', None) if request else None
+        if tenant is None:
+            raise serializers.ValidationError(
+                'No tenant context for this request.'
+            )
+        referrer = (
+            Customer.objects
+            .filter(tenant=tenant, referral_code=code)
+            .first()
+        )
+        if referrer is None:
+            raise serializers.ValidationError(
+                f'No client found with referral code “{code}”.'
+            )
+        if self.instance is not None and referrer.pk == self.instance.pk:
+            raise serializers.ValidationError(
+                'A client cannot be referred by themselves.'
+            )
+        return referrer
 
     def validate(self, attrs: dict) -> dict:
         """Defense-in-depth: a user without `VIEW_CLIENT_PHI` cannot WRITE

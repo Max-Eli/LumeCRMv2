@@ -189,6 +189,18 @@ class Customer(TenantedModel):
         db_index=True,
         help_text='Auto-generated; immutable from the API. Unique within the tenant.',
     )
+    # Who referred this client. Self-FK, always within the same tenant
+    # (the code is resolved tenant-scoped on write). SET_NULL so deleting
+    # a referrer never cascades into losing the referred client's record.
+    # Reverse side `referred_customers` is everyone this client brought in.
+    referred_by = models.ForeignKey(
+        'self',
+        null=True,
+        blank=True,
+        on_delete=models.SET_NULL,
+        related_name='referred_customers',
+        help_text="The existing client whose referral code this client used at intake.",
+    )
 
     # Migration provenance
     external_id = models.CharField(max_length=100, blank=True, db_index=True)
