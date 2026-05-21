@@ -42,7 +42,7 @@ import {
 } from '@dnd-kit/core';
 import { useQueryClient } from '@tanstack/react-query';
 import { Check, Clock } from 'lucide-react';
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
 import { InitialsAvatar } from '@/components/initials-avatar';
@@ -119,6 +119,14 @@ type ColumnDropData = {
   type: 'column';
   provider: Membership;
 };
+
+/** Commits an appointment-block resize — a new end_time + the matching
+ *  duration. Wired from `DayView` down to each `AppointmentBlock`. */
+type ResizeHandler = (
+  appt: Appointment,
+  newEnd: Date,
+  newDurationMinutes: number,
+) => void;
 
 /**
  * Open-context-menu state for the reschedule flow. The menu is a small
@@ -281,6 +289,56 @@ export function DayView({
       }
     },
     [qc, date, providers],
+  );
+
+  // Resize: change only the appointment's end_time (drag the bottom
+  // edge of a block to extend / shorten it). Service, provider, and
+  // start stay put — it's a duration change, not a reschedule. The
+  // optimistic cache write is synchronous so the block settles at the
+  // new height with no flash when the gesture ends; the backend
+  // re-validates (working hours, overlaps) and a 400 rolls it back.
+  const resizeAppointment = useCallback(
+    async (appt: Appointment, newEnd: Date, newDurationMinutes: number) => {
+      const queryKey = ['appointments', 'date', date] as const;
+      const previous = qc.getQueryData<Appointment[]>(queryKey);
+
+      qc.setQueryData<Appointment[]>(queryKey, (old) =>
+        (old ?? []).map((a) =>
+          a.id === appt.id
+            ? {
+                ...a,
+                end_time: newEnd.toISOString(),
+                duration_minutes: newDurationMinutes,
+              }
+            : a,
+        ),
+      );
+      await qc.cancelQueries({ queryKey });
+
+      try {
+        await api.patch<Appointment>(`/api/appointments/${appt.id}/`, {
+          end_time: newEnd.toISOString(),
+        });
+        toast.success('Appointment length updated');
+      } catch (err) {
+        if (previous) qc.setQueryData(queryKey, previous);
+        if (err instanceof ApiError && err.status === 400 && typeof err.body === 'object' && err.body) {
+          const body = err.body as Record<string, string[] | string>;
+          const firstField = Object.keys(body)[0];
+          const detail = firstField
+            ? Array.isArray(body[firstField])
+              ? (body[firstField] as string[])[0]
+              : String(body[firstField])
+            : 'Could not resize appointment.';
+          toast.error(detail);
+        } else {
+          toast.error('Could not resize appointment. Please try again.');
+        }
+      } finally {
+        qc.invalidateQueries({ queryKey });
+      }
+    },
+    [qc, date],
   );
 
   // ── Right-click context menus (reschedule + create) ─────────────────────
@@ -570,6 +628,7 @@ export function DayView({
               reschedulingApptId={rescheduling?.appointmentId ?? null}
               onRescheduleContextMenu={openContextMenu}
               onCreateContextMenu={openCreateMenu}
+              onResize={resizeAppointment}
             />
           ))}
 
@@ -728,6 +787,7 @@ function ProviderColumn({
   reschedulingApptId,
   onRescheduleContextMenu,
   onCreateContextMenu,
+  onResize,
 }: {
   provider: Membership;
   appointments: Appointment[];
@@ -768,6 +828,8 @@ function ProviderColumn({
     providerId: number;
     yInColumn: number;
   }) => void;
+  /** Commits an appointment-block resize (drag the bottom edge). */
+  onResize: ResizeHandler;
 }) {
   const dropData: ColumnDropData = { type: 'column', provider };
   const { setNodeRef, isOver } = useDroppable({
@@ -894,6 +956,7 @@ function ProviderColumn({
               lanesInCluster={laneInfo.lanesInCluster}
               dayStartHour={dayStartHour}
               dayEndHour={dayEndHour}
+              onResize={onResize}
             />
           );
         })}
@@ -986,6 +1049,7 @@ function AppointmentBlock({
   lanesInCluster,
   dayStartHour,
   dayEndHour,
+  onResize,
 }: {
   appointment: Appointment;
   timezone: string;
@@ -1004,6 +1068,8 @@ function AppointmentBlock({
    *  `positionFor` so the block clamps to the right window. */
   dayStartHour: number;
   dayEndHour: number;
+  /** Commits a resize when the operator drags the block's bottom edge. */
+  onResize: ResizeHandler;
 }) {
   const { topPx, heightPx, fitsInWindow } = positionFor(
     appointment,
@@ -1026,7 +1092,64 @@ function AppointmentBlock({
     disabled: isTerminal || isReschedulingSource,
   });
 
+  // ── Resize — drag the bottom edge to change the appointment length ──
+  const startMs = new Date(appointment.start_time).getTime();
+  const endMs = new Date(appointment.end_time).getTime();
+  const currentDurationMin = Math.max(
+    SNAP_MINUTES,
+    Math.round((endMs - startMs) / 60_000),
+  );
+  // Non-null while a resize gesture is in progress — drives the live
+  // preview height. The ref holds the gesture's start anchor so pointer
+  // moves don't need it in state.
+  const [resizePreviewMin, setResizePreviewMin] = useState<number | null>(null);
+  const resizeAnchor = useRef<{ startY: number; startDuration: number } | null>(null);
+  const canResize = !isTerminal && !isReschedulingSource;
+
+  const onResizePointerDown = (e: React.PointerEvent) => {
+    if (!canResize) return;
+    // Stop dnd-kit (its listeners sit on the parent button) from also
+    // starting a move-drag, and keep the click off the popover trigger.
+    e.stopPropagation();
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    resizeAnchor.current = { startY: e.clientY, startDuration: currentDurationMin };
+    setResizePreviewMin(currentDurationMin);
+  };
+
+  const onResizePointerMove = (e: React.PointerEvent) => {
+    const anchor = resizeAnchor.current;
+    if (!anchor) return;
+    const deltaMin = (e.clientY - anchor.startY) / pxPerMin;
+    const snapped =
+      Math.round((anchor.startDuration + deltaMin) / SNAP_MINUTES) * SNAP_MINUTES;
+    setResizePreviewMin(Math.max(SNAP_MINUTES, snapped));
+  };
+
+  const onResizePointerUp = (e: React.PointerEvent) => {
+    const anchor = resizeAnchor.current;
+    const finalMin = resizePreviewMin;
+    resizeAnchor.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Pointer capture may already be released — ignore.
+    }
+    if (anchor && finalMin !== null && finalMin !== anchor.startDuration) {
+      // Commit (synchronous optimistic cache write) before clearing the
+      // preview, so the block never flashes back to its old height.
+      onResize(appointment, new Date(startMs + finalMin * 60_000), finalMin);
+    }
+    setResizePreviewMin(null);
+  };
+
   if (!fitsInWindow) return null;
+
+  // While resizing, the block height tracks the live preview duration.
+  const effectiveHeightPx =
+    resizePreviewMin !== null
+      ? Math.max(24, resizePreviewMin * pxPerMin)
+      : heightPx;
 
   const color = appointment.service.category_color ?? 'hsl(220 9% 46%)';
   const cancelled = appointment.status === 'cancelled' || appointment.status === 'no_show';
@@ -1082,7 +1205,7 @@ function AppointmentBlock({
       )}
       style={{
         top: `${topPx}px`,
-        height: `${heightPx}px`,
+        height: `${effectiveHeightPx}px`,
         borderLeft: `3px solid ${color}`,
         backgroundColor: cancelled ? 'transparent' : `color-mix(in oklch, ${color} 6%, var(--card))`,
         transform: transformStyle,
@@ -1140,6 +1263,21 @@ function AppointmentBlock({
           ) : null}
         </div>
       </div>
+
+      {/* Resize handle — drag the bottom edge to lengthen / shorten.
+          stopPropagation on the pointer + click keeps dnd-kit's move
+          drag and the popover trigger from firing. */}
+      {canResize ? (
+        <div
+          onPointerDown={onResizePointerDown}
+          onPointerMove={onResizePointerMove}
+          onPointerUp={onResizePointerUp}
+          onClick={(e) => e.stopPropagation()}
+          title="Drag to change the appointment length"
+          className="absolute inset-x-0 bottom-0 h-2 cursor-ns-resize touch-none"
+          aria-hidden
+        />
+      ) : null}
     </button>
   );
 
