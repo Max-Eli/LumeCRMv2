@@ -38,6 +38,7 @@ import {
   PanelRightOpen,
   Receipt,
   Settings2,
+  ShoppingBag,
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
@@ -50,6 +51,7 @@ export type CalendarTool =
   | 'price-check'
   | 'online-bookings'
   | 'waitlist'
+  | 'new-sale'
   | 'packages'
   | 'reports'
   | 'view-settings';
@@ -88,6 +90,14 @@ export const TOOLS: readonly ToolDef[] = [
   { id: 'price-check', label: 'Price check', icon: Receipt },
   { id: 'online-bookings', label: 'Online bookings', icon: Globe },
   { id: 'waitlist', label: 'Waitlist', icon: Clock },
+  {
+    id: 'new-sale',
+    label: 'New sale',
+    icon: ShoppingBag,
+    popoutUrl: '/new-sale',
+    popoutTarget: 'lume-new-sale',
+    popoutFeatures: 'popup,width=760,height=820,noopener=no,noreferrer=no',
+  },
   {
     id: 'packages',
     label: 'Custom packages',

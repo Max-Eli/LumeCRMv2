@@ -19,15 +19,17 @@ Audit logging on every action; tenant scoping via
 `select_for_update` inside the model methods themselves.
 """
 
+from django.db import transaction
 from django.http import HttpResponse
 from drf_spectacular.utils import OpenApiResponse, extend_schema
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.response import Response
 
 from apps.audit.models import AuditLog
 from apps.audit.services import record
+from apps.tenants.context import get_current_tenant
 
 from .models import (
     Invoice,
@@ -42,6 +44,7 @@ from .serializers import (
     AddLineInputSerializer,
     ApplyGiftCardInputSerializer,
     CloseInvoiceInputSerializer,
+    CreateStandaloneInvoiceInputSerializer,
     InvoiceSerializer,
     RedeemFromMembershipInputSerializer,
     RedeemFromPackageInputSerializer,
@@ -115,6 +118,76 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
         )
         serializer = self.get_serializer(instance)
         return Response(serializer.data)
+
+    # ── Standalone invoice creation ──────────────────────────────────────
+
+    @extend_schema(
+        request=CreateStandaloneInvoiceInputSerializer,
+        responses={
+            201: InvoiceSerializer,
+            400: OpenApiResponse(description='Unknown customer'),
+            403: OpenApiResponse(description='Missing PROCESS_PAYMENT permission'),
+        },
+    )
+    @action(detail=False, methods=['post'], url_path='create-standalone')
+    def create_standalone(self, request):
+        """`POST /api/invoices/create-standalone/` — open a blank
+        invoice for a walk-in sale with no appointment.
+
+        Backs the calendar "New sale" tool: a customer wants to buy a
+        product, gift card, or membership without booking. The invoice
+        is created OPEN with no line items; the operator then adds
+        lines and takes payment on the take-payment page. Mirrors the
+        invoice-creation discipline of the appointment-booked path —
+        same `assign_invoice_number` locking, same OPEN start state.
+        """
+        from apps.customers.models import Customer
+
+        from .services import assign_invoice_number
+
+        tenant = get_current_tenant()
+        if tenant is None:
+            raise PermissionDenied('No tenant context resolved for this request.')
+
+        ser = CreateStandaloneInvoiceInputSerializer(data=request.data)
+        ser.is_valid(raise_exception=True)
+
+        try:
+            customer = Customer.objects.get(
+                pk=ser.validated_data['customer_id'], tenant=tenant,
+            )
+        except Customer.DoesNotExist:
+            return Response(
+                {'customer_id': 'Unknown customer.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            invoice = Invoice.objects.create(
+                tenant=tenant,
+                customer=customer,
+                appointment=None,
+                status=Invoice.Status.OPEN,
+                created_by=request.user if request.user.is_authenticated else None,
+            )
+            assign_invoice_number(invoice)
+
+        record(
+            action=AuditLog.Action.CREATE,
+            resource_type='invoice',
+            resource_id=invoice.id,
+            request=request,
+            metadata={
+                'event': 'standalone_invoice_created',
+                'customer_id': customer.id,
+            },
+        )
+
+        invoice.refresh_from_db()
+        return Response(
+            self.get_serializer(invoice).data,
+            status=status.HTTP_201_CREATED,
+        )
 
     @extend_schema(
         responses={

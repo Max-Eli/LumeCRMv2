@@ -2379,3 +2379,68 @@ class InvoiceEmailTests(TestCase):
         self.client.post(self._email_url(self.invoice.pk), HTTP_X_TENANT_SLUG=self.tenant.slug)
         self.client.post(self._email_url(self.invoice.pk), HTTP_X_TENANT_SLUG=self.tenant.slug)
         self.assertEqual(len(mail.outbox), 2)
+
+
+# ── Standalone invoice creation (walk-in sale) ──────────────────────────
+
+
+class StandaloneInvoiceCreateTests(TestCase):
+    """`POST /api/invoices/create-standalone/` — the walk-in sale flow:
+    open a blank invoice for a customer with no appointment."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('standalone-inv')
+        self.customer = _make_customer(self.tenant)
+        self.url = reverse('invoice-create-standalone')
+
+    def _post(self, user, customer_id):
+        client = APIClient()
+        client.force_login(user)
+        return client.post(
+            self.url, data={'customer_id': customer_id}, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+
+    def test_owner_creates_blank_open_standalone_invoice(self):
+        resp = self._post(self.owner, self.customer.id)
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        invoice = Invoice.objects.get(pk=resp.data['id'])
+        self.assertEqual(invoice.status, Invoice.Status.OPEN)
+        self.assertIsNone(invoice.appointment)
+        self.assertEqual(invoice.customer_id, self.customer.id)
+        self.assertEqual(invoice.line_items.count(), 0)
+        self.assertTrue(invoice.invoice_number)
+
+    def test_unknown_customer_rejected(self):
+        resp = self._post(self.owner, 999999)
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('customer_id', resp.data)
+
+    def test_customer_from_another_tenant_rejected(self):
+        other_tenant, _ = _make_tenant_with_owner('standalone-other')
+        foreign = _make_customer(other_tenant)
+        resp = self._post(self.owner, foreign.id)
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_role_without_process_payment_denied(self):
+        mkt_user = _make_user('mkt-standalone@test.local')
+        _make_membership(
+            user=mkt_user, tenant=self.tenant,
+            role=TenantMembership.Role.MARKETING,
+        )
+        resp = self._post(mkt_user, self.customer.id)
+        self.assertEqual(resp.status_code, status.HTTP_403_FORBIDDEN)
+
+    def test_creation_writes_audit_log(self):
+        resp = self._post(self.owner, self.customer.id)
+        log = (
+            AuditLog.objects
+            .filter(
+                resource_type='invoice',
+                resource_id=str(resp.data['id']),
+                action=AuditLog.Action.CREATE,
+            )
+            .first()
+        )
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('event'), 'standalone_invoice_created')

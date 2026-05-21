@@ -120,6 +120,14 @@ class InvoiceSerializer(serializers.ModelSerializer):
 # ── Action input serializers ────────────────────────────────────────────
 
 
+class CreateStandaloneInvoiceInputSerializer(serializers.Serializer):
+    """Body for `POST /api/invoices/create-standalone/`."""
+
+    customer_id = serializers.IntegerField(
+        help_text='The customer this walk-in sale is billed to.',
+    )
+
+
 class CloseInvoiceInputSerializer(serializers.Serializer):
     """Body for `POST /api/invoices/{id}/close/`."""
 

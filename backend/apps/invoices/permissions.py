@@ -65,6 +65,7 @@ class InvoicePermission(BasePermission):
         # POS), so PROCESS_PAYMENT is the right gate — same role
         # group that closes the invoice.
         if action in {
+            'create_standalone',
             'add_line',
             'remove_line',
             'redeem_from_package',

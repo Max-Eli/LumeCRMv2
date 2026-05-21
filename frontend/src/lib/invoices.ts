@@ -298,6 +298,26 @@ export function useInvoiceForAppointment(appointmentId: number | undefined) {
 }
 
 /**
+ * Open a blank standalone invoice for a walk-in sale (no appointment).
+ * Backs the calendar "New sale" tool — the operator picks a customer,
+ * this creates an empty OPEN invoice, and the UI hands off to the
+ * take-payment page where lines are added and payment is taken.
+ */
+export function useCreateStandaloneInvoice() {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, { customer_id: number }>({
+    mutationFn: (input) =>
+      api.post<Invoice>('/api/invoices/create-standalone/', input),
+    onSuccess: (created) => {
+      qc.setQueryData(invoiceDetailKey(created.id), created);
+      qc.invalidateQueries({
+        queryKey: [...INVOICES_KEY, 'customer', created.customer.id],
+      });
+    },
+  });
+}
+
+/**
  * Close (take payment). Throws an `ApiError` on permission failure
  * (typically 403) or state-machine conflict (409 — invoice already
  * paid / voided / appointment cancelled).
