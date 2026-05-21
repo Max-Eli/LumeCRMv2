@@ -811,7 +811,17 @@ def _resolve_bookable_service(request, tenant: Tenant) -> Service:
 def _resolve_active_location(request, tenant: Tenant) -> Location:
     raw = request.query_params.get('location')
     if not raw:
-        raise _query_param_error('location is required.')
+        # No explicit `?location=` → fall back to the tenant's default
+        # site. The portal booking flow (single-location-implicit)
+        # doesn't pick a location, so it omits the param; the public
+        # multi-location flow always passes it explicitly. Mirrors the
+        # default-location fallback the booking submit already uses.
+        try:
+            return Location.objects.get(
+                tenant=tenant, is_default=True, is_active=True,
+            )
+        except Location.DoesNotExist:
+            raise _query_param_error('No active location to book against.')
     try:
         location_id = int(raw)
     except ValueError:

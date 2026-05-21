@@ -291,6 +291,16 @@ class ProviderListTests(TestCase):
         ids = {p['id'] for p in response.data}
         self.assertEqual(ids, {self.np_provider.pk, self.aesth_provider.pk})
 
+    def test_omitting_location_falls_back_to_default(self):
+        # The portal booking flow doesn't pass `?location=` — the
+        # endpoint must fall back to the tenant's default site rather
+        # than 400 (which surfaced as "no provider is bookable").
+        url = reverse('booking-provider-list', kwargs={'tenant_slug': self.tenant.slug})
+        response = APIClient().get(url, {'service': self.open_service.pk})
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        ids = {p['id'] for p in response.data}
+        self.assertEqual(ids, {self.np_provider.pk, self.aesth_provider.pk})
+
     def test_inactive_provider_excluded(self):
         self.aesth_provider.is_active = False
         self.aesth_provider.save()
