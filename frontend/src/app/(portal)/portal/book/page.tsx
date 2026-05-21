@@ -29,8 +29,10 @@ import {
   ChevronRight,
   Clock,
   Loader2,
+  Search,
   Sparkles,
   UserCircle2,
+  X,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { useEffect, useMemo, useState } from 'react';
@@ -107,9 +109,9 @@ export default function PortalBookPage() {
   };
 
   return (
-    <div className="max-w-4xl mx-auto w-full px-6 py-10">
+    <div className="max-w-4xl mx-auto w-full px-4 sm:px-6 py-6 sm:py-10">
       <header className="mb-6">
-        <h1 className="font-serif text-3xl font-semibold tracking-tight">
+        <h1 className="font-serif text-2xl sm:text-3xl font-semibold tracking-tight">
           Book an appointment
         </h1>
         <p className="text-sm text-muted-foreground mt-1.5">
@@ -267,6 +269,8 @@ function ServiceStep({
   onPick: (s: BookableService) => void;
 }) {
   const { data: services, isLoading } = useBookableServices(tenantSlug);
+  const [query, setQuery] = useState('');
+  const q = query.trim().toLowerCase();
 
   const byCategory = useMemo(() => {
     const map = new Map<string, BookableService[]>();
@@ -278,70 +282,154 @@ function ServiceStep({
     return Array.from(map.entries()).sort(([a], [b]) => a.localeCompare(b));
   }, [services]);
 
-  if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-12 text-muted-foreground">
-        <Loader2 className="size-4 animate-spin" />
-      </div>
+  const matches = useMemo(() => {
+    if (!q) return [];
+    return (services ?? []).filter(
+      (s) =>
+        s.name.toLowerCase().includes(q) ||
+        (s.description ?? '').toLowerCase().includes(q) ||
+        (s.category_name ?? '').toLowerCase().includes(q),
     );
-  }
-  if (!services?.length) {
-    return (
-      <div className="rounded-xl border border-dashed bg-card px-10 py-16 text-center">
-        <Sparkles className="size-6 mx-auto mb-2 text-muted-foreground" />
-        <p className="text-sm font-medium">No services bookable online yet</p>
-        <p className="text-xs text-muted-foreground mt-1">
-          Contact the front desk to schedule.
-        </p>
-      </div>
-    );
-  }
+  }, [q, services]);
 
   return (
-    <div className="space-y-6">
-      {byCategory.map(([cat, group]) => (
-        <section key={cat}>
-          <h2 className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium mb-2">
-            {cat}
-          </h2>
-          <ul className="space-y-2">
-            {group.map((s) => (
-              <li key={s.id}>
-                <button
-                  type="button"
-                  onClick={() => onPick(s)}
-                  className={cn(
-                    'w-full text-left px-4 py-3 rounded-xl border bg-card transition-all hover:shadow-sm flex items-center justify-between gap-4',
-                    selected?.id === s.id
-                      ? 'ring-2 ring-[var(--portal-brand,#1f2937)] border-transparent'
-                      : 'hover:border-foreground/20',
-                  )}
-                >
-                  <div className="min-w-0 flex-1">
-                    <p className="font-medium truncate">{s.name}</p>
-                    {s.description ? (
-                      <p className="text-xs text-muted-foreground mt-0.5 line-clamp-2">
-                        {s.description}
-                      </p>
-                    ) : null}
-                    <p className="text-[11px] text-muted-foreground mt-1.5 inline-flex items-center gap-1.5">
-                      <Clock className="size-3" />
-                      {s.duration_minutes} min
-                    </p>
-                  </div>
-                  <div className="text-right shrink-0">
-                    <p className="text-sm font-medium tabular-nums">
-                      ${dollarsFromCents(s.price_cents)}
-                    </p>
-                    <ChevronRight className="size-4 text-muted-foreground/60 ml-auto mt-1" />
-                  </div>
-                </button>
-              </li>
+    <div>
+      {/* Sticky search — pinned just below the portal top bar so the
+          customer can filter services without scrolling back up. */}
+      <div className="sticky top-14 z-10 -mx-4 border-b bg-background/95 px-4 py-3 backdrop-blur sm:-mx-6 sm:px-6">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+          <input
+            type="text"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Search services…"
+            aria-label="Search services"
+            className="h-11 w-full rounded-xl border bg-card pl-9 pr-9 text-sm outline-none transition-shadow focus:ring-2 focus:ring-[var(--portal-brand,#1f2937)]/30"
+          />
+          {query ? (
+            <button
+              type="button"
+              onClick={() => setQuery('')}
+              aria-label="Clear search"
+              className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            >
+              <X className="size-4" />
+            </button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="pt-4">
+        {isLoading ? (
+          <div className="flex items-center justify-center py-12 text-muted-foreground">
+            <Loader2 className="size-4 animate-spin" />
+          </div>
+        ) : !services?.length ? (
+          <div className="rounded-xl border border-dashed bg-card px-8 py-16 text-center">
+            <Sparkles className="mx-auto mb-2 size-6 text-muted-foreground" />
+            <p className="text-sm font-medium">No services bookable online yet</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              Contact the front desk to schedule.
+            </p>
+          </div>
+        ) : q ? (
+          matches.length === 0 ? (
+            <div className="rounded-xl border border-dashed bg-card px-8 py-12 text-center">
+              <p className="text-sm font-medium">
+                No services match “{query}”
+              </p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                Try a different word, or clear the search to browse all services.
+              </p>
+            </div>
+          ) : (
+            <ul className="space-y-2">
+              {matches.map((s) => (
+                <li key={s.id}>
+                  <ServiceCard
+                    service={s}
+                    isSelected={selected?.id === s.id}
+                    showCategory
+                    onPick={() => onPick(s)}
+                  />
+                </li>
+              ))}
+            </ul>
+          )
+        ) : (
+          <div className="space-y-6">
+            {byCategory.map(([cat, group]) => (
+              <section key={cat}>
+                <h2 className="mb-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+                  {cat}
+                </h2>
+                <ul className="space-y-2">
+                  {group.map((s) => (
+                    <li key={s.id}>
+                      <ServiceCard
+                        service={s}
+                        isSelected={selected?.id === s.id}
+                        onPick={() => onPick(s)}
+                      />
+                    </li>
+                  ))}
+                </ul>
+              </section>
             ))}
-          </ul>
-        </section>
-      ))}
+          </div>
+        )}
+      </div>
     </div>
+  );
+}
+
+function ServiceCard({
+  service,
+  isSelected,
+  showCategory = false,
+  onPick,
+}: {
+  service: BookableService;
+  isSelected: boolean;
+  showCategory?: boolean;
+  onPick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onPick}
+      className={cn(
+        'flex w-full items-center justify-between gap-4 rounded-xl border bg-card px-4 py-3 text-left transition-all hover:shadow-sm',
+        isSelected
+          ? 'border-transparent ring-2 ring-[var(--portal-brand,#1f2937)]'
+          : 'hover:border-foreground/20',
+      )}
+    >
+      <div className="min-w-0 flex-1">
+        {showCategory && service.category_name ? (
+          <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
+            {service.category_name}
+          </p>
+        ) : null}
+        <p className="truncate font-medium">{service.name}</p>
+        {service.description ? (
+          <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">
+            {service.description}
+          </p>
+        ) : null}
+        <p className="mt-1.5 inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <Clock className="size-3" />
+          {service.duration_minutes} min
+        </p>
+      </div>
+      <div className="shrink-0 text-right">
+        <p className="text-sm font-medium tabular-nums">
+          ${dollarsFromCents(service.price_cents)}
+        </p>
+        <ChevronRight className="ml-auto mt-1 size-4 text-muted-foreground/60" />
+      </div>
+    </button>
   );
 }
 
