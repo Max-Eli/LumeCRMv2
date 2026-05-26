@@ -983,10 +983,27 @@ function ProviderColumn({
   const isDropTarget = isOver && isAnotherProvider;
   const isInvalidTarget = isDropTarget && !eligibility.ok;
 
-  // Lane assignments for overlapping appointments (side-by-side layout
-  // when a provider is double-booked). Memoized on the appointments
-  // array so the math only re-runs when the day's bookings change.
-  const lanesById = useMemo(() => computeLanesForProvider(appointments), [appointments]);
+  // Lane assignments for overlapping items in this column — combines
+  // appointments and time blocks into a single computation so a block
+  // dropped over an existing appointment narrows both side-by-side
+  // (matches the visual treatment of a real double-booking).
+  const lanesById = useMemo(
+    () => computeLanesForColumn([
+      ...appointments.map<LaneItem>((a) => ({
+        kind: 'appt',
+        id: a.id,
+        start_time: a.start_time,
+        end_time: a.end_time,
+      })),
+      ...timeBlocks.map<LaneItem>((b) => ({
+        kind: 'block',
+        id: b.id,
+        start_time: b.start_time,
+        end_time: b.end_time,
+      })),
+    ]),
+    [appointments, timeBlocks],
+  );
 
   return (
     <div
@@ -1067,7 +1084,9 @@ function ProviderColumn({
           dayHeight={dayHeight}
         />
         {appointments.map((appt) => {
-          const laneInfo = lanesById.get(appt.id) ?? { lane: 0, lanesInCluster: 1 };
+          const laneInfo =
+            lanesById.get(laneKey('appt', appt.id))
+            ?? { lane: 0, lanesInCluster: 1 };
           return (
             <AppointmentBlock
               key={appt.id}
@@ -1086,23 +1105,32 @@ function ProviderColumn({
           );
         })}
 
-        {/* Time blocks render in the same column space as appointments
-            but with a distinct visual treatment (gray, hatched) so the
-            front desk reads them as "this provider is unavailable"
+        {/* Time blocks render in the same column space as appointments,
+            participating in the same lane computation so an overlap
+            narrows both side-by-side (instead of the block stacking
+            over the appointment). Distinct visual treatment (gray,
+            hatched) so the front desk reads them as "unavailable"
             rather than "booked." */}
-        {timeBlocks.map((block) => (
-          <TimeBlockBlock
-            key={block.id}
-            block={block}
-            timezone={timezone}
-            date={date}
-            pxPerMin={pxPerMin}
-            dayStartHour={dayStartHour}
-            dayEndHour={dayEndHour}
-            onResize={onResizeTimeBlock}
-            onDelete={onDeleteTimeBlock}
-          />
-        ))}
+        {timeBlocks.map((block) => {
+          const laneInfo =
+            lanesById.get(laneKey('block', block.id))
+            ?? { lane: 0, lanesInCluster: 1 };
+          return (
+            <TimeBlockBlock
+              key={block.id}
+              block={block}
+              timezone={timezone}
+              date={date}
+              pxPerMin={pxPerMin}
+              lane={laneInfo.lane}
+              lanesInCluster={laneInfo.lanesInCluster}
+              dayStartHour={dayStartHour}
+              dayEndHour={dayEndHour}
+              onResize={onResizeTimeBlock}
+              onDelete={onDeleteTimeBlock}
+            />
+          );
+        })}
 
         {/* Subtle X overlay on the entire column when this drop would be invalid */}
         {isInvalidTarget ? (
@@ -1494,6 +1522,8 @@ function TimeBlockBlock({
   timezone,
   date,
   pxPerMin,
+  lane,
+  lanesInCluster,
   dayStartHour,
   dayEndHour,
   onResize,
@@ -1503,6 +1533,13 @@ function TimeBlockBlock({
   timezone: string;
   date: string;
   pxPerMin: number;
+  /** Side-by-side lane index — assigned by the column's combined
+   *  appointment+block lane computation. 0 when this block is alone
+   *  in its time range. */
+  lane: number;
+  /** Total lanes in this block's overlap cluster — divisor for the
+   *  rendered width. */
+  lanesInCluster: number;
   dayStartHour: number;
   dayEndHour: number;
   onResize: (block: TimeBlock, newEnd: Date) => void;
@@ -1517,6 +1554,18 @@ function TimeBlockBlock({
   const currentDurationMin = Math.max(
     SNAP_MINUTES, Math.round((endMs - startMs) / 60_000),
   );
+  // Cap drag-resize at the visible day window. `positionFor()` clamps
+  // height to `dayEndHour` on release — without the same cap during
+  // the preview the block can be dragged past the window edge, then
+  // visually "snaps back" on release (the bug staff would describe
+  // as "the block keeps moving up on its own"). For longer blocks,
+  // use the create form to set a duration past business hours.
+  const startMinIntoDay = minutesIntoLocalDay(block.start_time, timezone);
+  const dayEndMin = dayEndHour * 60;
+  const maxDurationMin = Math.max(
+    SNAP_MINUTES, dayEndMin - startMinIntoDay,
+  );
+
   const [resizePreviewMin, setResizePreviewMin] = useState<number | null>(null);
   const resizeAnchor = useRef<
     { startY: number; startDuration: number } | null
@@ -1539,7 +1588,11 @@ function TimeBlockBlock({
     const deltaMin = (e.clientY - anchor.startY) / pxPerMin;
     const snapped =
       Math.round((anchor.startDuration + deltaMin) / SNAP_MINUTES) * SNAP_MINUTES;
-    setResizePreviewMin(Math.max(SNAP_MINUTES, snapped));
+    // Clamp to [SNAP_MINUTES, maxDurationMin] so the preview matches
+    // what'll render on release.
+    setResizePreviewMin(
+      Math.max(SNAP_MINUTES, Math.min(maxDurationMin, snapped)),
+    );
   };
 
   const onResizePointerUp = (e: React.PointerEvent) => {
@@ -1564,6 +1617,21 @@ function TimeBlockBlock({
       ? Math.max(24, resizePreviewMin * pxPerMin)
       : heightPx;
 
+  // Same lane positioning idiom as AppointmentBlock — alone takes the
+  // column width minus a 4px outer inset on each side; in a shared
+  // cluster each row gets `100% / lanes` minus a 2px lane gap so
+  // adjacent items don't touch.
+  const SIDE_INSET_PX = 4;
+  const LANE_GAP_PX = 2;
+  const widthPercent = 100 / lanesInCluster;
+  const isShared = lanesInCluster > 1;
+  const horizontalStyle: React.CSSProperties = isShared
+    ? {
+        left: `calc(${lane * widthPercent}% + ${LANE_GAP_PX}px)`,
+        width: `calc(${widthPercent}% - ${LANE_GAP_PX * 2}px)`,
+      }
+    : { left: `${SIDE_INSET_PX}px`, right: `${SIDE_INSET_PX}px` };
+
   const timeText = formatBlockTimeRange(block, timezone);
   const tight = heightPx < 50;
 
@@ -1577,10 +1645,11 @@ function TimeBlockBlock({
             // without competing with the colored appointment blocks
             // next to it. Slightly muted ring + foreground so the eye
             // skips past it when scanning the day.
-            className="absolute left-1 right-1 rounded-md text-left overflow-hidden border border-dashed border-stone-400/70 bg-[repeating-linear-gradient(135deg,theme(colors.stone.200/.7)_0_8px,theme(colors.stone.300/.7)_8px_16px)] text-stone-700 hover:ring-1 hover:ring-stone-500 transition-shadow shadow-xs cursor-pointer"
+            className="absolute rounded-md text-left overflow-hidden border border-dashed border-stone-400/70 bg-[repeating-linear-gradient(135deg,theme(colors.stone.200/.7)_0_8px,theme(colors.stone.300/.7)_8px_16px)] text-stone-700 hover:ring-1 hover:ring-stone-500 transition-shadow shadow-xs cursor-pointer"
             style={{
               top: `${topPx}px`,
               height: `${effectiveHeightPx}px`,
+              ...horizontalStyle,
             }}
             aria-label={`Blocked · ${block.reason} · ${timeText}`}
             title={`Blocked · ${block.reason} · ${timeText}`}
@@ -1934,22 +2003,41 @@ function positionFor(
  */
 interface LaneInfo {
   lane: number;
-  /** Total number of side-by-side lanes in this appointment's overlap
+  /** Total number of side-by-side lanes in this item's overlap
    *  cluster — the divisor for the rendered block's width. */
   lanesInCluster: number;
 }
 
-function computeLanesForProvider(appts: Appointment[]): Map<number, LaneInfo> {
-  const result = new Map<number, LaneInfo>();
-  if (appts.length === 0) return result;
+/** Anything that competes for column space — appointments and time
+ *  blocks share the same lane computation so a block laid over an
+ *  existing appointment narrows both side-by-side, matching the
+ *  visual treatment of a real double-booking. */
+type LaneItem = {
+  kind: 'appt' | 'block';
+  id: number;
+  start_time: string;
+  end_time: string;
+};
 
-  const sorted = [...appts].sort((a, b) => {
+/** Composite key — appointment IDs and block IDs share neither a
+ *  table nor a namespace, so we tag by kind to disambiguate. */
+function laneKey(kind: 'appt' | 'block', id: number): string {
+  return `${kind}-${id}`;
+}
+
+function computeLanesForColumn(
+  items: LaneItem[],
+): Map<string, LaneInfo> {
+  const result = new Map<string, LaneInfo>();
+  if (items.length === 0) return result;
+
+  const sorted = [...items].sort((a, b) => {
     const sd = new Date(a.start_time).getTime() - new Date(b.start_time).getTime();
     if (sd !== 0) return sd;
     return new Date(a.end_time).getTime() - new Date(b.end_time).getTime();
   });
 
-  let cluster: Appointment[] = [];
+  let cluster: LaneItem[] = [];
   let clusterEndMs = 0;
 
   const flushCluster = () => {
@@ -1959,14 +2047,14 @@ function computeLanesForProvider(appts: Appointment[]): Map<number, LaneInfo> {
     clusterEndMs = 0;
   };
 
-  for (const appt of sorted) {
-    const startMs = new Date(appt.start_time).getTime();
-    const endMs = new Date(appt.end_time).getTime();
+  for (const item of sorted) {
+    const startMs = new Date(item.start_time).getTime();
+    const endMs = new Date(item.end_time).getTime();
     if (cluster.length > 0 && startMs >= clusterEndMs) {
       // Gap — close out the previous cluster.
       flushCluster();
     }
-    cluster.push(appt);
+    cluster.push(item);
     clusterEndMs = Math.max(clusterEndMs, endMs);
   }
   flushCluster();
@@ -1975,13 +2063,13 @@ function computeLanesForProvider(appts: Appointment[]): Map<number, LaneInfo> {
 }
 
 function assignLanesInCluster(
-  cluster: Appointment[],
-  result: Map<number, LaneInfo>,
+  cluster: LaneItem[],
+  result: Map<string, LaneInfo>,
 ) {
-  const laneEnds: number[] = []; // index = lane, value = endMs of latest appt in that lane
-  for (const appt of cluster) {
-    const startMs = new Date(appt.start_time).getTime();
-    const endMs = new Date(appt.end_time).getTime();
+  const laneEnds: number[] = []; // index = lane, value = endMs of latest item in that lane
+  for (const item of cluster) {
+    const startMs = new Date(item.start_time).getTime();
+    const endMs = new Date(item.end_time).getTime();
     let assigned = -1;
     for (let i = 0; i < laneEnds.length; i += 1) {
       if (laneEnds[i] <= startMs) {
@@ -1996,12 +2084,16 @@ function assignLanesInCluster(
     }
     // Record the lane now; lanesInCluster gets stamped after the loop
     // (since we don't know the final width until the cluster's settled).
-    result.set(appt.id, { lane: assigned, lanesInCluster: 0 });
+    result.set(laneKey(item.kind, item.id), {
+      lane: assigned,
+      lanesInCluster: 0,
+    });
   }
   const lanesInCluster = laneEnds.length;
-  for (const appt of cluster) {
-    const info = result.get(appt.id)!;
-    result.set(appt.id, { lane: info.lane, lanesInCluster });
+  for (const item of cluster) {
+    const k = laneKey(item.kind, item.id);
+    const info = result.get(k)!;
+    result.set(k, { lane: info.lane, lanesInCluster });
   }
 }
 
