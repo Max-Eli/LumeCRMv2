@@ -122,6 +122,18 @@ jobs:
         # Run migrations BEFORE the service swap. If migrations fail,
         # we never deregister the old tasks — service stays healthy on
         # the previous code, deploy fails loudly, no half-state.
+        #
+        # IMPORTANT — do NOT pre-set DATABASE_URL in the container
+        # command override. `settings/base.py` assembles DATABASE_URL
+        # from DB_USER / DB_PASSWORD / DB_HOST / DB_PORT / DB_NAME with
+        # `urllib.parse.quote(password, safe='')`, which is the only
+        # safe path: RDS-generated passwords contain `$`, `!`, `@`, `:`
+        # etc. that mangle a raw shell-built URL (the `:` ends up
+        # parsed as the port → ValueError on `url.port` → deploy
+        # fails before migrations run). An earlier revision of this
+        # step did `export DATABASE_URL="postgres://$DB_USER:$DB_PASSWORD@..."`
+        # in the shell command, which bypassed the safe assembly and
+        # broke the deploy on 2026-05-26. Don't reintroduce it.
         run: |
           echo "Running migrations on ${{ steps.render.outputs.new_arn }}"
           TASK_ARN=$(aws ecs run-task \
@@ -138,7 +150,7 @@ jobs:
             --overrides '{
               "containerOverrides": [{
                 "name": "${{ env.CONTAINER_NAME }}",
-                "command": ["sh", "-c", "export DATABASE_URL=\"postgres://$DB_USER:$DB_PASSWORD@$DB_HOST:$DB_PORT/$DB_NAME\" && exec python manage.py migrate --noinput"]
+                "command": ["python", "manage.py", "migrate", "--noinput"]
               }]
             }' \
             --query 'tasks[0].taskArn' \
