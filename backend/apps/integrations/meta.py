@@ -532,7 +532,7 @@ def _ig_fetch_granted_permissions(access_token: str) -> list[str]:
 
 
 def subscribe_ig_user_to_webhooks(*, ig_user_id: str, access_token: str) -> None:
-    """POST /v22.0/{ig-user-id}/subscribed_apps — enable webhook delivery.
+    """POST /{ig-user-id}/subscribed_apps — enable webhook delivery.
 
     Without this, Meta won't deliver inbound DMs even with valid
     OAuth + tokens. Subscription persists until the operator
@@ -542,31 +542,98 @@ def subscribe_ig_user_to_webhooks(*, ig_user_id: str, access_token: str) -> None
     defaulted to "all enabled fields"; the live API rejects with
     "The parameter subscribed_fields is required" (2026-05).
 
-    URL needs the `/v22.0/` version prefix — unlike `/me` and
-    `/{ig_user_id}` (profile fetches) which Meta documented as
-    unversioned and reject the prefix with "Unsupported method".
-    This specific endpoint's docs show the prefix in their curl
-    example, and POSTs without it 400 with "Unsupported method:
-    post". Verified 2026-05-17.
+    URL variants — empirically Meta accepts different shapes for
+    different IG account types/states, even within the same Meta
+    Business Portfolio. One account connects fine with the `/v22.0/`
+    prefixed form; the next gets "Unsupported method: post" on the
+    same URL and only works against the bare (unversioned) host. So
+    we try them in order and return on first success. Same pattern
+    as `_ig_exchange_short_for_long_token`.
 
     We subscribe to `messages` (inbound DMs) and `messaging_postbacks`
     (button clicks for any future quick-reply UI). Adding fields
     later only requires the operator to disconnect + reconnect.
     """
-    response = requests.post(
-        f'https://graph.instagram.com/{GRAPH_API_VERSION}/{ig_user_id}/subscribed_apps',
-        params={
-            'access_token': access_token,
-            'subscribed_fields': 'messages,messaging_postbacks',
-        },
-        timeout=15,
+    _ig_subscribed_apps_call(
+        method='POST',
+        ig_user_id=ig_user_id,
+        access_token=access_token,
+        extra_params={'subscribed_fields': 'messages,messaging_postbacks'},
+        action='subscribe',
     )
-    payload = _expect_json(response, step='webhook subscribe')
-    if not payload.get('success'):
-        raise MetaOAuthError(
-            f'Failed to subscribe IG user {ig_user_id} to messaging '
-            f'webhooks: {payload}'
+
+
+def _ig_subscribed_apps_call(
+    *,
+    method: str,
+    ig_user_id: str,
+    access_token: str,
+    extra_params: dict[str, str],
+    action: str,
+) -> None:
+    """Shared multi-variant caller for /{ig-user-id}/subscribed_apps.
+
+    Tries the versioned host first (`graph.instagram.com/v22.0/...`),
+    falls back to the unversioned host (`graph.instagram.com/...`).
+    Raises MetaOAuthError only when every variant fails — and the
+    raised message names every attempted URL + Meta's response so
+    operators have something concrete to debug from.
+    """
+    variants = [
+        f'https://graph.instagram.com/{GRAPH_API_VERSION}/{ig_user_id}/subscribed_apps',
+        f'https://graph.instagram.com/{ig_user_id}/subscribed_apps',
+    ]
+    # Dispatch on `requests.post` / `requests.delete` directly (not
+    # `requests.request`) because the test suite + most mocking
+    # patterns in this codebase patch the verb-specific functions.
+    verb = {'POST': requests.post, 'DELETE': requests.delete}[method]
+    last_error: str = ''
+    for url in variants:
+        try:
+            response = verb(
+                url,
+                params={'access_token': access_token, **extra_params},
+                timeout=15,
+            )
+        except requests.RequestException as e:
+            last_error = f'{url} → network error: {e}'
+            logger.warning(
+                'integrations.meta.subscribed_apps_attempt_failed',
+                extra={'url': url, 'action': action, 'error': str(e)[:200]},
+            )
+            continue
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = {'raw': response.text[:300]}
+
+        if response.status_code == 200 and payload.get('success'):
+            logger.info(
+                'integrations.meta.subscribed_apps_attempt_succeeded',
+                extra={'url': url, 'action': action},
+            )
+            return
+
+        meta_err = payload.get('error', payload)
+        last_error = (
+            f'{url} → {response.status_code}: '
+            f'{meta_err.get("message", meta_err) if isinstance(meta_err, dict) else meta_err}'
         )
+        logger.warning(
+            'integrations.meta.subscribed_apps_attempt_failed',
+            extra={
+                'url': url,
+                'action': action,
+                'status': response.status_code,
+                'meta_error': meta_err,
+            },
+        )
+
+    raise MetaOAuthError(
+        f'webhook {action} failed for IG user {ig_user_id} across all '
+        f'endpoint variants. Last: {last_error}'
+    )
 
 
 # ── Conversation backfill (ADR 0027 §10) ──────────────────────────
@@ -737,28 +804,25 @@ def fetch_ig_user_profile(
 def unsubscribe_ig_user_from_webhooks(*, ig_user_id: str, access_token: str) -> None:
     """DELETE /{ig-user-id}/subscribed_apps — stop webhook delivery.
 
-    Mirrors `subscribe_ig_user_to_webhooks` but for the disconnect
-    path. Without this call, Meta keeps delivering webhook events to
-    our endpoint forever (or until the user revokes via Instagram).
-    Each delivery 200s but logs "no matching connection" — wasteful
-    + makes the logs harder to read.
+    Mirrors `subscribe_ig_user_to_webhooks` (same multi-variant URL
+    fallback) but for the disconnect path. Without this call, Meta
+    keeps delivering webhook events to our endpoint forever (or
+    until the user revokes via Instagram). Each delivery 200s but
+    logs "no matching connection" — wasteful + makes the logs
+    harder to read.
 
     Raises MetaOAuthError on non-success. Caller should treat as
     best-effort: a dangling Meta subscription is annoying but not
     safety-critical, so a disconnect should still proceed locally
     even if this call fails.
     """
-    response = requests.delete(
-        f'https://graph.instagram.com/{GRAPH_API_VERSION}/{ig_user_id}/subscribed_apps',
-        params={'access_token': access_token},
-        timeout=15,
+    _ig_subscribed_apps_call(
+        method='DELETE',
+        ig_user_id=ig_user_id,
+        access_token=access_token,
+        extra_params={},
+        action='unsubscribe',
     )
-    payload = _expect_json(response, step='webhook unsubscribe')
-    if not payload.get('success'):
-        raise MetaOAuthError(
-            f'Failed to unsubscribe IG user {ig_user_id} from messaging '
-            f'webhooks: {payload}'
-        )
 
 
 # ── Outbound DM send (ADR 0027 §7) ─────────────────────────────────

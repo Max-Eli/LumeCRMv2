@@ -491,6 +491,89 @@ class OAuthStateTokenTests(TestCase):
                 _meta.verify_state_token(token)
 
 
+class SubscribedAppsFallbackTests(TestCase):
+    """`subscribe_ig_user_to_webhooks` must retry the unversioned URL
+    when the `/v22.0/` form returns "Unsupported method: post" for
+    that IG account — Meta answers the two URL shapes differently
+    across accounts in the same Business Portfolio, which surfaced
+    as `oauth_failed` for the Manhattan Laser Spa tenant after the
+    state-token fix landed.
+    """
+
+    @staticmethod
+    def _resp(status_code: int, body: dict):
+        class _R:
+            pass
+        r = _R()
+        r.status_code = status_code
+        r.text = str(body)
+        r.json = lambda: body
+        return r
+
+    def test_unversioned_url_used_when_versioned_rejects(self):
+        from unittest.mock import patch
+
+        calls: list[str] = []
+
+        def fake_post(url, **kwargs):
+            calls.append(url)
+            # First (versioned) URL rejects, second (unversioned) succeeds.
+            if '/v22.0/' in url:
+                return self._resp(400, {
+                    'error': {'message': 'Unsupported request - method type: post'},
+                })
+            return self._resp(200, {'success': True})
+
+        with patch('apps.integrations.meta.requests.post', side_effect=fake_post):
+            _meta.subscribe_ig_user_to_webhooks(
+                ig_user_id='17841405822304914',
+                access_token='ig-token',
+            )
+
+        # Both variants attempted, in this order.
+        self.assertEqual(len(calls), 2)
+        self.assertIn('/v22.0/', calls[0])
+        self.assertNotIn('/v22.0/', calls[1])
+
+    def test_raises_when_all_variants_fail(self):
+        from unittest.mock import patch
+
+        def fake_post(url, **kwargs):
+            return self._resp(400, {
+                'error': {'message': 'Unsupported request - method type: post'},
+            })
+
+        with patch('apps.integrations.meta.requests.post', side_effect=fake_post):
+            with self.assertRaises(_meta.MetaOAuthError) as ctx:
+                _meta.subscribe_ig_user_to_webhooks(
+                    ig_user_id='17841405822304914',
+                    access_token='ig-token',
+                )
+        # Error message names the failing step + the last attempt's
+        # Meta response so operators can debug.
+        self.assertIn('webhook subscribe failed', str(ctx.exception))
+        self.assertIn('Unsupported request', str(ctx.exception))
+
+    def test_no_retry_on_first_success(self):
+        from unittest.mock import patch
+
+        calls: list[str] = []
+
+        def fake_post(url, **kwargs):
+            calls.append(url)
+            return self._resp(200, {'success': True})
+
+        with patch('apps.integrations.meta.requests.post', side_effect=fake_post):
+            _meta.subscribe_ig_user_to_webhooks(
+                ig_user_id='17841405822304914',
+                access_token='ig-token',
+            )
+
+        # Versioned URL succeeded → don't bother with the fallback.
+        self.assertEqual(len(calls), 1)
+        self.assertIn('/v22.0/', calls[0])
+
+
 @override_settings(
     INSTAGRAM_APP_ID='test-ig-app-id',
     INSTAGRAM_APP_SECRET='test-ig-app-secret',
