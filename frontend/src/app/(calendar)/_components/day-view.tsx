@@ -41,7 +41,7 @@ import {
   type DragStartEvent,
 } from '@dnd-kit/core';
 import { useQueryClient } from '@tanstack/react-query';
-import { Check, Clock } from 'lucide-react';
+import { Check, Clock, Lock, Trash2 } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -52,6 +52,7 @@ import {
   type Appointment,
   type AppointmentStatus,
 } from '@/lib/appointments';
+import { localDateTimeToUtcIso } from '@/lib/calendar-datetime';
 import { isProviderEligible, type EligibilityResult } from '@/lib/eligibility';
 import { membershipName, type Membership } from '@/lib/memberships';
 import {
@@ -61,9 +62,18 @@ import {
   weekdayFromDate,
 } from '@/lib/schedules';
 import { useServiceCategories } from '@/lib/services';
+import {
+  type TimeBlock,
+  useTimeBlocksForDate,
+} from '@/lib/time-blocks';
 import { cn } from '@/lib/utils';
 
 import { AppointmentPopover } from './appointment-popover';
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from '@/components/ui/popover';
 
 // ── Constants ────────────────────────────────────────────────────────────
 
@@ -185,6 +195,10 @@ export interface DayViewProps {
    *  while a reschedule is in progress so the right-click flow isn't
    *  competing with a "create new" intent. */
   onEmptySlotClick?: (slot: { date: string; time: string; providerId: number }) => void;
+  /** Called when the user picks "Block out time" from the right-click
+   *  context menu — opens the BlockOutSheet with the same slot pre-
+   *  filled. Optional: when omitted, the menu item is hidden. */
+  onEmptySlotBlockOut?: (slot: { date: string; time: string; providerId: number }) => void;
   /** First hour visible on the time axis (inclusive, 0-23). Comes from
    *  `Tenant.business_open_time`; defaults to 8 AM if the calendar
    *  page hasn't supplied it (tenant settings still loading). */
@@ -204,6 +218,7 @@ export function DayView({
   rescheduling = null,
   onCancelReschedule,
   onEmptySlotClick,
+  onEmptySlotBlockOut,
   dayStartHour = DEFAULT_DAY_START_HOUR,
   dayEndHour = DEFAULT_DAY_END_HOUR,
 }: DayViewProps) {
@@ -222,6 +237,21 @@ export function DayView({
 
   const qc = useQueryClient();
   const { data: categories } = useServiceCategories();
+  // Time blocks (lunch, personal time, training) for the focus date.
+  // Rendered alongside appointment blocks in each provider column.
+  const { data: timeBlocks } = useTimeBlocksForDate(date);
+
+  // Group blocks by provider so each column can pull only its own —
+  // map is cheap and the list is small (handful per day per provider).
+  const timeBlocksByProvider = useMemo(() => {
+    const map = new Map<number, TimeBlock[]>();
+    for (const b of timeBlocks ?? []) {
+      const list = map.get(b.provider.id) ?? [];
+      list.push(b);
+      map.set(b.provider.id, list);
+    }
+    return map;
+  }, [timeBlocks]);
 
   const [activeAppt, setActiveAppt] = useState<Appointment | null>(null);
 
@@ -341,12 +371,68 @@ export function DayView({
     [qc, date],
   );
 
+  // ── Time-block mutations (resize + delete) ──────────────────────────────
+  //
+  // Same optimistic-with-rollback shape as `resizeAppointment` so a 400
+  // (e.g. duration would collapse end <= start) settles the UI back to
+  // the prior state and surfaces the backend message.
+  const resizeTimeBlock = useCallback(
+    async (block: TimeBlock, newEnd: Date) => {
+      const queryKey = ['time-blocks', 'date', date] as const;
+      const previous = qc.getQueryData<TimeBlock[]>(queryKey);
+      qc.setQueryData<TimeBlock[]>(queryKey, (old) =>
+        (old ?? []).map((b) =>
+          b.id === block.id ? { ...b, end_time: newEnd.toISOString() } : b,
+        ),
+      );
+      await qc.cancelQueries({ queryKey });
+      try {
+        await api.patch<TimeBlock>(`/api/time-blocks/${block.id}/`, {
+          end_time: newEnd.toISOString(),
+        });
+      } catch (err) {
+        if (previous) qc.setQueryData(queryKey, previous);
+        toast.error(
+          err instanceof ApiError && err.status === 400
+            ? 'Could not resize this block.'
+            : 'Could not resize this block. Please try again.',
+        );
+      } finally {
+        qc.invalidateQueries({ queryKey });
+      }
+    },
+    [qc, date],
+  );
+
+  const deleteTimeBlock = useCallback(
+    async (blockId: number) => {
+      const queryKey = ['time-blocks', 'date', date] as const;
+      const previous = qc.getQueryData<TimeBlock[]>(queryKey);
+      qc.setQueryData<TimeBlock[]>(queryKey, (old) =>
+        (old ?? []).filter((b) => b.id !== blockId),
+      );
+      await qc.cancelQueries({ queryKey });
+      try {
+        await api.delete(`/api/time-blocks/${blockId}/`);
+        toast.success('Block removed');
+      } catch {
+        if (previous) qc.setQueryData(queryKey, previous);
+        toast.error('Could not remove this block.');
+      } finally {
+        qc.invalidateQueries({ queryKey });
+      }
+    },
+    [qc, date],
+  );
+
   // ── Right-click context menus (reschedule + create) ─────────────────────
   //
   // Two right-click flows share the same overall pattern (small floating
   // menu anchored at the click coords, escape/outside-click closes):
   //   - Rescheduling mode active → "Reschedule appointment here / Cancel"
-  //   - Otherwise                → "Create appointment here / Cancel"
+  //   - Otherwise                → "Create appointment here / Cancel /
+  //                                  Block out time" (when the parent
+  //                                  passed `onEmptySlotBlockOut`)
   // Modeled as separate state slots so the types stay narrow; the
   // dismiss / outside-click effect closes whichever is open.
 
@@ -459,6 +545,16 @@ export function DayView({
     });
     closeContextMenu();
   }, [createMenu, onEmptySlotClick, closeContextMenu]);
+
+  const commitCreateBlockOut = useCallback(() => {
+    if (!createMenu || !onEmptySlotBlockOut) return;
+    onEmptySlotBlockOut({
+      date: createMenu.date,
+      time: createMenu.time,
+      providerId: createMenu.providerId,
+    });
+    closeContextMenu();
+  }, [createMenu, onEmptySlotBlockOut, closeContextMenu]);
 
   const commitReschedule = useCallback(async () => {
     if (!contextMenu || !rescheduling) return;
@@ -614,6 +710,7 @@ export function DayView({
               key={provider.id}
               provider={provider}
               appointments={byProvider.get(provider.id) ?? []}
+              timeBlocks={timeBlocksByProvider.get(provider.id) ?? []}
               timezone={timezone}
               date={date}
               pxPerMin={pxPerMin}
@@ -629,6 +726,8 @@ export function DayView({
               onRescheduleContextMenu={openContextMenu}
               onCreateContextMenu={openCreateMenu}
               onResize={resizeAppointment}
+              onResizeTimeBlock={resizeTimeBlock}
+              onDeleteTimeBlock={deleteTimeBlock}
             />
           ))}
 
@@ -660,6 +759,7 @@ export function DayView({
         <CreateAppointmentContextMenu
           menu={createMenu}
           onConfirm={commitCreateAppointment}
+          onBlockOut={onEmptySlotBlockOut ? commitCreateBlockOut : undefined}
           onCancel={closeContextMenu}
         />
       ) : null}
@@ -678,16 +778,21 @@ export function DayView({
 function CreateAppointmentContextMenu({
   menu,
   onConfirm,
+  onBlockOut,
   onCancel,
 }: {
   menu: CreateMenu;
   onConfirm: () => void;
+  /** When provided, render a second menu item that opens the
+   *  BlockOutSheet for this slot. Hidden when the parent didn't wire
+   *  up a `onEmptySlotBlockOut` callback. */
+  onBlockOut?: () => void;
   onCancel: () => void;
 }) {
   return (
     <div
       style={{
-        top: Math.min(menu.clientY, window.innerHeight - 120),
+        top: Math.min(menu.clientY, window.innerHeight - 160),
         left: Math.min(menu.clientX, window.innerWidth - 240),
       }}
       className="fixed z-50 w-56 rounded-md border bg-popover text-popover-foreground shadow-lg ring-1 ring-foreground/10 p-1 text-sm"
@@ -706,6 +811,17 @@ function CreateAppointmentContextMenu({
       >
         Create new appointment here
       </button>
+      {onBlockOut ? (
+        <button
+          type="button"
+          role="menuitem"
+          onClick={onBlockOut}
+          className="w-full text-left px-2.5 py-1.5 rounded text-sm hover:bg-muted hover:text-foreground transition-colors inline-flex items-center gap-1.5"
+        >
+          <Lock className="size-3.5" />
+          Block out time
+        </button>
+      ) : null}
       <button
         type="button"
         role="menuitem"
@@ -773,6 +889,7 @@ function RescheduleContextMenu({
 function ProviderColumn({
   provider,
   appointments,
+  timeBlocks,
   timezone,
   date,
   pxPerMin,
@@ -788,9 +905,13 @@ function ProviderColumn({
   onRescheduleContextMenu,
   onCreateContextMenu,
   onResize,
+  onResizeTimeBlock,
+  onDeleteTimeBlock,
 }: {
   provider: Membership;
   appointments: Appointment[];
+  /** Time blocks (lunch, personal time, etc.) on this provider's day. */
+  timeBlocks: TimeBlock[];
   timezone: string;
   date: string;
   pxPerMin: number;
@@ -830,6 +951,10 @@ function ProviderColumn({
   }) => void;
   /** Commits an appointment-block resize (drag the bottom edge). */
   onResize: ResizeHandler;
+  /** Commits a time-block resize (drag the block's bottom edge). */
+  onResizeTimeBlock: (block: TimeBlock, newEnd: Date) => void;
+  /** Removes a time block from the calendar + cache. */
+  onDeleteTimeBlock: (blockId: number) => void;
 }) {
   const dropData: ColumnDropData = { type: 'column', provider };
   const { setNodeRef, isOver } = useDroppable({
@@ -960,6 +1085,24 @@ function ProviderColumn({
             />
           );
         })}
+
+        {/* Time blocks render in the same column space as appointments
+            but with a distinct visual treatment (gray, hatched) so the
+            front desk reads them as "this provider is unavailable"
+            rather than "booked." */}
+        {timeBlocks.map((block) => (
+          <TimeBlockBlock
+            key={block.id}
+            block={block}
+            timezone={timezone}
+            date={date}
+            pxPerMin={pxPerMin}
+            dayStartHour={dayStartHour}
+            dayEndHour={dayEndHour}
+            onResize={onResizeTimeBlock}
+            onDelete={onDeleteTimeBlock}
+          />
+        ))}
 
         {/* Subtle X overlay on the entire column when this drop would be invalid */}
         {isInvalidTarget ? (
@@ -1331,6 +1474,206 @@ function AppointmentBlock({
   return <AppointmentPopover appointment={appointment} timezone={timezone} trigger={trigger} />;
 }
 
+// ── Time-block block (non-bookable overlay on a provider's column) ───────
+
+/**
+ * Render a single `TimeBlock` in its provider's column. Same vertical
+ * positioning as `AppointmentBlock` (via the shared `positionFor`) but
+ * with a distinct visual treatment so the front desk reads it as "this
+ * provider is unavailable" rather than "booked."
+ *
+ * Interactions:
+ *   - Click → popover with the reason, who created it, when, and a
+ *     Delete button. The delete is logged server-side (HIPAA
+ *     §164.312(b) — the trail records who cleared the block).
+ *   - Drag the bottom edge → resize. Same gesture model as appointments
+ *     (5-minute snap, optimistic with rollback on a 400).
+ */
+function TimeBlockBlock({
+  block,
+  timezone,
+  date,
+  pxPerMin,
+  dayStartHour,
+  dayEndHour,
+  onResize,
+  onDelete,
+}: {
+  block: TimeBlock;
+  timezone: string;
+  date: string;
+  pxPerMin: number;
+  dayStartHour: number;
+  dayEndHour: number;
+  onResize: (block: TimeBlock, newEnd: Date) => void;
+  onDelete: (blockId: number) => void;
+}) {
+  const { topPx, heightPx, fitsInWindow } = positionFor(
+    block, timezone, date, pxPerMin, dayStartHour, dayEndHour,
+  );
+
+  const startMs = new Date(block.start_time).getTime();
+  const endMs = new Date(block.end_time).getTime();
+  const currentDurationMin = Math.max(
+    SNAP_MINUTES, Math.round((endMs - startMs) / 60_000),
+  );
+  const [resizePreviewMin, setResizePreviewMin] = useState<number | null>(null);
+  const resizeAnchor = useRef<
+    { startY: number; startDuration: number } | null
+  >(null);
+
+  const onResizePointerDown = (e: React.PointerEvent) => {
+    e.stopPropagation();
+    e.preventDefault();
+    e.currentTarget.setPointerCapture(e.pointerId);
+    resizeAnchor.current = {
+      startY: e.clientY,
+      startDuration: currentDurationMin,
+    };
+    setResizePreviewMin(currentDurationMin);
+  };
+
+  const onResizePointerMove = (e: React.PointerEvent) => {
+    const anchor = resizeAnchor.current;
+    if (!anchor) return;
+    const deltaMin = (e.clientY - anchor.startY) / pxPerMin;
+    const snapped =
+      Math.round((anchor.startDuration + deltaMin) / SNAP_MINUTES) * SNAP_MINUTES;
+    setResizePreviewMin(Math.max(SNAP_MINUTES, snapped));
+  };
+
+  const onResizePointerUp = (e: React.PointerEvent) => {
+    const anchor = resizeAnchor.current;
+    const finalMin = resizePreviewMin;
+    resizeAnchor.current = null;
+    try {
+      e.currentTarget.releasePointerCapture(e.pointerId);
+    } catch {
+      // Pointer capture may already be released — ignore.
+    }
+    if (anchor && finalMin !== null && finalMin !== anchor.startDuration) {
+      onResize(block, new Date(startMs + finalMin * 60_000));
+    }
+    setResizePreviewMin(null);
+  };
+
+  if (!fitsInWindow) return null;
+
+  const effectiveHeightPx =
+    resizePreviewMin !== null
+      ? Math.max(24, resizePreviewMin * pxPerMin)
+      : heightPx;
+
+  const timeText = formatBlockTimeRange(block, timezone);
+  const tight = heightPx < 50;
+
+  return (
+    <Popover>
+      <PopoverTrigger
+        render={
+          <button
+            type="button"
+            // Hatched gray background marks the block as "unavailable"
+            // without competing with the colored appointment blocks
+            // next to it. Slightly muted ring + foreground so the eye
+            // skips past it when scanning the day.
+            className="absolute left-1 right-1 rounded-md text-left overflow-hidden border border-dashed border-stone-400/70 bg-[repeating-linear-gradient(135deg,theme(colors.stone.200/.7)_0_8px,theme(colors.stone.300/.7)_8px_16px)] text-stone-700 hover:ring-1 hover:ring-stone-500 transition-shadow shadow-xs cursor-pointer"
+            style={{
+              top: `${topPx}px`,
+              height: `${effectiveHeightPx}px`,
+            }}
+            aria-label={`Blocked · ${block.reason} · ${timeText}`}
+            title={`Blocked · ${block.reason} · ${timeText}`}
+          >
+            <div
+              className={cn(
+                'flex items-start gap-1.5',
+                tight ? 'p-1.5' : 'p-2',
+              )}
+            >
+              <Lock
+                className={cn('shrink-0 mt-0.5', tight ? 'size-3' : 'size-3.5')}
+                aria-hidden
+              />
+              <div className="min-w-0 flex-1">
+                <p
+                  className={cn(
+                    'font-mono tabular-nums text-stone-600 truncate',
+                    tight ? 'text-[10px]' : 'text-xs',
+                  )}
+                >
+                  {timeText}
+                </p>
+                {!tight ? (
+                  <p className="font-medium text-sm truncate">{block.reason}</p>
+                ) : null}
+              </div>
+            </div>
+
+            <div
+              onPointerDown={onResizePointerDown}
+              onPointerMove={onResizePointerMove}
+              onPointerUp={onResizePointerUp}
+              onClick={(e) => e.stopPropagation()}
+              title="Drag to change the block length"
+              className="absolute inset-x-0 bottom-0 h-2 cursor-ns-resize touch-none"
+              aria-hidden
+            />
+          </button>
+        }
+      />
+      <PopoverContent className="w-72 p-3">
+        <div className="flex items-start gap-2">
+          <span className="inline-flex size-7 items-center justify-center rounded-md bg-stone-100 text-stone-700 shrink-0">
+            <Lock className="size-3.5" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+              Blocked time
+            </p>
+            <p className="font-medium text-sm break-words">{block.reason}</p>
+            <p className="text-xs text-muted-foreground mt-0.5 font-mono tabular-nums">
+              {timeText} · {block.duration_minutes}m
+            </p>
+          </div>
+        </div>
+        {block.created_by_email ? (
+          <p className="text-[11px] text-muted-foreground/80 mt-3">
+            Created by {block.created_by_email} ·{' '}
+            {new Date(block.created_at).toLocaleString()}
+          </p>
+        ) : null}
+        <div className="mt-3 flex justify-end">
+          <button
+            type="button"
+            onClick={() => {
+              if (window.confirm('Remove this blocked time?')) {
+                onDelete(block.id);
+              }
+            }}
+            className="inline-flex items-center gap-1.5 text-xs font-medium text-destructive hover:underline"
+          >
+            <Trash2 className="size-3.5" />
+            Remove block
+          </button>
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
+function formatBlockTimeRange(block: TimeBlock, timezone: string): string {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+  const s = fmt.format(new Date(block.start_time));
+  const e = fmt.format(new Date(block.end_time));
+  return `${s} – ${e}`;
+}
+
 // ── Drag overlay block (floats with cursor while dragging) ───────────────
 
 function DragOverlayBlock({
@@ -1538,15 +1881,15 @@ function parseLocalDate(dateStr: string): Date {
 // ── Layout math + formatters ─────────────────────────────────────────────
 
 function positionFor(
-  appt: Appointment,
+  block: { start_time: string; end_time: string },
   timezone: string,
   date: string,
   pxPerMin: number,
   dayStartHour: number,
   dayEndHour: number,
 ) {
-  const startMin = minutesIntoLocalDay(appt.start_time, timezone);
-  const endMin = minutesIntoLocalDay(appt.end_time, timezone);
+  const startMin = minutesIntoLocalDay(block.start_time, timezone);
+  const endMin = minutesIntoLocalDay(block.end_time, timezone);
   const startBoundary = dayStartHour * 60;
   const endBoundary = dayEndHour * 60;
 
@@ -1677,55 +2020,6 @@ function minutesIntoLocalDay(iso: string, timezone: string): number {
   return ((hour % 24) * 60) + minute;
 }
 
-/**
- * Build a UTC ISO string for `<date>` at `<hours>:<minutes>` *as
- * interpreted in `<timezone>`*. The IANA-aware inverse of
- * `minutesIntoLocalDay`.
- *
- * JS doesn't have native "local time + IANA TZ → UTC" — so we use the
- * standard offset-derivation trick: build a naive UTC date with the
- * desired wall-clock, ask `Intl.DateTimeFormat` to render it back in
- * the target TZ, and use the difference between the two as the offset.
- *
- * This is the right pattern for fixed-offset *and* DST-bearing
- * timezones, and matches what date-fns-tz / luxon do internally.
- */
-function localDateTimeToUtcIso(
-  date: string,
-  hours: number,
-  minutes: number,
-  timezone: string,
-): string {
-  const naive = new Date(
-    `${date}T${pad2(hours)}:${pad2(minutes)}:00Z`,
-  );
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-  const parts: Record<string, string> = {};
-  for (const p of fmt.formatToParts(naive)) parts[p.type] = p.value;
-  const formattedAsUtcMs = Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour) % 24, // Intl can return "24" for midnight in some locales
-    Number(parts.minute),
-    Number(parts.second),
-  );
-  const offsetMs = formattedAsUtcMs - naive.getTime();
-  return new Date(naive.getTime() - offsetMs).toISOString();
-}
-
-function pad2(n: number): string {
-  return String(n).padStart(2, '0');
-}
 
 /** "10:00 AM (60m)" — concise label for the reschedule context menu. */
 function formatSlotLabel(hours: number, minutes: number, durationMinutes: number): string {

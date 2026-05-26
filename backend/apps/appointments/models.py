@@ -280,3 +280,88 @@ class AppointmentService(models.Model):
 
     def __str__(self):
         return f'{self.appointment_id} · +{self.service.name}'
+
+
+class TimeBlock(TenantedModel):
+    """A non-bookable period on a provider's calendar — lunch break,
+    personal time, training. Visually shaded on the day view; the
+    booking-availability engine treats the slot as taken the same way
+    an appointment does, so the public booking page won't offer it.
+
+    Distinct from `Appointment` because there's no customer, service,
+    or invoice — a block is operational scheduling, not a billable
+    event. The provider + location + time-window shape is identical
+    so we reuse the same per-location calendar filter.
+
+    ## Compliance posture
+
+    ### HIPAA
+    A block is not PHI on its own (no patient identifier), but it
+    appears on the same calendar that displays PHI and is therefore
+    audit-logged on create/update/delete — HIPAA §164.312(b). The
+    audit trail answers "who hid time on whose calendar and when",
+    which we'd be asked for during a compliance review of any
+    appointment that fell behind because of a hidden block.
+    """
+
+    provider = models.ForeignKey(
+        'tenants.TenantMembership',
+        on_delete=models.PROTECT,
+        related_name='time_blocks',
+        help_text='The staff member whose calendar is being blocked.',
+    )
+    # Same per-site scoping as Appointment — a block lives at one
+    # location even when the provider works at several.
+    location = models.ForeignKey(
+        'tenants.Location',
+        on_delete=models.PROTECT,
+        related_name='time_blocks',
+    )
+    start_time = models.DateTimeField(db_index=True)
+    end_time = models.DateTimeField()
+    # Free-form text so the frontend can offer presets ("Lunch",
+    # "Personal time") and an "Other" fallback without us having to
+    # extend a Django TextChoices every time a tenant invents a new
+    # category.
+    reason = models.CharField(
+        max_length=200,
+        help_text=(
+            'Why the time is blocked. Frontend offers presets '
+            '(Lunch, Personal time, Training, Meeting, Admin, Out of '
+            'office) plus a free-form Other.'
+        ),
+    )
+    created_by = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='time_blocks_created',
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['start_time']
+        indexes = [
+            models.Index(fields=['tenant', 'location', 'start_time']),
+            models.Index(fields=['tenant', 'provider', 'start_time']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                condition=models.Q(end_time__gt=models.F('start_time')),
+                name='time_blocks_end_after_start',
+            ),
+        ]
+
+    def __str__(self):
+        when = timezone.localtime(self.start_time).strftime('%Y-%m-%d %H:%M')
+        return f'{self.provider} · {self.reason} · {when}'
+
+    @property
+    def duration_minutes(self) -> int:
+        """Block length in whole minutes — same shape the calendar uses
+        for appointments so the day-view block component can size both
+        the same way."""
+        delta = self.end_time - self.start_time
+        return int(delta.total_seconds() // 60)

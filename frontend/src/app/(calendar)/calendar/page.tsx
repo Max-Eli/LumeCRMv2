@@ -35,6 +35,7 @@ import {
 import { DayStatsFooter } from '../_components/day-stats-footer';
 import { ListView } from '../_components/list-view';
 import { MonthView } from '../_components/month-view';
+import { BlockOutSheet } from '../_components/block-out-sheet';
 import { NewAppointmentSheet } from '../_components/new-appointment-sheet';
 import { RightToolRail, TOOLS, type CalendarTool } from '../_components/right-tool-rail';
 import { MobileToolsSheet, ToolPanel } from '../_components/tool-panel';
@@ -313,6 +314,21 @@ export default function CalendarPage() {
     [],
   );
 
+  // ── Block-out sheet (mark non-bookable time on a provider's day) ────
+  const [blockOutOpen, setBlockOutOpen] = useState(false);
+  const [blockOutDefaults, setBlockOutDefaults] = useState<{
+    date?: string;
+    time?: string;
+    providerId?: number;
+  }>({});
+  const openBlockOut = useCallback(
+    (defaults?: { date?: string; time?: string; providerId?: number }) => {
+      setBlockOutDefaults(defaults ?? {});
+      setBlockOutOpen(true);
+    },
+    [],
+  );
+
   // After a successful create, navigate to the booked date if it differs
   // from the focus date — otherwise the user may not see their new
   // appointment immediately.
@@ -453,6 +469,13 @@ export default function CalendarPage() {
                       providerId: slot.providerId,
                     })
                   }
+                  onEmptySlotBlockOut={(slot) =>
+                    openBlockOut({
+                      date: slot.date,
+                      time: slot.time,
+                      providerId: slot.providerId,
+                    })
+                  }
                   dayStartHour={dayStartHour}
                   dayEndHour={dayEndHour}
                 />
@@ -538,6 +561,15 @@ export default function CalendarPage() {
         defaultDate={newApptDefaults.date}
         defaultTime={newApptDefaults.time}
         defaultProviderId={newApptDefaults.providerId}
+        onCreated={onAppointmentCreated}
+      />
+      <BlockOutSheet
+        open={blockOutOpen}
+        onOpenChange={setBlockOutOpen}
+        timezone={tenantTimezone}
+        defaultDate={blockOutDefaults.date}
+        defaultTime={blockOutDefaults.time}
+        defaultProviderId={blockOutDefaults.providerId}
         onCreated={onAppointmentCreated}
       />
     </>
