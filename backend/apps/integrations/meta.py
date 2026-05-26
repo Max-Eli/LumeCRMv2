@@ -34,6 +34,7 @@ from typing import Any
 
 import requests
 from django.conf import settings
+from django.core import signing
 from django.utils import timezone
 
 from .models import Connection
@@ -118,77 +119,76 @@ class MetaSignatureError(Exception):
 
 
 # ── State token (CSRF defence + OAuth code binding) ─────────────────
+#
+# The state token is a Django-signed payload carrying its own
+# binding (tenant_id, provider, nonce). It does NOT depend on the
+# user's session cookie surviving the round-trip from Instagram —
+# which Lax cookies usually do for cross-site top-level GETs, but
+# in practice gets blocked by stale cookie domains, tracking-
+# prevention modes, and incognito quirks (which produced the
+# "No OAuth flow is in progress" misfires).
+#
+# Signed-state matches RFC 6749 §10.12: an opaque, integrity-
+# protected value the auth server echoes back. Replay isn't a
+# meaningful concern here — Instagram's `code` is single-use, so
+# completing the callback twice with the same state would still
+# need a fresh `code` for a second token-exchange call.
+STATE_TOKEN_SALT = 'meta-oauth-state.v1'
 
 
-def generate_state_token() -> str:
-    """Cryptographically random 256-bit token, URL-safe base64.
+def issue_state_token(*, tenant_id: int, provider: str) -> str:
+    """Mint a signed state token that round-trips through Instagram.
 
-    Each Connect click gets a fresh token; it's stored on the user's
-    server-side session and echoed back via the OAuth redirect. The
-    callback verifies it matches + isn't expired before doing
-    anything with the `code` parameter.
+    Encodes the binding (tenant_id, provider) and a nonce, signs
+    with SECRET_KEY + a salted timestamp, and returns the URL-safe
+    string. `verify_state_token` is the only legitimate consumer.
     """
-    return secrets.token_urlsafe(32)
+    payload = {
+        'tenant_id': tenant_id,
+        'provider': provider,
+        'nonce': secrets.token_urlsafe(16),
+    }
+    return signing.dumps(payload, salt=STATE_TOKEN_SALT, compress=False)
 
 
-def store_state_in_session(request, state: str, *, tenant_id: int, provider: str) -> None:
-    """Save the state token + binding context in the user's session.
-    The binding (tenant_id, provider, timestamp) lets us reject a
-    callback that arrives at the wrong tenant or that was issued
-    against a different provider than what's being completed."""
-    request.session['meta_oauth_state'] = state
-    request.session['meta_oauth_tenant_id'] = tenant_id
-    request.session['meta_oauth_provider'] = provider
-    request.session['meta_oauth_issued_at'] = int(time.time())
-    request.session.modified = True
+def verify_state_token(state: str) -> dict[str, Any]:
+    """Validate a callback `state` and return its embedded binding.
 
-
-def consume_state_from_session(request, state_received: str) -> dict[str, Any]:
-    """Validate the callback `state` against the session.
-
-    Returns the stored binding dict on success. Raises
-    `MetaOAuthError` with a specific message for each failure mode so
-    the operator-facing error UX can be precise.
+    Raises `MetaOAuthError` with a specific message for each failure
+    mode so the operator-facing error UX stays precise.
     """
-    expected = request.session.get('meta_oauth_state')
-    if not expected:
+    if not state:
         raise MetaOAuthError(
             'No OAuth flow is in progress. Click Connect again to start over.'
         )
-    if not _consteq(state_received, expected):
-        raise MetaOAuthError(
-            'OAuth state mismatch. This usually means the connect link '
-            'was reused or a different browser tab interfered. Click '
-            'Connect again to retry.'
+    try:
+        payload = signing.loads(
+            state,
+            salt=STATE_TOKEN_SALT,
+            max_age=STATE_TTL_SECONDS,
         )
-    issued_at = request.session.get('meta_oauth_issued_at', 0)
-    age = int(time.time()) - int(issued_at)
-    if age > STATE_TTL_SECONDS:
+    except signing.SignatureExpired:
         raise MetaOAuthError(
             f'OAuth flow timed out after {STATE_TTL_SECONDS // 60} minutes. '
             'Click Connect again to start over.'
         )
-
-    binding = {
-        'tenant_id': request.session.get('meta_oauth_tenant_id'),
-        'provider': request.session.get('meta_oauth_provider'),
-        'issued_at': issued_at,
+    except signing.BadSignature:
+        raise MetaOAuthError(
+            'OAuth state could not be verified. This usually means the '
+            'connect link was tampered with or a different browser tab '
+            'interfered. Click Connect again to retry.'
+        )
+    return {
+        'tenant_id': payload.get('tenant_id'),
+        'provider': payload.get('provider'),
     }
-
-    # One-time-use: clear the state immediately so the same callback
-    # link can't be replayed (e.g. by browser back button).
-    for key in (
-        'meta_oauth_state', 'meta_oauth_tenant_id',
-        'meta_oauth_provider', 'meta_oauth_issued_at',
-    ):
-        request.session.pop(key, None)
-    request.session.modified = True
-
-    return binding
 
 
 def _consteq(a: str, b: str) -> bool:
-    """Constant-time string comparison for security tokens."""
+    """Constant-time string comparison for security tokens. Used by
+    `verify_webhook_subscription_challenge` to compare the
+    incoming `hub.verify_token` to the configured secret without a
+    timing oracle."""
     return hmac.compare_digest(
         (a or '').encode('utf-8'),
         (b or '').encode('utf-8'),

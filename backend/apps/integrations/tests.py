@@ -388,10 +388,11 @@ class OAuthConnectBeginTests(TestCase):
             {'authorize_url', 'state', 'connection_id'},
         )
         self.assertIn('state', response.data)
-        # State is stored on the session.
-        session = self.client_.session
-        self.assertEqual(session.get('meta_oauth_state'), response.data['state'])
-        self.assertEqual(session.get('meta_oauth_provider'), 'meta_instagram')
+        # State is a self-signed token carrying the (tenant_id, provider)
+        # binding — verifiable without the session (RFC 6749 §10.12 pattern).
+        decoded = _meta.verify_state_token(response.data['state'])
+        self.assertEqual(decoded['provider'], 'meta_instagram')
+        self.assertEqual(decoded['tenant_id'], self.tenant.id)
         # Authorize URL targets the Instagram Login OAuth dialog with
         # the Instagram product's App ID (NOT the parent Meta App ID).
         self.assertTrue(
@@ -407,7 +408,14 @@ class OAuthConnectBeginTests(TestCase):
             'instagram_business_manage_messages',
             response.data['authorize_url'],
         )
-        self.assertIn(f'state={response.data["state"]}', response.data['authorize_url'])
+        # The signed-state token contains `:` separators that get
+        # percent-encoded into the authorize URL; compare against the
+        # urlencoded form, not the raw value.
+        from urllib.parse import quote
+        self.assertIn(
+            f'state={quote(response.data["state"], safe="")}',
+            response.data['authorize_url'],
+        )
         # Connection row created in CONNECTING state.
         connection = Connection.objects.get(
             tenant=self.tenant, provider='meta_instagram',
@@ -435,69 +443,52 @@ class OAuthConnectBeginNotReadyTests(TestCase):
 
 
 class OAuthStateTokenTests(TestCase):
-    """Direct unit coverage of state generation + consumption helpers."""
+    """Direct unit coverage of state issuance + verification.
 
-    def test_state_is_random_per_call(self):
-        a = _meta.generate_state_token()
-        b = _meta.generate_state_token()
+    The state token is a Django-signed payload (RFC 6749 §10.12) —
+    self-contained, so the callback validates it without touching
+    the session. This is the load-bearing property that fixed the
+    "No OAuth flow is in progress" misfires caused by SameSite=Lax
+    + stale cookie domains stripping the session cookie on the
+    cross-site return from Instagram.
+    """
+
+    def test_state_is_unique_per_call(self):
+        # Even for an identical (tenant_id, provider) pair the embedded
+        # nonce makes each token unique.
+        a = _meta.issue_state_token(tenant_id=1, provider='meta_instagram')
+        b = _meta.issue_state_token(tenant_id=1, provider='meta_instagram')
         self.assertNotEqual(a, b)
-        # 32 bytes url-safe base64 ~= 43 chars.
-        self.assertGreaterEqual(len(a), 40)
 
-    def test_consume_rejects_missing_state(self):
-        from django.test import RequestFactory
-        from django.contrib.sessions.backends.db import SessionStore
+    def test_verify_round_trips_binding(self):
+        token = _meta.issue_state_token(tenant_id=42, provider='meta_instagram')
+        decoded = _meta.verify_state_token(token)
+        self.assertEqual(decoded['tenant_id'], 42)
+        self.assertEqual(decoded['provider'], 'meta_instagram')
 
-        request = RequestFactory().get('/cb')
-        request.session = SessionStore()
+    def test_verify_rejects_missing_state(self):
         with self.assertRaises(_meta.MetaOAuthError):
-            _meta.consume_state_from_session(request, 'some-state')
+            _meta.verify_state_token('')
 
-    def test_consume_rejects_mismatched_state(self):
-        from django.test import RequestFactory
-        from django.contrib.sessions.backends.db import SessionStore
-
-        request = RequestFactory().get('/cb')
-        request.session = SessionStore()
-        _meta.store_state_in_session(
-            request, 'real-state',
-            tenant_id=1, provider='meta_instagram',
-        )
+    def test_verify_rejects_tampered_state(self):
+        token = _meta.issue_state_token(tenant_id=1, provider='meta_instagram')
+        # Flip one character — should break the HMAC.
+        tampered = token[:-1] + ('A' if token[-1] != 'A' else 'B')
         with self.assertRaises(_meta.MetaOAuthError):
-            _meta.consume_state_from_session(request, 'wrong-state')
+            _meta.verify_state_token(tampered)
 
-    def test_consume_one_time_use(self):
-        """Same state can't be replayed (clears on first consume)."""
-        from django.test import RequestFactory
-        from django.contrib.sessions.backends.db import SessionStore
-
-        request = RequestFactory().get('/cb')
-        request.session = SessionStore()
-        _meta.store_state_in_session(
-            request, 'reuse-state',
-            tenant_id=1, provider='meta_instagram',
-        )
-        binding = _meta.consume_state_from_session(request, 'reuse-state')
-        self.assertEqual(binding['tenant_id'], 1)
-        # Second consume must fail.
+    def test_verify_rejects_garbage_state(self):
         with self.assertRaises(_meta.MetaOAuthError):
-            _meta.consume_state_from_session(request, 'reuse-state')
+            _meta.verify_state_token('not-a-signed-token')
 
-    def test_consume_rejects_expired_state(self):
-        from django.test import RequestFactory
-        from django.contrib.sessions.backends.db import SessionStore
-
-        request = RequestFactory().get('/cb')
-        request.session = SessionStore()
-        _meta.store_state_in_session(
-            request, 'old-state',
-            tenant_id=1, provider='meta_instagram',
-        )
-        # Forge an old timestamp.
-        request.session['meta_oauth_issued_at'] = 0
-        request.session.modified = True
-        with self.assertRaises(_meta.MetaOAuthError):
-            _meta.consume_state_from_session(request, 'old-state')
+    def test_verify_rejects_expired_state(self):
+        # Force a negative TTL so even a freshly-issued token (age >= 0)
+        # registers as expired. Avoids the flakiness of time-based tests.
+        from unittest.mock import patch
+        token = _meta.issue_state_token(tenant_id=1, provider='meta_instagram')
+        with patch.object(_meta, 'STATE_TTL_SECONDS', -1):
+            with self.assertRaises(_meta.MetaOAuthError):
+                _meta.verify_state_token(token)
 
 
 @override_settings(

@@ -12,8 +12,9 @@ URL surface (under `/api/integrations/`):
 Auth model:
   - The first three endpoints are MANAGE_INTEGRATIONS gated
     (`IntegrationPermission`).
-  - The callback is gated by the session-bound state token from
-    ADR 0027 §2; CSRF-exempt because Meta is the redirector.
+  - The callback is gated by a signed state token (RFC 6749 §10.12
+    pattern; see `meta.issue_state_token`); CSRF-exempt because
+    Meta is the redirector.
   - The webhook endpoints are AllowAny + CSRF-exempt; security
     comes from the X-Hub-Signature-256 HMAC over the body.
 
@@ -120,11 +121,13 @@ class IntegrationConnectBeginView(APIView):
                 status=status.HTTP_501_NOT_IMPLEMENTED,
             )
 
-        # Generate state + persist OAuth flow scaffolding.
-        state = meta_oauth.generate_state_token()
-        meta_oauth.store_state_in_session(
-            request,
-            state,
+        # Mint a self-signed state token carrying the (tenant, provider)
+        # binding. Self-contained by design — does NOT rely on the user's
+        # session cookie surviving the redirect back from Instagram, which
+        # SameSite=Lax + cross-site top-level GETs handle inconsistently
+        # across browser configs (incognito, tracking prevention, stale
+        # cookie domains). RFC 6749 §10.12.
+        state = meta_oauth.issue_state_token(
             tenant_id=tenant.id,
             provider=provider,
         )
@@ -259,11 +262,12 @@ class MetaOAuthCallbackView(APIView):
     """Meta redirects users here after consent. Browser-driven GET
     with `?code=...&state=...` in the query string.
 
-    Auth: not session-gated in the usual sense — the staff user IS
-    authenticated (otherwise the original Connect click wouldn't have
-    started the flow), and we validate the session-bound state token
-    inside. AllowAny permission + state binding is the standard OAuth
-    callback posture.
+    Auth: not session-gated. The `state` parameter is a Django-signed
+    token (see `meta.issue_state_token`) that carries the tenant +
+    provider binding inside itself — verified by signature + TTL, with
+    no dependency on the user's session cookie surviving the
+    cross-site redirect back from Instagram. AllowAny permission +
+    signed-state binding is the standard OAuth callback posture.
 
     Outcome: redirects the browser back to
     `/org/integrations?connected=instagram` (or `?error=...`) so the
@@ -297,7 +301,7 @@ class MetaOAuthCallbackView(APIView):
             )
 
         try:
-            binding = meta_oauth.consume_state_from_session(request, state)
+            binding = meta_oauth.verify_state_token(state)
         except meta_oauth.MetaOAuthError as e:
             return self._redirect_with_error(str(e), code='invalid_state')
 
