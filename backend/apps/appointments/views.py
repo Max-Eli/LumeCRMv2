@@ -39,9 +39,9 @@ from apps.audit.models import AuditLog
 from apps.audit.services import record
 from apps.tenants.context import get_current_location, get_current_tenant
 
-from .models import Appointment, AppointmentService
-from .permissions import AppointmentPermission
-from .serializers import AppointmentSerializer
+from .models import Appointment, AppointmentService, TimeBlock
+from .permissions import AppointmentPermission, TimeBlockPermission
+from .serializers import AppointmentSerializer, TimeBlockSerializer
 
 
 class AppointmentViewSet(viewsets.ModelViewSet):
@@ -163,6 +163,8 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         return Response(serializer.data)
 
     def perform_create(self, serializer):
+        from django.db import transaction
+
         tenant = get_current_tenant()
         if tenant is None:
             raise PermissionDenied('No tenant context resolved for this request.')
@@ -172,6 +174,14 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             raise ValidationError({
                 'provider_id': 'This staff member is not bookable.',
             })
+
+        # Pop the create-only extras before save() so the validated_data
+        # passed into the model layer stays clean (the model has no such
+        # field). The serializer's validate() already verified each id
+        # is tenant-scoped + active and stashed the resolved Service
+        # instances under `_resolved_extra_services`.
+        extras = serializer.validated_data.pop('_resolved_extra_services', [])
+        serializer.validated_data.pop('extra_service_ids', None)
 
         # Default `location` from the active location when the caller
         # didn't supply one. The serializer field is optional + defaulted
@@ -198,7 +208,17 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 })
             save_kwargs['location'] = active_location
 
-        instance = serializer.save(**save_kwargs)
+        # Wrap the appointment save + extras attachment so a failure on
+        # either side rolls everything back — the alternative would
+        # orphan an appointment with a partial invoice.
+        with transaction.atomic():
+            instance = serializer.save(**save_kwargs)
+            if extras:
+                invoice = getattr(instance, 'invoice', None)
+                for i, extra_service in enumerate(extras, start=1):
+                    self._attach_extra_service(
+                        instance, extra_service, invoice, i,
+                    )
 
         # Auto-assign forms (intake on first ever appointment + consent
         # per service mapping). Service is in `apps.forms` to keep the
@@ -218,6 +238,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 'service_id': instance.service_id,
                 'provider_id': instance.provider_id,
                 'start': instance.start_time.isoformat(),
+                'extra_service_ids': [s.pk for s in extras],
                 'auto_assigned_forms': [
                     {
                         'submission_id': s.id,
@@ -370,6 +391,38 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     # Each keeps the calendar block length and the still-open invoice in
     # sync. Once the invoice is paid (or voided) the services lock — staff
     # reopen the invoice through the existing flow to change anything.
+    #
+    # `perform_create` reuses the same `_attach_extra_service` helper for
+    # extras supplied in the initial POST payload, so a multi-service
+    # booking takes one round-trip instead of N follow-up writes.
+
+    @staticmethod
+    def _attach_extra_service(appointment, service, invoice, sort_order):
+        """Create an `AppointmentService` row plus its matching invoice
+        line. Shared between the create-time bulk attach (perform_create)
+        and after-the-fact add (the `add-service` action). Does NOT
+        touch `appointment.end_time` — callers handle that since the
+        rules differ: create trusts the caller's end time, add extends
+        the block by the new service's duration."""
+        from apps.invoices.models import InvoiceLineItem
+        line = None
+        if invoice is not None:
+            line = InvoiceLineItem.objects.create(
+                invoice=invoice,
+                service=service,
+                description=service.name,
+                quantity=1,
+                unit_price_cents=service.price_cents,
+                tax_rate_percent=service.tax_rate_percent or 0,
+            )
+        return AppointmentService.objects.create(
+            appointment=appointment,
+            service=service,
+            price_cents=service.price_cents,
+            duration_minutes=service.duration_minutes,
+            invoice_line=line,
+            sort_order=sort_order,
+        )
 
     @staticmethod
     def _services_locked_response(appointment):
@@ -427,8 +480,6 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
         from django.db import transaction
 
-        from apps.invoices.models import InvoiceLineItem
-
         appointment = self.get_object()
         locked = self._services_locked_response(appointment)
         if locked is not None:
@@ -442,23 +493,8 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 appointment.extra_services.aggregate(m=Max('sort_order'))['m']
                 or 0
             ) + 1
-            line = None
-            if invoice is not None:
-                line = InvoiceLineItem.objects.create(
-                    invoice=invoice,
-                    service=service,
-                    description=service.name,
-                    quantity=1,
-                    unit_price_cents=service.price_cents,
-                    tax_rate_percent=service.tax_rate_percent or 0,
-                )
-            extra = AppointmentService.objects.create(
-                appointment=appointment,
-                service=service,
-                price_cents=service.price_cents,
-                duration_minutes=service.duration_minutes,
-                invoice_line=line,
-                sort_order=next_sort,
+            extra = self._attach_extra_service(
+                appointment, service, invoice, next_sort,
             )
             # Grow the block so the calendar shows the real time commitment.
             appointment.end_time = appointment.end_time + _dt.timedelta(
@@ -477,7 +513,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 'service_name': service.name,
                 'price_cents': service.price_cents,
                 'appointment_service_id': extra.pk,
-                'invoice_line_id': line.pk if line is not None else None,
+                'invoice_line_id': extra.invoice_line_id,
             },
         )
         appointment.refresh_from_db()
@@ -630,6 +666,171 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             metadata={
                 'customer_id': instance.customer_id,
                 'start': instance.start_time.isoformat(),
+            },
+        )
+        instance.delete()
+
+
+class TimeBlockViewSet(viewsets.ModelViewSet):
+    """CRUD for non-bookable schedule blocks (lunch, personal time…).
+
+    Mirrors `AppointmentViewSet` in shape — per-location filter via
+    `LocationMiddleware`, `?date=YYYY-MM-DD` day-window, audit-logged
+    on every mutation (HIPAA §164.312(b) — same trail an appointment
+    would generate). No add-line / change-service surface because a
+    block is not a billable event.
+    """
+
+    serializer_class = TimeBlockSerializer
+    permission_classes = [TimeBlockPermission]
+
+    def get_queryset(self):
+        qs = (
+            TimeBlock.objects
+            .for_current_tenant()
+            .select_related(
+                'provider', 'provider__user', 'provider__job_title',
+                'location', 'created_by',
+            )
+        )
+        location = get_current_location()
+        if location is not None:
+            qs = qs.filter(location=location)
+        return qs
+
+    def filter_queryset(self, queryset):
+        # Day-window filter matches AppointmentViewSet so the calendar
+        # can fan out both queries with the same `?date=` param.
+        params = self.request.query_params
+        date_param = (params.get('date') or '').strip()
+        start_param = (params.get('start') or '').strip()
+        end_param = (params.get('end') or '').strip()
+        provider_param = (params.get('provider') or '').strip()
+
+        if date_param:
+            d = parse_date(date_param)
+            if d is None:
+                raise ValidationError({'date': 'Invalid date — use YYYY-MM-DD.'})
+            location = get_current_location()
+            tz_name = (
+                location.timezone
+                if location is not None and location.timezone else 'UTC'
+            )
+            try:
+                tz = ZoneInfo(tz_name)
+            except Exception:  # noqa: BLE001
+                tz = ZoneInfo('UTC')
+            start = dt.datetime.combine(d, dt.time.min, tzinfo=tz)
+            end = start + dt.timedelta(days=1)
+            queryset = queryset.filter(start_time__lt=end, end_time__gt=start)
+        else:
+            if start_param:
+                s = parse_datetime(start_param)
+                if not s:
+                    raise ValidationError({'start': 'Invalid datetime — use ISO-8601.'})
+                queryset = queryset.filter(end_time__gt=s)
+            if end_param:
+                e = parse_datetime(end_param)
+                if not e:
+                    raise ValidationError({'end': 'Invalid datetime — use ISO-8601.'})
+                queryset = queryset.filter(start_time__lt=e)
+        if provider_param:
+            queryset = queryset.filter(provider_id=provider_param)
+        return queryset
+
+    def list(self, request, *args, **kwargs):
+        response = super().list(request, *args, **kwargs)
+        results = (
+            response.data.get('results', response.data)
+            if isinstance(response.data, dict) else response.data
+        )
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='time_block_list',
+            request=request,
+            metadata={
+                'count': len(results) if isinstance(results, list) else None,
+                'date': request.query_params.get('date', ''),
+            },
+        )
+        return response
+
+    def perform_create(self, serializer):
+        tenant = get_current_tenant()
+        if tenant is None:
+            raise PermissionDenied('No tenant context resolved for this request.')
+
+        save_kwargs: dict = {
+            'tenant': tenant,
+            'created_by': self.request.user if self.request.user.is_authenticated else None,
+        }
+        # Default location from the active site when the caller didn't
+        # supply one — same UX pattern as appointment creation.
+        if 'location' not in serializer.validated_data:
+            active_location = get_current_location()
+            if active_location is None:
+                raise ValidationError({
+                    'location_id': (
+                        'No active location resolved for this request and '
+                        'none supplied in the payload.'
+                    ),
+                })
+            save_kwargs['location'] = active_location
+
+        instance = serializer.save(**save_kwargs)
+
+        record(
+            action=AuditLog.Action.CREATE,
+            resource_type='time_block',
+            resource_id=instance.id,
+            request=self.request,
+            metadata={
+                'provider_id': instance.provider_id,
+                'reason': instance.reason,
+                'start': instance.start_time.isoformat(),
+                'end': instance.end_time.isoformat(),
+            },
+        )
+
+    def perform_update(self, serializer):
+        instance = serializer.instance
+        old_start = instance.start_time
+        old_end = instance.end_time
+        old_reason = instance.reason
+
+        updated = serializer.save()
+
+        metadata: dict = {
+            'fields_changed': sorted(serializer.validated_data.keys()),
+        }
+        if updated.start_time != old_start or updated.end_time != old_end:
+            metadata['resized'] = True
+            metadata['from_start'] = old_start.isoformat() if old_start else None
+            metadata['to_start'] = updated.start_time.isoformat()
+            metadata['from_end'] = old_end.isoformat() if old_end else None
+            metadata['to_end'] = updated.end_time.isoformat()
+        if updated.reason != old_reason:
+            metadata['from_reason'] = old_reason
+            metadata['to_reason'] = updated.reason
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='time_block',
+            resource_id=updated.id,
+            request=self.request,
+            metadata=metadata,
+        )
+
+    def perform_destroy(self, instance):
+        record(
+            action=AuditLog.Action.DELETE,
+            resource_type='time_block',
+            resource_id=instance.id,
+            request=self.request,
+            metadata={
+                'provider_id': instance.provider_id,
+                'reason': instance.reason,
+                'start': instance.start_time.isoformat(),
+                'end': instance.end_time.isoformat(),
             },
         )
         instance.delete()

@@ -101,6 +101,12 @@ export interface CreateAppointmentInput {
   customer_id: number;
   provider_id: number;
   service_id: number;
+  /** Additional services attached to the same visit. Each one is
+   *  snapshotted into an `AppointmentService` row and an invoice line
+   *  in the same transaction — saves chaining `add-service` calls
+   *  after the initial booking. Omit or pass `[]` for a single-service
+   *  appointment. */
+  extra_service_ids?: number[];
   start_time: string; // ISO-8601 UTC
   end_time: string;
   status?: AppointmentStatus;

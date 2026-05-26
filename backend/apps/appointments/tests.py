@@ -1358,3 +1358,386 @@ class AppointmentServiceEditingTests(TestCase):
             HTTP_X_TENANT_SLUG=self.tenant.slug,
         )
         self.assertFalse(resp2.data['services_editable'])
+
+
+# ── Booking an appointment with multiple services at once ──────────
+
+
+class AppointmentCreateWithExtraServicesTests(TestCase):
+    """Multi-service bookings via `POST /api/appointments/`.
+
+    The frontend supplies `extra_service_ids` alongside the primary
+    `service_id`; the server snapshots each into an `AppointmentService`
+    row and adds a matching invoice line in the same transaction, so
+    one round-trip books a Facial + Botox + Peel visit cleanly.
+    """
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant('appt-create-extras')
+        self.provider = _make_provider(self.tenant)
+        self.customer = _make_customer(self.tenant)
+        self.category = ServiceCategory.objects.create(
+            tenant=self.tenant, name='Treatments',
+        )
+        self.facial = self._service('Facial', 'FAC30', 30, 10000)
+        self.botox = self._service('Botox', 'BTX20', 20, 20000)
+        self.peel = self._service('Peel', 'PEEL45', 45, 15000)
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+        self.url = reverse('appointment-list')
+
+    def _service(self, name, code, minutes, price):
+        return Service.objects.create(
+            tenant=self.tenant, category=self.category,
+            name=name, code=code,
+            duration_minutes=minutes, buffer_minutes=0,
+            price_cents=price, service_type=Service.ServiceType.REGULAR,
+        )
+
+    def _payload(self, *, total_minutes, extras=()):
+        # Anchor at a fixed local hour tomorrow so the duration sums
+        # never push the block across midnight in the test environment.
+        start = (djtz.now() + dt.timedelta(days=1)).replace(
+            hour=14, minute=0, second=0, microsecond=0,
+        )
+        end = start + dt.timedelta(minutes=total_minutes)
+        return {
+            'customer_id': self.customer.pk,
+            'service_id': self.facial.pk,
+            'provider_id': self.provider.pk,
+            'start_time': start.isoformat(),
+            'end_time': end.isoformat(),
+            'extra_service_ids': list(extras),
+        }
+
+    def test_create_with_extras_creates_rows_and_lines(self):
+        from apps.invoices.models import Invoice
+
+        resp = self.client.post(
+            self.url,
+            self._payload(
+                total_minutes=30 + 20 + 45,
+                extras=[self.botox.pk, self.peel.pk],
+            ),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        appt = Appointment.objects.get(pk=resp.data['id'])
+        self.assertEqual(appt.extra_services.count(), 2)
+        botox_es = appt.extra_services.get(service=self.botox)
+        # Snapshots taken at create time.
+        self.assertEqual(botox_es.price_cents, 20000)
+        self.assertEqual(botox_es.duration_minutes, 20)
+        self.assertIsNotNone(botox_es.invoice_line_id)
+        invoice = Invoice.objects.get(appointment=appt)
+        # Primary + two extras.
+        self.assertEqual(invoice.line_items.count(), 3)
+        self.assertEqual(
+            resp.data['total_price_cents'], 10000 + 20000 + 15000,
+        )
+
+    def test_create_with_no_extras_unchanged(self):
+        resp = self.client.post(
+            self.url,
+            self._payload(total_minutes=30),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 201)
+        appt = Appointment.objects.get(pk=resp.data['id'])
+        self.assertEqual(appt.extra_services.count(), 0)
+
+    def test_create_audit_records_extra_service_ids(self):
+        self.client.post(
+            self.url,
+            self._payload(total_minutes=30 + 20, extras=[self.botox.pk]),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = (
+            AuditLog.objects.filter(
+                resource_type='appointment',
+                action=AuditLog.Action.CREATE,
+            )
+            .order_by('-timestamp')
+            .first()
+        )
+        self.assertIsNotNone(log)
+        self.assertEqual(
+            log.metadata.get('extra_service_ids'), [self.botox.pk],
+        )
+
+    def test_create_with_unknown_extra_rejected(self):
+        resp = self.client.post(
+            self.url,
+            self._payload(total_minutes=30, extras=[999999]),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_with_inactive_extra_rejected(self):
+        self.botox.is_active = False
+        self.botox.save()
+        resp = self.client.post(
+            self.url,
+            self._payload(total_minutes=30, extras=[self.botox.pk]),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_with_cross_tenant_extra_rejected(self):
+        other_tenant, _ = _make_tenant('appt-create-extras-other')
+        other_cat = ServiceCategory.objects.create(
+            tenant=other_tenant, name='X',
+        )
+        cross_service = Service.objects.create(
+            tenant=other_tenant, category=other_cat,
+            name='Other', code='OTH30',
+            duration_minutes=30, price_cents=5000,
+            service_type=Service.ServiceType.REGULAR,
+        )
+        resp = self.client.post(
+            self.url,
+            self._payload(total_minutes=30, extras=[cross_service.pk]),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_create_with_duplicate_extras_allowed(self):
+        # Two areas of Botox in one visit is a legitimate booking.
+        resp = self.client.post(
+            self.url,
+            self._payload(
+                total_minutes=30 + 20 + 20,
+                extras=[self.botox.pk, self.botox.pk],
+            ),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        appt = Appointment.objects.get(pk=resp.data['id'])
+        self.assertEqual(
+            appt.extra_services.filter(service=self.botox).count(), 2,
+        )
+
+    def test_extras_not_accepted_via_patch(self):
+        appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, service=self.facial,
+            start_utc=djtz.now() + dt.timedelta(days=1),
+        )
+        resp = self.client.patch(
+            reverse('appointment-detail', args=[appt.pk]),
+            {'extra_service_ids': [self.botox.pk]},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('extra_service_ids', resp.data)
+
+
+# ── Schedule blocks (non-bookable time on a provider's calendar) ────
+
+
+class TimeBlockTests(TestCase):
+    """A block is a non-bookable period on a provider's day — lunch,
+    personal time, training. CRUD + day-window filter + audit shape
+    mirror the appointments API; no customer/service/invoice side
+    because a block isn't a billable event.
+    """
+
+    def setUp(self):
+        from apps.appointments.models import TimeBlock
+
+        self.tenant, self.owner = _make_tenant('sched-block')
+        self.provider = _make_provider(self.tenant)
+        self.location = self.tenant.locations.get(is_default=True)
+        self.TimeBlock = TimeBlock
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+        self.url = reverse('time-block-list')
+
+    def _payload(self, *, minutes=60, reason='Lunch break', start=None):
+        start = start or (djtz.now() + dt.timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0,
+        )
+        end = start + dt.timedelta(minutes=minutes)
+        return {
+            'provider_id': self.provider.pk,
+            'start_time': start.isoformat(),
+            'end_time': end.isoformat(),
+            'reason': reason,
+        }
+
+    # ── Create ──────────────────────────────────────────────────────
+
+    def test_create_block_persists_tenant_and_created_by(self):
+        resp = self.client.post(
+            self.url, self._payload(),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        block = self.TimeBlock.objects.get(pk=resp.data['id'])
+        self.assertEqual(block.tenant_id, self.tenant.id)
+        self.assertEqual(block.created_by, self.owner)
+        self.assertEqual(block.provider, self.provider)
+        self.assertEqual(block.location, self.location)
+        self.assertEqual(block.reason, 'Lunch break')
+
+    def test_create_audit_records_reason_and_provider(self):
+        self.client.post(
+            self.url, self._payload(reason='Personal time'),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = (
+            AuditLog.objects.filter(
+                resource_type='time_block',
+                action=AuditLog.Action.CREATE,
+            )
+            .order_by('-timestamp')
+            .first()
+        )
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('reason'), 'Personal time')
+        self.assertEqual(log.metadata.get('provider_id'), self.provider.pk)
+
+    def test_create_blank_reason_rejected(self):
+        resp = self.client.post(
+            self.url, self._payload(reason='   '),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('reason', resp.data)
+
+    def test_create_end_before_start_rejected(self):
+        start = (djtz.now() + dt.timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0,
+        )
+        payload = self._payload(start=start)
+        # Flip end behind start.
+        payload['end_time'] = (start - dt.timedelta(minutes=30)).isoformat()
+        resp = self.client.post(
+            self.url, payload,
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('end_time', resp.data)
+
+    def test_create_provider_not_at_location_rejected(self):
+        # Add a second location; the existing provider is only assigned
+        # to the default site, so blocking them at the second site
+        # should fail.
+        from apps.tenants.models import Location
+        other_loc = Location.objects.create(
+            tenant=self.tenant, name='Brooklyn', slug='brooklyn',
+            timezone='America/New_York', is_active=True, is_default=False,
+        )
+        resp = self.client.post(
+            self.url,
+            {**self._payload(), 'location_id': other_loc.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('provider_id', resp.data)
+
+    def test_create_cross_tenant_location_rejected(self):
+        other_tenant, _ = _make_tenant('sched-block-other')
+        cross_loc = other_tenant.locations.get(is_default=True)
+        resp = self.client.post(
+            self.url,
+            {**self._payload(), 'location_id': cross_loc.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    # ── List ────────────────────────────────────────────────────────
+
+    def test_list_filters_by_date(self):
+        tomorrow = (djtz.now() + dt.timedelta(days=1)).replace(
+            hour=12, minute=0, second=0, microsecond=0,
+        )
+        next_week = tomorrow + dt.timedelta(days=7)
+        self.client.post(
+            self.url, self._payload(start=tomorrow),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.client.post(
+            self.url, self._payload(start=next_week, reason='Personal'),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        date_str = tomorrow.date().isoformat()
+        resp = self.client.get(
+            self.url + f'?date={date_str}',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(len(resp.data), 1)
+        self.assertEqual(resp.data[0]['reason'], 'Lunch break')
+
+    # ── Update / delete ─────────────────────────────────────────────
+
+    def test_update_block_resize_audit_logged(self):
+        create = self.client.post(
+            self.url, self._payload(minutes=60),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        block_id = create.data['id']
+        block = self.TimeBlock.objects.get(pk=block_id)
+        new_end = block.end_time + dt.timedelta(minutes=30)
+        resp = self.client.patch(
+            reverse('time-block-detail', args=[block_id]),
+            {'end_time': new_end.isoformat()},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        block.refresh_from_db()
+        self.assertEqual(block.duration_minutes, 90)
+        log = (
+            AuditLog.objects.filter(
+                resource_type='time_block',
+                resource_id=str(block_id),
+                action=AuditLog.Action.UPDATE,
+            )
+            .order_by('-timestamp')
+            .first()
+        )
+        self.assertIsNotNone(log)
+        self.assertTrue(log.metadata.get('resized'))
+
+    def test_delete_block_audit_logged(self):
+        create = self.client.post(
+            self.url, self._payload(reason='Training'),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        block_id = create.data['id']
+        resp = self.client.delete(
+            reverse('time-block-detail', args=[block_id]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 204)
+        self.assertFalse(
+            self.TimeBlock.objects.filter(pk=block_id).exists(),
+        )
+        log = (
+            AuditLog.objects.filter(
+                resource_type='time_block',
+                action=AuditLog.Action.DELETE,
+            )
+            .order_by('-timestamp')
+            .first()
+        )
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('reason'), 'Training')
+
+    def test_cross_tenant_retrieve_404(self):
+        other_tenant, other_owner = _make_tenant('sched-block-iso')
+        other_provider = _make_provider(other_tenant)
+        other_block = self.TimeBlock.objects.create(
+            tenant=other_tenant,
+            provider=other_provider,
+            location=other_tenant.locations.get(is_default=True),
+            start_time=djtz.now() + dt.timedelta(days=1),
+            end_time=djtz.now() + dt.timedelta(days=1, hours=1),
+            reason='Lunch',
+        )
+        resp = self.client.get(
+            reverse('time-block-detail', args=[other_block.pk]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 404)

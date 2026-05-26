@@ -12,7 +12,7 @@ from apps.customers.models import Customer
 from apps.services.models import Service
 from apps.tenants.models import Location, MembershipLocation, TenantMembership
 
-from .models import Appointment, AppointmentService
+from .models import Appointment, AppointmentService, TimeBlock
 
 
 class _CustomerSummary(serializers.ModelSerializer):
@@ -86,8 +86,23 @@ class AppointmentSerializer(serializers.ModelSerializer):
     provider = _ProviderSummary(read_only=True)
 
     # Additional services on this appointment beyond the primary one.
-    # Read-only here — mutated through the add/change/remove actions.
+    # Read-only on responses — after creation, mutated through the
+    # add/change/remove actions; the write-only sibling below carries
+    # them on create.
     extra_services = _ExtraServiceSerializer(many=True, read_only=True)
+    # Write-only on create: additional services to attach in the same
+    # round-trip as the primary one. Each id is snapshotted into an
+    # `AppointmentService` row and into a matching invoice line, so the
+    # caller doesn't have to chain `POST /add-service/` calls after the
+    # initial booking. After-the-fact additions still go through the
+    # `add-service` action; we keep that flow as the only mutation
+    # surface for an *existing* appointment.
+    extra_service_ids = serializers.ListField(
+        child=serializers.IntegerField(min_value=1),
+        write_only=True,
+        required=False,
+        allow_empty=True,
+    )
     # Primary service price + every extra. Model property.
     total_price_cents = serializers.IntegerField(read_only=True)
     # False once the invoice is paid/void — services lock with payment.
@@ -142,7 +157,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
             'customer', 'customer_id',
             'provider', 'provider_id',
             'service', 'service_id',
-            'extra_services',
+            'extra_services', 'extra_service_ids',
             'location_id',
             'start_time', 'end_time', 'duration_minutes',
             'status', 'invoice_status',
@@ -345,6 +360,40 @@ class AppointmentSerializer(serializers.ModelSerializer):
         ):
             self._validate_schedule_fit(provider, location, start, end)
 
+        # Validate any extra services attached at create time. Accepted
+        # only on create — after-the-fact additions go through the
+        # /add-service/ action so every mutation on an existing
+        # appointment is an explicit, audited write (HIPAA §164.312(b)).
+        extra_ids = attrs.get('extra_service_ids') or []
+        if extra_ids:
+            if self.instance is not None:
+                raise serializers.ValidationError({
+                    'extra_service_ids': (
+                        'Cannot add services through update. POST '
+                        '/api/appointments/<id>/add-service/ instead.'
+                    ),
+                })
+            from apps.tenants.context import get_current_tenant
+            tenant = get_current_tenant()
+            services_by_id = {
+                s.pk: s for s in Service.objects.filter(
+                    tenant=tenant, pk__in=extra_ids, is_active=True,
+                )
+            }
+            unknown = [sid for sid in extra_ids if sid not in services_by_id]
+            if unknown:
+                raise serializers.ValidationError({
+                    'extra_service_ids': (
+                        f'Unknown or inactive service id(s): {unknown}.'
+                    ),
+                })
+            # Preserve order + allow duplicates (two areas of Botox is
+            # a legitimate booking). The view pops both keys before
+            # serializer.save() so neither leaks into the model layer.
+            attrs['_resolved_extra_services'] = [
+                services_by_id[sid] for sid in extra_ids
+            ]
+
         return attrs
 
     @staticmethod
@@ -448,3 +497,106 @@ class AppointmentSerializer(serializers.ModelSerializer):
                 f'update the schedule at /staff/schedule.'
             ),
         })
+
+
+# ── Schedule blocks (non-bookable time on a provider's calendar) ────
+
+
+class TimeBlockSerializer(serializers.ModelSerializer):
+    """A non-bookable period on a provider's calendar — lunch, personal
+    time, training. Same provider/location/time shape as an appointment
+    so the calendar can render both off one filter; no customer or
+    invoice side because a block isn't a billable event."""
+
+    provider = _ProviderSummary(read_only=True)
+    provider_id = serializers.PrimaryKeyRelatedField(
+        queryset=TenantMembership.objects.all(),
+        write_only=True,
+        source='provider',
+    )
+    location_id = serializers.PrimaryKeyRelatedField(
+        queryset=Location.objects.all(),
+        source='location',
+        required=False,
+    )
+    duration_minutes = serializers.IntegerField(read_only=True)
+    created_by_email = serializers.EmailField(
+        source='created_by.email', read_only=True, allow_null=True,
+    )
+
+    class Meta:
+        model = TimeBlock
+        fields = [
+            'id',
+            'provider', 'provider_id',
+            'location_id',
+            'start_time', 'end_time', 'duration_minutes',
+            'reason',
+            'created_by_email',
+            'created_at', 'updated_at',
+        ]
+        read_only_fields = [
+            'id',
+            'provider',
+            'duration_minutes',
+            'created_by_email',
+            'created_at', 'updated_at',
+        ]
+
+    def validate_location_id(self, value):
+        # Cross-tenant guard — same pattern as the Appointment serializer.
+        from apps.tenants.context import get_current_tenant
+        tenant = get_current_tenant()
+        if tenant is None:
+            raise serializers.ValidationError(
+                'No tenant context resolved; cannot validate location.',
+            )
+        if value.tenant_id != tenant.id:
+            raise serializers.ValidationError(
+                'Location does not belong to this tenant.',
+            )
+        if not value.is_active:
+            raise serializers.ValidationError(
+                'Cannot block time at an inactive location.',
+            )
+        return value
+
+    def validate_reason(self, value):
+        cleaned = (value or '').strip()
+        if not cleaned:
+            raise serializers.ValidationError('Reason is required.')
+        return cleaned
+
+    def validate(self, attrs):
+        start = attrs.get('start_time') or getattr(self.instance, 'start_time', None)
+        end = attrs.get('end_time') or getattr(self.instance, 'end_time', None)
+        if start and end and end <= start:
+            raise serializers.ValidationError(
+                {'end_time': 'Must be after start_time.'},
+            )
+
+        # Provider-at-location guard — block must live at a site the
+        # provider is actually assigned to, so it appears on the right
+        # calendar and never on a site where the staff member doesn't
+        # work.
+        provider = attrs.get('provider') or getattr(self.instance, 'provider', None)
+        location = attrs.get('location') or getattr(self.instance, 'location', None)
+        if location is None:
+            from apps.tenants.context import get_current_location
+            location = get_current_location()
+        if provider and location:
+            assignment_exists = MembershipLocation.objects.filter(
+                membership=provider, location=location, is_active=True,
+            ).exists()
+            if not assignment_exists:
+                provider_label = (
+                    provider.user.first_name
+                    or provider.user.last_name
+                    or provider.user.email
+                )
+                raise serializers.ValidationError({
+                    'provider_id': (
+                        f'{provider_label} is not assigned to {location.name}.'
+                    ),
+                })
+        return attrs

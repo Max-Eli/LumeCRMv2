@@ -67,6 +67,12 @@ import {
 import { TimePicker } from '@/components/ui/time-picker';
 import { ApiError } from '@/lib/api';
 import { useAppointmentsForDate, useCreateAppointment } from '@/lib/appointments';
+import {
+  defaultStartTimeLabel,
+  localDateTimeToUtcIso,
+  parseHHMM,
+  todayLocalISODate,
+} from '@/lib/calendar-datetime';
 import { type CustomerListItem, useCreateCustomer, useCustomers } from '@/lib/customers';
 import { isProviderEligible } from '@/lib/eligibility';
 import { membershipName, useBookableMemberships } from '@/lib/memberships';
@@ -77,6 +83,12 @@ import { type Service, useServiceCategories, useServices } from '@/lib/services'
 const schema = z.object({
   customer_id: z.number().int().positive({ message: 'Pick a customer' }),
   service_id: z.number().int().positive({ message: 'Pick a service' }),
+  // Additional services on the same visit (Facial + Botox, etc.). Each
+  // one stretches the block + appears as its own invoice line. Duplicate
+  // ids are allowed — two areas of Botox is a legit booking. Always
+  // present in form state (defaulted to []); zod's `.default()` would
+  // introduce an asymmetric input/output type that breaks the resolver.
+  extra_service_ids: z.array(z.number().int().positive()),
   provider_id: z.number().int().positive({ message: 'Pick a provider' }),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Pick a date'),
   time: z.string().regex(/^\d{2}:\d{2}$/, 'Pick a time'),
@@ -119,6 +131,7 @@ export function NewAppointmentSheet({
     defaultValues: {
       customer_id: 0,
       service_id: 0,
+      extra_service_ids: [],
       provider_id: defaultProviderId ?? 0,
       date: defaultDate ?? todayLocalISODate(),
       time: defaultTime ?? defaultStartTimeLabel(),
@@ -151,6 +164,59 @@ export function NewAppointmentSheet({
     () => (services ?? []).find((s) => s.id === watched.service_id) ?? null,
     [services, watched.service_id],
   );
+
+  // Resolve each extra-service id back to the full Service so we can
+  // show name/duration/price and roll up totals. Skips any id that no
+  // longer matches an active service (cache-staleness guard).
+  const extraServicesResolved = useMemo<Service[]>(() => {
+    const ids = watched.extra_service_ids ?? [];
+    const all = services ?? [];
+    return ids
+      .map((id) => all.find((s) => s.id === id))
+      .filter((s): s is Service => Boolean(s));
+  }, [services, watched.extra_service_ids]);
+
+  // Total visit duration — drives both the calendar block end_time and
+  // the conflict-window check below so a multi-service booking can't
+  // sneak over the next appointment.
+  const totalDurationMinutes =
+    (selectedService?.duration_minutes ?? 0)
+    + extraServicesResolved.reduce(
+        (sum, s) => sum + s.duration_minutes,
+        0,
+      );
+
+  const totalPriceCents =
+    (selectedService?.price_cents ?? 0)
+    + extraServicesResolved.reduce((sum, s) => sum + s.price_cents, 0);
+
+  // True while the inline "+ Add another service" picker is open.
+  const [addingExtra, setAddingExtra] = useState(false);
+
+  const appendExtraService = (id: number) => {
+    if (id <= 0) return;
+    const current = form.getValues('extra_service_ids') ?? [];
+    form.setValue('extra_service_ids', [...current, id], {
+      shouldValidate: false,
+      shouldDirty: true,
+    });
+    setAddingExtra(false);
+  };
+
+  const removeExtraServiceAt = (index: number) => {
+    const current = form.getValues('extra_service_ids') ?? [];
+    form.setValue(
+      'extra_service_ids',
+      current.filter((_, i) => i !== index),
+      { shouldValidate: false, shouldDirty: true },
+    );
+  };
+
+  // Reset the inline picker when the sheet closes / reopens so it
+  // doesn't carry state across two unrelated bookings.
+  useEffect(() => {
+    if (!open) setAddingExtra(false);
+  }, [open]);
 
   // Filter providers down to those eligible for the selected service's
   // category (`ServiceCategory.eligible_job_titles`). Backend re-validates
@@ -191,7 +257,7 @@ export function NewAppointmentSheet({
       timezone,
     );
     const startMs = new Date(startUtc).getTime();
-    const endMs = startMs + selectedService.duration_minutes * 60_000;
+    const endMs = startMs + totalDurationMinutes * 60_000;
     const overlap = (focusDateAppts ?? []).find((a) => {
       if (a.provider.id !== watched.provider_id) return false;
       if (a.status === 'cancelled' || a.status === 'no_show') return false;
@@ -203,6 +269,7 @@ export function NewAppointmentSheet({
   }, [
     focusDateAppts,
     selectedService,
+    totalDurationMinutes,
     watched.provider_id,
     watched.date,
     watched.time,
@@ -221,12 +288,16 @@ export function NewAppointmentSheet({
       timezone,
     );
     const start = new Date(startIso);
-    const end = new Date(start.getTime() + service.duration_minutes * 60_000);
+    // Block length covers primary + every extra so the calendar reflects
+    // the real time commitment and the backend doesn't have to guess.
+    const end = new Date(start.getTime() + totalDurationMinutes * 60_000);
+    const extras = values.extra_service_ids ?? [];
 
     create.mutate(
       {
         customer_id: values.customer_id,
         service_id: values.service_id,
+        extra_service_ids: extras,
         provider_id: values.provider_id,
         start_time: start.toISOString(),
         end_time: end.toISOString(),
@@ -303,6 +374,70 @@ export function NewAppointmentSheet({
                 </Field>
               )}
             />
+
+            {/* Additional services — one visit can cover multiple
+                services (e.g. Facial + Botox). Each one stretches the
+                appointment block and becomes its own invoice line at
+                booking time. */}
+            {extraServicesResolved.length > 0 ? (
+              <Field>
+                <FieldLabel>Additional services</FieldLabel>
+                <ul className="space-y-1.5">
+                  {extraServicesResolved.map((svc, index) => (
+                    <li
+                      key={`${svc.id}-${index}`}
+                      className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 h-9 text-sm"
+                    >
+                      <span className="truncate">
+                        {svc.name}
+                        <span className="text-muted-foreground">
+                          {' '}· {svc.duration_minutes}m · $
+                          {(svc.price_cents / 100).toFixed(2)}
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => removeExtraServiceAt(index)}
+                        aria-label={`Remove ${svc.name}`}
+                        className="inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-destructive transition-colors"
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </Field>
+            ) : null}
+
+            {addingExtra ? (
+              <Field>
+                <FieldLabel>Pick an additional service</FieldLabel>
+                <ServicePicker
+                  value={0}
+                  services={(services ?? []).filter(
+                    (s) => s.id !== watched.service_id,
+                  )}
+                  onChange={appendExtraService}
+                />
+                <button
+                  type="button"
+                  onClick={() => setAddingExtra(false)}
+                  className="mt-1 text-[11px] text-muted-foreground hover:text-foreground self-start"
+                >
+                  Cancel
+                </button>
+              </Field>
+            ) : (
+              <button
+                type="button"
+                disabled={!selectedService}
+                onClick={() => setAddingExtra(true)}
+                className="inline-flex items-center gap-1.5 text-xs font-medium text-accent hover:underline disabled:opacity-50 disabled:no-underline self-start"
+              >
+                <Plus className="size-3.5" />
+                Add another service
+              </button>
+            )}
 
             <Controller
               control={form.control}
@@ -419,6 +554,17 @@ export function NewAppointmentSheet({
                 </Field>
               )}
             />
+
+            {extraServicesResolved.length > 0 && selectedService ? (
+              <div className="flex items-baseline justify-between border-t pt-3 text-sm">
+                <span className="text-muted-foreground">
+                  Total · {totalDurationMinutes}m
+                </span>
+                <span className="font-mono font-semibold tabular-nums">
+                  ${(totalPriceCents / 100).toFixed(2)}
+                </span>
+              </div>
+            ) : null}
 
             {conflict ? (
               <div className="rounded-md border border-destructive/40 bg-destructive/5 px-3 py-2.5 flex items-start gap-2 text-xs">
@@ -835,66 +981,3 @@ function customerDisplayName(c: CustomerListItem): string {
   return c.full_name || `${c.first_name} ${c.last_name}`.trim();
 }
 
-function todayLocalISODate(): string {
-  const d = new Date();
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
-  return `${y}-${m}-${day}`;
-}
-
-/** Sensible default start time when opening cold — top of the next hour,
- *  clamped to 9 AM if outside business hours. */
-function defaultStartTimeLabel(): string {
-  const now = new Date();
-  let h = now.getHours() + (now.getMinutes() >= 1 ? 1 : 0);
-  if (h < 9) h = 9;
-  if (h > 19) h = 19;
-  return `${String(h).padStart(2, '0')}:00`;
-}
-
-function parseHHMM(s: string): [number, number] {
-  const [h, m] = s.split(':').map(Number);
-  return [h ?? 0, m ?? 0];
-}
-
-/**
- * Local date+time (in `timezone`) → UTC ISO. Standard IANA-aware offset
- * derivation; same algorithm as in day-view.tsx (kept in two places to
- * avoid a calendar↔modal circular import — when we add a third caller
- * we'll lift it to a shared `lib/datetime.ts`).
- */
-function localDateTimeToUtcIso(
-  date: string,
-  hours: number,
-  minutes: number,
-  timezone: string,
-): string {
-  const naive = new Date(`${date}T${pad2(hours)}:${pad2(minutes)}:00Z`);
-  const fmt = new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-  });
-  const parts: Record<string, string> = {};
-  for (const p of fmt.formatToParts(naive)) parts[p.type] = p.value;
-  const formattedAsUtcMs = Date.UTC(
-    Number(parts.year),
-    Number(parts.month) - 1,
-    Number(parts.day),
-    Number(parts.hour) % 24,
-    Number(parts.minute),
-    Number(parts.second),
-  );
-  const offsetMs = formattedAsUtcMs - naive.getTime();
-  return new Date(naive.getTime() - offsetMs).toISOString();
-}
-
-function pad2(n: number): string {
-  return String(n).padStart(2, '0');
-}
