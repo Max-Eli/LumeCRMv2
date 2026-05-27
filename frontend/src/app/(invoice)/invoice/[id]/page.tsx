@@ -39,10 +39,13 @@ import {
   Loader2,
   Mail,
   Package as PackageIcon,
+  Pencil,
+  Percent,
   Plus,
   Repeat,
   RotateCcw,
   Sparkles,
+  Tag,
   Trash2,
   X,
 } from 'lucide-react';
@@ -84,6 +87,7 @@ import {
   useAddInvoiceLine,
   useApplyGiftCard,
   useCloseInvoice,
+  useEditInvoiceLine,
   useEmailInvoice,
   useInvoice,
   useInvoiceForAppointment,
@@ -92,7 +96,9 @@ import {
   useRemoveInvoiceLine,
   useReopenInvoice,
   useReverseGiftCardRedemption,
+  useSetInvoiceDiscount,
   useVoidInvoice,
+  type DiscountKind,
   type Invoice,
   type InvoiceLineItem,
   type PaymentMethod,
@@ -117,6 +123,13 @@ type Mode = 'view' | 'pay' | 'reopen' | 'void';
 
 const REOPEN_ROLES = new Set(['owner', 'manager']);
 const VOID_ROLES = new Set(['owner', 'manager']);
+// Mirrors the backend `EDIT_INVOICE_PRICE` permission defaults. Owners
+// and managers can edit prices and discounts directly; front desk can
+// still execute the edit but must supply a manager's credentials on
+// every individual save (the panel surfaces an authorization sub-form
+// in that case). Cashiers don't get to silently mark down a $400
+// service to $100 — separation of duties.
+const EDIT_PRICE_ROLES = new Set(['owner', 'manager']);
 
 const DEFAULT_TIMEZONE = 'America/New_York';
 
@@ -352,6 +365,10 @@ function InvoiceBody({
   // this is just a UI gate to hide the affordance when it'd 403.
   const canEditLines =
     role === 'owner' || role === 'manager' || role === 'front_desk';
+  // Owner/manager can edit price + discount directly. Front desk sees
+  // the same affordances, but the edit panel surfaces a manager-
+  // authorization sub-form whose creds are submitted with the PATCH.
+  const canDirectEditPrice = EDIT_PRICE_ROLES.has(role);
 
   const tz = DEFAULT_TIMEZONE;
 
@@ -367,7 +384,11 @@ function InvoiceBody({
             timezone={tz}
           />
           <Divider />
-          <LineItemsTable invoice={invoice} canEdit={canEditLines} />
+          <LineItemsTable
+            invoice={invoice}
+            canEdit={canEditLines}
+            canDirectEditPrice={canDirectEditPrice}
+          />
           {canEditLines && invoice.status === 'open' ? (
             <AddLinePanel invoice={invoice} />
           ) : null}
@@ -393,7 +414,11 @@ function InvoiceBody({
             />
           ) : null}
           <Divider />
-          <TotalsBlock invoice={invoice} />
+          <TotalsBlock
+            invoice={invoice}
+            canEdit={canEditLines}
+            canDirectEditPrice={canDirectEditPrice}
+          />
           {invoice.status === 'paid' || invoice.status === 'void' ? (
             <>
               <Divider />
@@ -574,20 +599,33 @@ function ContextSection({
 function LineItemsTable({
   invoice,
   canEdit,
+  canDirectEditPrice,
 }: {
   invoice: Invoice;
   canEdit: boolean;
+  /** Operator can save price/discount changes without supplying
+   *  manager credentials (owner / manager). When false (front_desk),
+   *  the edit panel shows an authorization sub-form. */
+  canDirectEditPrice: boolean;
 }) {
   const remove = useRemoveInvoiceLine(invoice.id);
   const editable = canEdit && invoice.status === 'open';
+  // Only one row open at a time — multiple open edit panels would
+  // pile up vertically and lose the operator's focus context.
+  const [expandedLineId, setExpandedLineId] = useState<number | null>(null);
 
   const onRemove = (lineId: number) => {
     if (!editable) return;
+    if (expandedLineId === lineId) setExpandedLineId(null);
     remove.mutate(lineId, {
       onSuccess: () => toast.success('Line removed'),
       onError: (err) =>
         toast.error(invoiceErrorMessage(err, "Couldn't remove the line.")),
     });
+  };
+
+  const toggleExpanded = (lineId: number) => {
+    setExpandedLineId((prev) => (prev === lineId ? null : lineId));
   };
 
   return (
@@ -607,17 +645,22 @@ function LineItemsTable({
               <th className="text-right font-normal pb-2 w-20 sm:w-24">Price</th>
               <th className="text-right font-normal pb-2 w-24 hidden sm:table-cell">Tax</th>
               <th className="text-right font-normal pb-2 w-24 sm:w-28 pr-4 sm:pr-0">Subtotal</th>
-              {editable ? <th className="w-8" /> : null}
+              {editable ? <th className="w-16" /> : null}
             </tr>
           </thead>
           <tbody className="divide-y divide-border/40">
             {invoice.line_items.map((line) => (
               <LineRow
                 key={line.id}
+                invoiceId={invoice.id}
                 line={line}
                 editable={editable}
+                isExpanded={expandedLineId === line.id}
+                onToggleExpand={() => toggleExpanded(line.id)}
+                onCollapse={() => setExpandedLineId(null)}
                 onRemove={onRemove}
                 isRemoving={remove.isPending && remove.variables === line.id}
+                canDirectEditPrice={canDirectEditPrice}
               />
             ))}
           </tbody>
@@ -628,65 +671,466 @@ function LineItemsTable({
 }
 
 function LineRow({
+  invoiceId,
   line,
   editable,
+  isExpanded,
+  onToggleExpand,
+  onCollapse,
   onRemove,
   isRemoving,
+  canDirectEditPrice,
 }: {
+  invoiceId: number;
   line: InvoiceLineItem;
   editable: boolean;
+  isExpanded: boolean;
+  onToggleExpand: () => void;
+  onCollapse: () => void;
   onRemove: (id: number) => void;
   isRemoving: boolean;
+  canDirectEditPrice: boolean;
 }) {
   const Icon = line.product
     ? PackageIcon
     : line.service
       ? Sparkles
       : null;
+
+  // What the customer effectively pays for this line: pre-discount
+  // subtotal, minus per-line discount, minus this line's share of the
+  // invoice-level discount, plus tax (tax is computed on the post-
+  // discount basis by the server).
+  const netSubtotalCents =
+    line.line_subtotal_cents
+    - line.discount_cents
+    - line.invoice_discount_share_cents
+    + line.line_tax_cents;
+  const hasDiscount =
+    line.discount_cents > 0 || line.invoice_discount_share_cents > 0;
+  // Total cells to span when the edit-panel row pops out underneath.
+  // Matches the column count in the header (description, qty, price,
+  // tax (sm+), subtotal, actions when editable). Tax hides below sm,
+  // so the colspan is one fewer there — table-cell handles that
+  // automatically since the rendered <th>/<td> count drops; we use
+  // the larger number and let the browser collapse correctly because
+  // every other row honors the same hide.
+  const colSpan = editable ? 6 : 5;
+
   return (
-    <tr className="group">
-      <td className="py-2.5 pl-4 sm:pl-0">
-        <div className="flex items-center gap-2 min-w-0">
-          {Icon ? (
-            <Icon className="size-3.5 text-muted-foreground shrink-0" />
-          ) : null}
-          <span className="truncate">{line.description}</span>
-        </div>
-      </td>
-      <td className="py-2.5 text-right font-mono tabular-nums">
-        {line.quantity}
-      </td>
-      <td className="py-2.5 text-right font-mono tabular-nums">
-        {formatMoneyCents(line.unit_price_cents)}
-      </td>
-      <td className="py-2.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">
-        {formatMoneyCents(line.line_tax_cents)}
-      </td>
-      <td className="py-2.5 text-right font-mono tabular-nums pr-4 sm:pr-0">
-        {formatMoneyCents(line.line_subtotal_cents + line.line_tax_cents)}
-      </td>
-      {editable ? (
-        <td className="py-2.5 text-right">
-          {/* opacity-0 hover-reveal becomes always-on at touch widths
-              where there's no hover state to depend on. */}
-          <button
-            type="button"
-            onClick={() => onRemove(line.id)}
-            disabled={isRemoving}
-            className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground/60 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-muted hover:text-destructive transition-all disabled:opacity-50"
-            aria-label="Remove line"
-            title="Remove line"
-          >
-            {isRemoving ? (
-              <Loader2 className="size-3.5 animate-spin" />
-            ) : (
-              <Trash2 className="size-3.5" />
-            )}
-          </button>
+    <>
+      <tr className="group">
+        <td className="py-2.5 pl-4 sm:pl-0">
+          <div className="flex items-center gap-2 min-w-0">
+            {Icon ? (
+              <Icon className="size-3.5 text-muted-foreground shrink-0" />
+            ) : null}
+            <div className="min-w-0">
+              <span className="block truncate">{line.description}</span>
+              {hasDiscount ? (
+                <span className="block text-[11px] text-muted-foreground mt-0.5 tabular-nums">
+                  <Tag className="inline size-3 mr-1 -mt-0.5" />
+                  {line.discount_cents > 0 ? (
+                    <>−{formatMoneyCents(line.discount_cents)} line</>
+                  ) : null}
+                  {line.discount_cents > 0
+                  && line.invoice_discount_share_cents > 0 ? (
+                    <span className="mx-1.5 text-muted-foreground/60">·</span>
+                  ) : null}
+                  {line.invoice_discount_share_cents > 0 ? (
+                    <>−{formatMoneyCents(line.invoice_discount_share_cents)} from invoice discount</>
+                  ) : null}
+                </span>
+              ) : null}
+            </div>
+          </div>
         </td>
+        <td className="py-2.5 text-right font-mono tabular-nums">
+          {line.quantity}
+        </td>
+        <td className="py-2.5 text-right font-mono tabular-nums">
+          {formatMoneyCents(line.unit_price_cents)}
+        </td>
+        <td className="py-2.5 text-right font-mono tabular-nums text-muted-foreground hidden sm:table-cell">
+          {formatMoneyCents(line.line_tax_cents)}
+        </td>
+        <td className="py-2.5 text-right font-mono tabular-nums pr-4 sm:pr-0">
+          {formatMoneyCents(netSubtotalCents)}
+        </td>
+        {editable ? (
+          <td className="py-2.5 text-right">
+            <div className="inline-flex items-center gap-0.5">
+              {/* opacity-0 hover-reveal becomes always-on at touch widths
+                  where there's no hover state to depend on, and stays
+                  visible while the edit panel is open. */}
+              <button
+                type="button"
+                onClick={onToggleExpand}
+                className={cn(
+                  'inline-flex size-7 items-center justify-center rounded-md text-muted-foreground/60 hover:bg-muted hover:text-foreground transition-all',
+                  isExpanded
+                    ? 'opacity-100 bg-muted text-foreground'
+                    : 'opacity-100 sm:opacity-0 sm:group-hover:opacity-100',
+                )}
+                aria-label={isExpanded ? 'Close edit panel' : 'Edit price + discount'}
+                aria-expanded={isExpanded}
+                title="Edit price + discount"
+              >
+                <Pencil className="size-3.5" />
+              </button>
+              <button
+                type="button"
+                onClick={() => onRemove(line.id)}
+                disabled={isRemoving}
+                className="inline-flex size-7 items-center justify-center rounded-md text-muted-foreground/60 opacity-100 sm:opacity-0 sm:group-hover:opacity-100 hover:bg-muted hover:text-destructive transition-all disabled:opacity-50"
+                aria-label="Remove line"
+                title="Remove line"
+              >
+                {isRemoving ? (
+                  <Loader2 className="size-3.5 animate-spin" />
+                ) : (
+                  <Trash2 className="size-3.5" />
+                )}
+              </button>
+            </div>
+          </td>
+        ) : null}
+      </tr>
+      {editable && isExpanded ? (
+        <tr>
+          <td colSpan={colSpan} className="p-0">
+            <LineEditPanel
+              invoiceId={invoiceId}
+              line={line}
+              canDirectEditPrice={canDirectEditPrice}
+              onDone={onCollapse}
+            />
+          </td>
+        </tr>
       ) : null}
-    </tr>
+    </>
   );
+}
+
+// ── Per-line edit panel ──────────────────────────────────────────────────
+//
+// Lets the operator change a line's unit price and/or its per-line
+// discount. Open one row at a time (managed by LineItemsTable). Front
+// desk operators see an extra "manager authorization" section whose
+// credentials are submitted with the PATCH — owner / manager don't
+// see it because they can edit prices directly.
+//
+// All money is dollars in the inputs and converted to cents at submit
+// time (centsFromDollars). Discount input is interpreted by the
+// selected kind: 'amount' → dollars off, 'percent' → percent off.
+//
+// Backend validates EDIT_INVOICE_PRICE OR a valid override on the
+// authorizer's account before persisting. This UI mirrors that gate
+// but the server is the source of truth — a bug here can only over-
+// gate (extra prompts), never silently apply changes the role isn't
+// entitled to.
+
+function LineEditPanel({
+  invoiceId,
+  line,
+  canDirectEditPrice,
+  onDone,
+}: {
+  invoiceId: number;
+  line: InvoiceLineItem;
+  canDirectEditPrice: boolean;
+  onDone: () => void;
+}) {
+  const edit = useEditInvoiceLine(invoiceId);
+  const [priceDollars, setPriceDollars] = useState(
+    () => dollarsFromCents(line.unit_price_cents),
+  );
+  const [discountKind, setDiscountKind] = useState<DiscountKind>(
+    line.discount_kind,
+  );
+  // For percent the backend echoes back a normalized string like
+  // "10.00"; for amount it echoes the dollars-off string. Treat both
+  // as plain strings the operator can keep typing into.
+  const [discountInput, setDiscountInput] = useState(
+    () => normalizeDiscountInputForEdit(line.discount_kind, line.discount_input),
+  );
+  const [discountReason, setDiscountReason] = useState(line.discount_reason);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+
+  const initialPriceDollars = dollarsFromCents(line.unit_price_cents);
+  const initialDiscountInput = normalizeDiscountInputForEdit(
+    line.discount_kind,
+    line.discount_input,
+  );
+  const priceChanged = priceDollars !== initialPriceDollars;
+  const discountChanged =
+    discountKind !== line.discount_kind
+    || discountInput !== initialDiscountInput
+    || discountReason !== line.discount_reason;
+  const isDirty = priceChanged || discountChanged;
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isDirty) {
+      onDone();
+      return;
+    }
+    if (!canDirectEditPrice && (!authEmail || !authPassword)) {
+      toast.error('A manager’s email and password are required.');
+      return;
+    }
+
+    const payload: Parameters<typeof edit.mutate>[0]['payload'] = {};
+    if (priceChanged) {
+      payload.unit_price_cents = centsFromDollars(priceDollars);
+    }
+    if (discountChanged) {
+      payload.discount_kind = discountKind;
+      // Empty input is treated as "no discount" — send '0' so the
+      // backend clears the existing one rather than partial-update
+      // silently leaving the old value in place.
+      payload.discount_input = discountInput.trim() === ''
+        ? '0'
+        : discountInput.trim();
+      payload.discount_reason = discountReason.trim();
+    }
+    if (!canDirectEditPrice) {
+      payload.authorized_by_email = authEmail.trim();
+      payload.authorized_by_password = authPassword;
+    }
+
+    edit.mutate(
+      { line_id: line.id, payload },
+      {
+        onSuccess: () => {
+          toast.success('Line updated');
+          setAuthEmail('');
+          setAuthPassword('');
+          onDone();
+        },
+        onError: (err) =>
+          toast.error(invoiceErrorMessage(err, "Couldn't save the change.")),
+      },
+    );
+  };
+
+  const onCancel = () => {
+    setPriceDollars(initialPriceDollars);
+    setDiscountKind(line.discount_kind);
+    setDiscountInput(initialDiscountInput);
+    setDiscountReason(line.discount_reason);
+    setAuthEmail('');
+    setAuthPassword('');
+    onDone();
+  };
+
+  return (
+    <div className="px-4 sm:px-6 py-4 bg-muted/30 border-y">
+      <form onSubmit={onSubmit} className="space-y-3">
+        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+          Edit price + discount
+        </p>
+        <div className="grid grid-cols-1 sm:grid-cols-[160px_1fr] gap-3 items-end">
+          <label className="text-xs text-muted-foreground space-y-1 block">
+            <span>Unit price ($)</span>
+            <Input
+              type="number"
+              step="0.01"
+              min={0}
+              value={priceDollars}
+              onChange={(e) => setPriceDollars(e.target.value)}
+              className="font-mono"
+              inputMode="decimal"
+            />
+          </label>
+          <div className="text-[11px] text-muted-foreground sm:pl-2">
+            Quantity × price = pre-discount subtotal. Discounts and tax
+            apply on top, totals refresh on save.
+          </div>
+        </div>
+
+        <DiscountFields
+          kind={discountKind}
+          input={discountInput}
+          reason={discountReason}
+          onKindChange={setDiscountKind}
+          onInputChange={setDiscountInput}
+          onReasonChange={setDiscountReason}
+          context="line"
+        />
+
+        {!canDirectEditPrice ? (
+          <ManagerOverrideFields
+            email={authEmail}
+            password={authPassword}
+            onEmailChange={setAuthEmail}
+            onPasswordChange={setAuthPassword}
+          />
+        ) : null}
+
+        <div className="flex items-center justify-end gap-2 pt-1">
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            onClick={onCancel}
+            disabled={edit.isPending}
+          >
+            Cancel
+          </Button>
+          <Button
+            type="submit"
+            size="sm"
+            disabled={edit.isPending || (!canDirectEditPrice && (!authEmail || !authPassword))}
+          >
+            {edit.isPending ? (
+              <Loader2 className="size-4 animate-spin" />
+            ) : null}
+            Save
+          </Button>
+        </div>
+      </form>
+    </div>
+  );
+}
+
+// ── Discount + manager-override sub-components ──────────────────────────
+
+function DiscountFields({
+  kind,
+  input,
+  reason,
+  onKindChange,
+  onInputChange,
+  onReasonChange,
+  context,
+}: {
+  kind: DiscountKind;
+  input: string;
+  reason: string;
+  onKindChange: (next: DiscountKind) => void;
+  onInputChange: (next: string) => void;
+  onReasonChange: (next: string) => void;
+  /** Used in placeholder copy + the cleared-discount hint. */
+  context: 'line' | 'invoice';
+}) {
+  const placeholder =
+    kind === 'percent' ? 'e.g. 10 for 10% off' : 'e.g. 25.00 for $25 off';
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-muted-foreground">
+        {context === 'line' ? 'Line discount' : 'Invoice discount'}{' '}
+        <span className="text-muted-foreground/70">
+          (leave at 0 to clear)
+        </span>
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-[auto_1fr] gap-2 items-stretch">
+        <div className="inline-flex rounded-md border bg-card overflow-hidden">
+          {(['amount', 'percent'] as const).map((k) => {
+            const Icon = k === 'percent' ? Percent : Tag;
+            const active = k === kind;
+            return (
+              <button
+                key={k}
+                type="button"
+                onClick={() => onKindChange(k)}
+                className={cn(
+                  'inline-flex items-center gap-1.5 px-3 h-9 text-xs capitalize transition-colors',
+                  active
+                    ? 'bg-foreground text-background font-medium'
+                    : 'text-muted-foreground hover:text-foreground',
+                )}
+                aria-pressed={active}
+              >
+                <Icon className="size-3.5" />
+                {k === 'amount' ? '$ off' : '% off'}
+              </button>
+            );
+          })}
+        </div>
+        <Input
+          type="number"
+          step="0.01"
+          min={0}
+          value={input}
+          onChange={(e) => onInputChange(e.target.value)}
+          placeholder={placeholder}
+          className="font-mono"
+          inputMode="decimal"
+        />
+      </div>
+      <Input
+        type="text"
+        value={reason}
+        onChange={(e) => onReasonChange(e.target.value)}
+        placeholder="Reason (optional, e.g. loyalty, comp, promo)"
+        maxLength={200}
+      />
+    </div>
+  );
+}
+
+function ManagerOverrideFields({
+  email,
+  password,
+  onEmailChange,
+  onPasswordChange,
+}: {
+  email: string;
+  password: string;
+  onEmailChange: (next: string) => void;
+  onPasswordChange: (next: string) => void;
+}) {
+  return (
+    <div className="rounded-md border border-amber-300/70 bg-amber-50 dark:border-amber-700/40 dark:bg-amber-950/30 p-3 space-y-2">
+      <p className="text-xs font-medium text-amber-900 dark:text-amber-200">
+        Manager authorization required
+      </p>
+      <p className="text-[11px] text-amber-800/80 dark:text-amber-200/70">
+        Have an owner or manager enter their credentials. Used once for
+        this change and recorded in the audit log.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+        <Input
+          type="email"
+          autoComplete="off"
+          value={email}
+          onChange={(e) => onEmailChange(e.target.value)}
+          placeholder="manager@example.com"
+          aria-label="Authorizer email"
+        />
+        <Input
+          type="password"
+          autoComplete="new-password"
+          value={password}
+          onChange={(e) => onPasswordChange(e.target.value)}
+          placeholder="Password"
+          aria-label="Authorizer password"
+        />
+      </div>
+    </div>
+  );
+}
+
+/** Normalize the backend's discount_input string into a value the
+ *  number input can render cleanly. Server returns '0.00' for cleared
+ *  discounts — show that as an empty string so the field reads as
+ *  "no discount set" rather than a stray '0.00' the operator has
+ *  to clear before typing. */
+function normalizeDiscountInputForEdit(
+  kind: DiscountKind,
+  raw: string,
+): string {
+  const trimmed = (raw ?? '').trim();
+  if (!trimmed) return '';
+  const n = Number(trimmed);
+  if (Number.isFinite(n) && n === 0) return '';
+  return trimmed;
+}
+
+function dollarsFromCents(cents: number): string {
+  return (cents / 100).toFixed(2);
 }
 
 type AddLineKind = 'product' | 'service' | 'package' | 'membership';
@@ -1009,12 +1453,43 @@ function RedeemFromPackagePanel({
   );
 }
 
-function TotalsBlock({ invoice }: { invoice: Invoice }) {
+function TotalsBlock({
+  invoice,
+  canEdit,
+  canDirectEditPrice,
+}: {
+  invoice: Invoice;
+  canEdit: boolean;
+  canDirectEditPrice: boolean;
+}) {
   const hasGiftCardCredits = invoice.gift_card_credits_cents > 0;
+  const hasLineDiscounts = invoice.line_discounts_total_cents > 0;
+  const hasInvoiceDiscount = invoice.invoice_discount_cents > 0;
+  const editable = canEdit && invoice.status === 'open';
+  // Default the editor open when there's already a discount, so it's
+  // obvious how to clear / adjust it; collapsed when none exists so
+  // the totals box stays compact during a clean checkout.
+  const [discountEditorOpen, setDiscountEditorOpen] = useState(
+    () => hasInvoiceDiscount,
+  );
   return (
-    <div className="px-4 sm:px-6 py-5 flex justify-stretch sm:justify-end">
-      <dl className="text-sm space-y-1.5 w-full sm:w-auto sm:min-w-[260px]">
+    <div className="px-4 sm:px-6 py-5 flex flex-col gap-3 sm:items-end">
+      <dl className="text-sm space-y-1.5 w-full sm:w-auto sm:min-w-[280px]">
         <SummaryRow label="Subtotal" value={formatMoneyCents(invoice.subtotal_cents)} />
+        {hasLineDiscounts ? (
+          <SummaryRow
+            label="Line discounts"
+            value={`−${formatMoneyCents(invoice.line_discounts_total_cents)}`}
+            tone="positive"
+          />
+        ) : null}
+        {hasInvoiceDiscount ? (
+          <SummaryRow
+            label="Invoice discount"
+            value={`−${formatMoneyCents(invoice.invoice_discount_cents)}`}
+            tone="positive"
+          />
+        ) : null}
         <SummaryRow label="Tax" value={formatMoneyCents(invoice.tax_cents)} />
         <div className="border-t border-border/60 pt-1.5 mt-1.5">
           <SummaryRow
@@ -1040,7 +1515,149 @@ function TotalsBlock({ invoice }: { invoice: Invoice }) {
           </>
         ) : null}
       </dl>
+
+      {editable ? (
+        <div className="w-full sm:w-auto sm:min-w-[280px]">
+          {discountEditorOpen ? (
+            <InvoiceDiscountPanel
+              invoice={invoice}
+              canDirectEditPrice={canDirectEditPrice}
+              onDone={() => setDiscountEditorOpen(false)}
+            />
+          ) : (
+            <button
+              type="button"
+              onClick={() => setDiscountEditorOpen(true)}
+              className="inline-flex w-full sm:w-auto items-center justify-center gap-1.5 h-8 px-3 rounded-md border border-dashed border-border bg-card text-xs text-muted-foreground hover:bg-muted hover:text-foreground transition-colors"
+            >
+              <Tag className="size-3.5" />
+              {hasInvoiceDiscount ? 'Edit invoice discount' : 'Add invoice discount'}
+            </button>
+          )}
+        </div>
+      ) : null}
     </div>
+  );
+}
+
+// ── Invoice-level discount panel ────────────────────────────────────────
+//
+// Same shape as the per-line edit panel, but targets the invoice-
+// level discount endpoint. Distributed pro-rata across lines by the
+// server's `recalculate_totals` (each line's `invoice_discount_share_cents`
+// is read-only and reflects the result).
+function InvoiceDiscountPanel({
+  invoice,
+  canDirectEditPrice,
+  onDone,
+}: {
+  invoice: Invoice;
+  canDirectEditPrice: boolean;
+  onDone: () => void;
+}) {
+  const setDiscount = useSetInvoiceDiscount(invoice.id);
+  const initialInput = normalizeDiscountInputForEdit(
+    invoice.invoice_discount_kind,
+    invoice.invoice_discount_input,
+  );
+  const [kind, setKind] = useState<DiscountKind>(invoice.invoice_discount_kind);
+  const [input, setInput] = useState(initialInput);
+  const [reason, setReason] = useState(invoice.invoice_discount_reason);
+  const [authEmail, setAuthEmail] = useState('');
+  const [authPassword, setAuthPassword] = useState('');
+
+  const isDirty =
+    kind !== invoice.invoice_discount_kind
+    || input !== initialInput
+    || reason !== invoice.invoice_discount_reason;
+
+  const onSubmit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!isDirty) {
+      onDone();
+      return;
+    }
+    if (!canDirectEditPrice && (!authEmail || !authPassword)) {
+      toast.error('A manager’s email and password are required.');
+      return;
+    }
+    const payload: Parameters<typeof setDiscount.mutate>[0] = {
+      invoice_discount_kind: kind,
+      invoice_discount_input: input.trim() === '' ? '0' : input.trim(),
+      invoice_discount_reason: reason.trim(),
+    };
+    if (!canDirectEditPrice) {
+      payload.authorized_by_email = authEmail.trim();
+      payload.authorized_by_password = authPassword;
+    }
+    setDiscount.mutate(payload, {
+      onSuccess: () => {
+        toast.success('Invoice discount updated');
+        setAuthEmail('');
+        setAuthPassword('');
+        onDone();
+      },
+      onError: (err) =>
+        toast.error(invoiceErrorMessage(err, "Couldn't save the discount.")),
+    });
+  };
+
+  const onCancel = () => {
+    setKind(invoice.invoice_discount_kind);
+    setInput(initialInput);
+    setReason(invoice.invoice_discount_reason);
+    setAuthEmail('');
+    setAuthPassword('');
+    onDone();
+  };
+
+  return (
+    <form
+      onSubmit={onSubmit}
+      className="rounded-md border bg-muted/30 p-3 space-y-3"
+    >
+      <DiscountFields
+        kind={kind}
+        input={input}
+        reason={reason}
+        onKindChange={setKind}
+        onInputChange={setInput}
+        onReasonChange={setReason}
+        context="invoice"
+      />
+      {!canDirectEditPrice ? (
+        <ManagerOverrideFields
+          email={authEmail}
+          password={authPassword}
+          onEmailChange={setAuthEmail}
+          onPasswordChange={setAuthPassword}
+        />
+      ) : null}
+      <div className="flex items-center justify-end gap-2">
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          onClick={onCancel}
+          disabled={setDiscount.isPending}
+        >
+          Cancel
+        </Button>
+        <Button
+          type="submit"
+          size="sm"
+          disabled={
+            setDiscount.isPending
+            || (!canDirectEditPrice && (!authEmail || !authPassword))
+          }
+        >
+          {setDiscount.isPending ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : null}
+          Save
+        </Button>
+      </div>
+    </form>
   );
 }
 
