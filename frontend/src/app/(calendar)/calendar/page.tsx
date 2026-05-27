@@ -207,15 +207,18 @@ export default function CalendarPage() {
   const dayEndHour =
     tenantHourFromTime(activeLocation?.business_close_time) ?? undefined;
 
-  // Day-aware schedule filter: in day view, drop providers who aren't
-  // scheduled for the current weekday. Operators were seeing "ghost
-  // columns" for bookable staff who weren't on the schedule (e.g. a
-  // nurse who only works Mon + Fri showing up in every Tue–Thu view).
-  // Rules (strict — Option A):
-  //   - schedule_for_location is null/undefined → hide (no schedule
-  //     set = not scheduled)
-  //   - schedule_for_location[weekday] missing or empty array → hide
-  //   - schedule_for_location[weekday] has at least one entry → show
+  // Day-aware schedule filter: in day view, drop providers who are
+  // explicitly OFF for the current weekday so operators don't see
+  // ghost columns for staff who aren't working (e.g. a nurse who
+  // only works Mon + Fri showing up in every Tue–Thu view).
+  // Semantics (mirror the backend contract — see `Membership.schedule_for_location`
+  // docstring and `apps.tenants.views.MembershipSerializer.get_schedule_for_location`):
+  //   - schedule_for_location is null/undefined → no schedule set;
+  //     provider is bookable any time within business hours → SHOW.
+  //   - schedule_for_location[weekday] missing or empty array →
+  //     explicitly off → HIDE.
+  //   - schedule_for_location[weekday] has at least one entry → on
+  //     the schedule that day → SHOW.
   // Week / month views show everyone (each day inside those views can
   // make its own schedule decision rendering-side).
   const weekday = useMemo(() => weekdayKey(date), [date]);
@@ -224,18 +227,22 @@ export default function CalendarPage() {
     if (view !== 'day') return all;
     return all.filter((p) => {
       const sched = p.schedule_for_location;
-      if (!sched) return false;
+      if (!sched) return true;
       const todayHours = sched[weekday];
       return Array.isArray(todayHours) && todayHours.length > 0;
     });
   }, [providers, view, weekday]);
 
+  // Explicit operator filter wins over the schedule pre-filter — if
+  // someone deliberately picks a provider in the multi-select, show
+  // their column even if they're off today (they may have walked in
+  // to cover a shift, etc.). With no explicit pick, default to the
+  // schedule-aware set.
   const filteredProviders = useMemo(() => {
-    const base = scheduledProviders;
-    if (providerFilter.length === 0) return base;
+    if (providerFilter.length === 0) return scheduledProviders;
     const allowed = new Set(providerFilter);
-    return base.filter((p) => allowed.has(p.id));
-  }, [scheduledProviders, providerFilter]);
+    return (providers ?? []).filter((p) => allowed.has(p.id));
+  }, [providers, scheduledProviders, providerFilter]);
 
   // Appointments use the same provider set as the column list, so a
   // provider hidden by the schedule filter also hides their cards —
