@@ -126,31 +126,32 @@ export function NewAppointmentSheet({
 }: NewAppointmentSheetProps) {
   const create = useCreateAppointment();
 
+  // Single source of truth for the form's blank state — used for both
+  // `useForm({ defaultValues })` and `form.reset(...)`. Keeping these
+  // in two separate object literals invited a class of bugs where a
+  // newly-added field would be present on one path and missing on the
+  // other — silently producing an `undefined` value that fails zod
+  // (e.g. `extra_service_ids: []` was missing from the reset object,
+  // which made single-service bookings fail validation while
+  // multi-service ones happened to populate the field via setValue).
+  const buildDefaults = (): FormValues => ({
+    customer_id: 0,
+    service_id: 0,
+    extra_service_ids: [],
+    provider_id: defaultProviderId ?? 0,
+    date: defaultDate ?? todayLocalISODate(),
+    time: defaultTime ?? defaultStartTimeLabel(),
+    notes: '',
+  });
+
   const form = useForm<FormValues>({
     resolver: zodResolver(schema),
-    defaultValues: {
-      customer_id: 0,
-      service_id: 0,
-      extra_service_ids: [],
-      provider_id: defaultProviderId ?? 0,
-      date: defaultDate ?? todayLocalISODate(),
-      time: defaultTime ?? defaultStartTimeLabel(),
-      notes: '',
-    },
+    defaultValues: buildDefaults(),
   });
 
   // Reset whenever the sheet re-opens with potentially new defaults.
   useEffect(() => {
-    if (open) {
-      form.reset({
-        customer_id: 0,
-        service_id: 0,
-        provider_id: defaultProviderId ?? 0,
-        date: defaultDate ?? todayLocalISODate(),
-        time: defaultTime ?? defaultStartTimeLabel(),
-        notes: '',
-      });
-    }
+    if (open) form.reset(buildDefaults());
     // form.reset is stable; only react to open/defaults.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, defaultDate, defaultTime, defaultProviderId]);
