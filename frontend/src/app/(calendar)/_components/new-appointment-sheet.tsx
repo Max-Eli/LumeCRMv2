@@ -293,29 +293,66 @@ export function NewAppointmentSheet({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [watched.provider_id, eligibleProviders.length]);
 
-  // Soft conflict detection — same provider overlap on focus date.
+  // Soft conflict detection — overlap on any involved provider's day.
+  //
+  // With per-service provider overrides one visit can touch multiple
+  // providers' columns at different slots (e.g. Botox by Dr. A
+  // 14:00-14:30, Facial by Esth. B 14:30-15:30). We walk the planned
+  // services in order, compute each one's slot, and check every
+  // involved provider's existing day for overlap with the matching
+  // slice. Surfaces the FIRST overlap so the operator sees a concrete
+  // "this provider already has X with Y" message.
   const { data: focusDateAppts } = useAppointmentsForDate(watched.date);
   const conflict = useMemo(() => {
-    if (!selectedService || !watched.provider_id || !watched.time) return null;
+    if (!selectedService || !watched.provider_id || !watched.time) {
+      return null;
+    }
     const startUtc = localDateTimeToUtcIso(
       watched.date,
       ...parseHHMM(watched.time),
       timezone,
     );
-    const startMs = new Date(startUtc).getTime();
-    const endMs = startMs + totalDurationMinutes * 60_000;
-    const overlap = (focusDateAppts ?? []).find((a) => {
-      if (a.provider.id !== watched.provider_id) return false;
-      if (a.status === 'cancelled' || a.status === 'no_show') return false;
-      const aStart = new Date(a.start_time).getTime();
-      const aEnd = new Date(a.end_time).getTime();
-      return aStart < endMs && aEnd > startMs;
+    const visitStartMs = new Date(startUtc).getTime();
+
+    type Slot = { providerId: number; startMs: number; endMs: number };
+    const slots: Slot[] = [];
+    let cursorMs = visitStartMs;
+    // Primary first.
+    const primaryEndMs =
+      cursorMs + selectedService.duration_minutes * 60_000;
+    slots.push({
+      providerId: watched.provider_id,
+      startMs: cursorMs,
+      endMs: primaryEndMs,
     });
-    return overlap ?? null;
+    cursorMs = primaryEndMs;
+    // Then extras in form order (matches the backend's sort_order
+    // assignment in perform_create).
+    for (const row of extraServicesResolved) {
+      const endMs = cursorMs + row.service.duration_minutes * 60_000;
+      slots.push({
+        providerId: row.provider?.id ?? watched.provider_id,
+        startMs: cursorMs,
+        endMs,
+      });
+      cursorMs = endMs;
+    }
+
+    for (const slot of slots) {
+      const overlap = (focusDateAppts ?? []).find((a) => {
+        if (a.provider.id !== slot.providerId) return false;
+        if (a.status === 'cancelled' || a.status === 'no_show') return false;
+        const aStart = new Date(a.start_time).getTime();
+        const aEnd = new Date(a.end_time).getTime();
+        return aStart < slot.endMs && aEnd > slot.startMs;
+      });
+      if (overlap) return overlap;
+    }
+    return null;
   }, [
     focusDateAppts,
     selectedService,
-    totalDurationMinutes,
+    extraServicesResolved,
     watched.provider_id,
     watched.date,
     watched.time,

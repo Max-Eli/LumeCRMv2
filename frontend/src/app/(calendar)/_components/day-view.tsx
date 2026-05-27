@@ -138,6 +138,132 @@ type ResizeHandler = (
   newDurationMinutes: number,
 ) => void;
 
+// ── Renderable block (per-group splitting for per-service providers) ────
+
+/**
+ * One renderable block on a provider's column. An appointment with no
+ * per-service provider overrides yields exactly one `RenderableBlock`
+ * (the whole visit on the primary provider's column — today's
+ * behavior). An appointment with overrides yields one block per
+ * contiguous group of services that share the same effective provider,
+ * so a Botox(Dr. A) + Facial(Esth. B) + Peel(Dr. A) visit shows up as
+ * three blocks (two on Dr. A's column with a gap, one on Esth. B's),
+ * each booked to the correct time slice — the calendar never lies
+ * about who's busy when.
+ *
+ * `isSplit` is the multi-block flag: when true, drag + resize are
+ * disabled (operator uses the popover or reschedule action because a
+ * single-edge time move has no clean meaning across providers).
+ */
+type RenderableBlock = {
+  appointment: Appointment;
+  providerId: number;
+  startMs: number;
+  endMs: number;
+  /** First service in this group — drives the block's color + main
+   *  label. */
+  primaryServiceInBlock: AppointmentServiceSummary;
+  /** Total number of services in this group (1 = no "+N" badge, >1
+   *  shows the badge in the block label). */
+  servicesInBlockCount: number;
+  /** Did this group include the appointment's primary `service`?
+   *  Influences whether the "paid" badge etc. show on this block —
+   *  we put per-appointment badges only on the primary group's block. */
+  hasPrimaryService: boolean;
+  /** Set when the parent appointment yields more than one renderable
+   *  block (i.e. has a per-service provider override). When true the
+   *  block is rendered without drag + resize handles — those gestures
+   *  have no clean per-block semantic on a split visit, so we route
+   *  changes through the popover and the reschedule menu instead. */
+  isSplit: boolean;
+  /** Stable identity for React keys + lane lookup. Unique within the
+   *  day across all appointments. */
+  blockKey: string;
+};
+
+/** Lightweight stand-in for the nested AppointmentServiceSummary type
+ *  — shared between `appointment.service` and each
+ *  `extra_services[].service`. */
+type AppointmentServiceSummary = Appointment['service'];
+
+/**
+ * Split an appointment into one or more `RenderableBlock`s by walking
+ * its services in `sort_order`, computing back-to-back time slots, and
+ * grouping contiguous services with the same *effective* provider.
+ *
+ * Effective provider = the extra's `provider` override when set, else
+ * the appointment's primary provider. Inheriting (null override) keeps
+ * the extra in whichever group the previous slot was in (almost always
+ * the primary's group).
+ */
+function computeRenderableBlocks(appointment: Appointment): RenderableBlock[] {
+  const primaryProviderId = appointment.provider.id;
+  const startMs = new Date(appointment.start_time).getTime();
+
+  type Slot = {
+    service: AppointmentServiceSummary;
+    providerId: number;
+    durMin: number;
+    isPrimary: boolean;
+    startMs: number;
+    endMs: number;
+  };
+
+  // Walk: primary first, then extras in sort_order. Compute absolute
+  // start/end per slot from accumulated durations.
+  const sortedExtras = [...appointment.extra_services].sort(
+    (a, b) => a.sort_order - b.sort_order,
+  );
+  let cursorMs = startMs;
+  const slots: Slot[] = [];
+  const primaryEndMs = cursorMs + appointment.service.duration_minutes * 60_000;
+  slots.push({
+    service: appointment.service,
+    providerId: primaryProviderId,
+    durMin: appointment.service.duration_minutes,
+    isPrimary: true,
+    startMs: cursorMs,
+    endMs: primaryEndMs,
+  });
+  cursorMs = primaryEndMs;
+  for (const es of sortedExtras) {
+    const endMs = cursorMs + es.duration_minutes * 60_000;
+    slots.push({
+      service: es.service,
+      providerId: es.provider?.id ?? primaryProviderId,
+      durMin: es.duration_minutes,
+      isPrimary: false,
+      startMs: cursorMs,
+      endMs,
+    });
+    cursorMs = endMs;
+  }
+
+  // Group contiguous same-provider slots.
+  const groups: Slot[][] = [];
+  for (const slot of slots) {
+    const last = groups[groups.length - 1];
+    if (last && last[0].providerId === slot.providerId) {
+      last.push(slot);
+    } else {
+      groups.push([slot]);
+    }
+  }
+
+  const isSplit = groups.length > 1;
+  return groups.map((group, idx) => ({
+    appointment,
+    providerId: group[0].providerId,
+    startMs: group[0].startMs,
+    endMs: group[group.length - 1].endMs,
+    primaryServiceInBlock: group[0].service,
+    servicesInBlockCount: group.length,
+    hasPrimaryService: group.some((s) => s.isPrimary),
+    isSplit,
+    blockKey: `appt-${appointment.id}-grp-${idx}`,
+  }));
+}
+
 /**
  * Open-context-menu state for the reschedule flow. The menu is a small
  * absolutely-positioned div anchored at the click coords; `newStart` /
@@ -655,12 +781,20 @@ export function DayView({
     return <EmptyProvidersState />;
   }
 
-  // Group appointments by provider for fast column rendering.
-  const byProvider = new Map<number, Appointment[]>();
+  // Split each appointment into one or more `RenderableBlock`s (one
+  // per contiguous group of same-provider services), then fan them out
+  // by provider for column rendering. For the common single-provider
+  // appointment this yields one block on the primary provider's column
+  // — identical to the prior `byProvider` behavior. For visits with
+  // per-service provider overrides, the same appointment shows up on
+  // each involved provider's column at the right time slice.
+  const blocksByProvider = new Map<number, RenderableBlock[]>();
   for (const appt of appointments) {
-    const list = byProvider.get(appt.provider.id);
-    if (list) list.push(appt);
-    else byProvider.set(appt.provider.id, [appt]);
+    for (const block of computeRenderableBlocks(appt)) {
+      const list = blocksByProvider.get(block.providerId);
+      if (list) list.push(block);
+      else blocksByProvider.set(block.providerId, [block]);
+    }
   }
 
   return (
@@ -709,7 +843,7 @@ export function DayView({
             <ProviderColumn
               key={provider.id}
               provider={provider}
-              appointments={byProvider.get(provider.id) ?? []}
+              blocks={blocksByProvider.get(provider.id) ?? []}
               timeBlocks={timeBlocksByProvider.get(provider.id) ?? []}
               timezone={timezone}
               date={date}
@@ -900,7 +1034,7 @@ function RescheduleContextMenu({
 
 function ProviderColumn({
   provider,
-  appointments,
+  blocks,
   timeBlocks,
   timezone,
   date,
@@ -921,7 +1055,10 @@ function ProviderColumn({
   onDeleteTimeBlock,
 }: {
   provider: Membership;
-  appointments: Appointment[];
+  /** Renderable appointment blocks landing on THIS provider's column
+   *  — one per contiguous group of same-provider services on each
+   *  appointment. See `computeRenderableBlocks`. */
+  blocks: RenderableBlock[];
   /** Time blocks (lunch, personal time, etc.) on this provider's day. */
   timeBlocks: TimeBlock[];
   timezone: string;
@@ -996,25 +1133,28 @@ function ProviderColumn({
   const isInvalidTarget = isDropTarget && !eligibility.ok;
 
   // Lane assignments for overlapping items in this column — combines
-  // appointments and time blocks into a single computation so a block
-  // dropped over an existing appointment narrows both side-by-side
-  // (matches the visual treatment of a real double-booking).
+  // renderable appointment blocks and time blocks into a single
+  // computation so an overlap narrows both side-by-side (matches the
+  // visual treatment of a real double-booking). The renderable block's
+  // `blockKey` is already split-aware (one key per group), so a Botox
+  // by Dr. A + Peel by Dr. A visit competes for lane space as one
+  // contiguous slot, while a Botox(A)+Facial(B)+Peel(A) visit
+  // contributes TWO items to Dr. A's lane computation (one for each
+  // gap-separated group on her column).
   const lanesById = useMemo(
     () => computeLanesForColumn([
-      ...appointments.map<LaneItem>((a) => ({
-        kind: 'appt',
-        id: a.id,
-        start_time: a.start_time,
-        end_time: a.end_time,
+      ...blocks.map<LaneItem>((b) => ({
+        key: b.blockKey,
+        startMs: b.startMs,
+        endMs: b.endMs,
       })),
-      ...timeBlocks.map<LaneItem>((b) => ({
-        kind: 'block',
-        id: b.id,
-        start_time: b.start_time,
-        end_time: b.end_time,
+      ...timeBlocks.map<LaneItem>((tb) => ({
+        key: `tb-${tb.id}`,
+        startMs: new Date(tb.start_time).getTime(),
+        endMs: new Date(tb.end_time).getTime(),
       })),
     ]),
-    [appointments, timeBlocks],
+    [blocks, timeBlocks],
   );
 
   return (
@@ -1095,19 +1235,21 @@ function ProviderColumn({
           pxPerMin={pxPerMin}
           dayHeight={dayHeight}
         />
-        {appointments.map((appt) => {
+        {blocks.map((block) => {
           const laneInfo =
-            lanesById.get(laneKey('appt', appt.id))
+            lanesById.get(block.blockKey)
             ?? { lane: 0, lanesInCluster: 1 };
           return (
             <AppointmentBlock
-              key={appt.id}
-              appointment={appt}
+              key={block.blockKey}
+              block={block}
               timezone={timezone}
               date={date}
               pxPerMin={pxPerMin}
               isNarrow={isNarrow}
-              isReschedulingSource={appt.id === reschedulingApptId}
+              isReschedulingSource={
+                block.appointment.id === reschedulingApptId
+              }
               lane={laneInfo.lane}
               lanesInCluster={laneInfo.lanesInCluster}
               dayStartHour={dayStartHour}
@@ -1123,14 +1265,14 @@ function ProviderColumn({
             over the appointment). Distinct visual treatment (gray,
             hatched) so the front desk reads them as "unavailable"
             rather than "booked." */}
-        {timeBlocks.map((block) => {
+        {timeBlocks.map((tb) => {
           const laneInfo =
-            lanesById.get(laneKey('block', block.id))
+            lanesById.get(`tb-${tb.id}`)
             ?? { lane: 0, lanesInCluster: 1 };
           return (
             <TimeBlockBlock
-              key={block.id}
-              block={block}
+              key={tb.id}
+              block={tb}
               timezone={timezone}
               date={date}
               pxPerMin={pxPerMin}
@@ -1265,7 +1407,7 @@ function appointmentStageStyle(appointment: Appointment): {
 }
 
 function AppointmentBlock({
-  appointment,
+  block,
   timezone,
   date,
   pxPerMin,
@@ -1277,12 +1419,16 @@ function AppointmentBlock({
   dayEndHour,
   onResize,
 }: {
-  appointment: Appointment;
+  /** One renderable slot — for the common single-provider visit this
+   *  is the whole appointment; for split (per-service-provider)
+   *  visits this is one contiguous same-provider group on this
+   *  column. See `computeRenderableBlocks`. */
+  block: RenderableBlock;
   timezone: string;
   date: string;
   pxPerMin: number;
   isNarrow: boolean;
-  /** True when this block is the appointment currently being moved via
+  /** True when this block's appointment is currently being moved via
    *  the right-click reschedule flow. Renders faded with a burgundy
    *  ring and disables drag (the user committed to the right-click path). */
   isReschedulingSource: boolean;
@@ -1297,8 +1443,20 @@ function AppointmentBlock({
   /** Commits a resize when the operator drags the block's bottom edge. */
   onResize: ResizeHandler;
 }) {
+  const { appointment } = block;
+  // The block's slot drives positioning — for a non-split visit this
+  // equals appointment.start_time/end_time; for a split visit it's
+  // just this group's slice on this provider's column.
+  const blockStartIso = useMemo(
+    () => new Date(block.startMs).toISOString(),
+    [block.startMs],
+  );
+  const blockEndIso = useMemo(
+    () => new Date(block.endMs).toISOString(),
+    [block.endMs],
+  );
   const { topPx, heightPx, fitsInWindow } = positionFor(
-    appointment,
+    { start_time: blockStartIso, end_time: blockEndIso },
     timezone,
     date,
     pxPerMin,
@@ -1307,20 +1465,24 @@ function AppointmentBlock({
   );
 
   const isTerminal = TERMINAL_STATUSES.has(appointment.status);
+  // Split visits (multi-provider) disable drag + resize: a single-edge
+  // time change has no clean per-block meaning when the appointment
+  // also occupies other providers' columns. Operators route those
+  // changes through the popover and the reschedule context menu.
+  const isInteractive = !isTerminal && !isReschedulingSource && !block.isSplit;
 
   const dragData: AppointmentDragData = { type: 'appointment', appointment };
   const { setNodeRef, attributes, listeners, isDragging, transform } = useDraggable({
-    id: `appt-${appointment.id}`,
+    // Use the block's key so split-visit blocks don't collide on the
+    // dnd-kit registry; non-split visits keep their familiar id.
+    id: `appt-${block.blockKey}`,
     data: dragData,
-    // Disable drag while this block is the rescheduling source — the
-    // user picked the right-click flow, so don't let an accidental drag
-    // create a competing intent.
-    disabled: isTerminal || isReschedulingSource,
+    disabled: !isInteractive,
   });
 
   // ── Resize — drag the bottom edge to change the appointment length ──
-  const startMs = new Date(appointment.start_time).getTime();
-  const endMs = new Date(appointment.end_time).getTime();
+  const startMs = block.startMs;
+  const endMs = block.endMs;
   const currentDurationMin = Math.max(
     SNAP_MINUTES,
     Math.round((endMs - startMs) / 60_000),
@@ -1330,7 +1492,7 @@ function AppointmentBlock({
   // moves don't need it in state.
   const [resizePreviewMin, setResizePreviewMin] = useState<number | null>(null);
   const resizeAnchor = useRef<{ startY: number; startDuration: number } | null>(null);
-  const canResize = !isTerminal && !isReschedulingSource;
+  const canResize = isInteractive;
 
   const onResizePointerDown = (e: React.PointerEvent) => {
     if (!canResize) return;
@@ -1362,8 +1524,9 @@ function AppointmentBlock({
       // Pointer capture may already be released — ignore.
     }
     if (anchor && finalMin !== null && finalMin !== anchor.startDuration) {
-      // Commit (synchronous optimistic cache write) before clearing the
-      // preview, so the block never flashes back to its old height.
+      // Resize only fires on non-split visits, so the block's start
+      // equals the appointment's start — committing the new end on the
+      // appointment is the same as committing the new end on this block.
       onResize(appointment, new Date(startMs + finalMin * 60_000), finalMin);
     }
     setResizePreviewMin(null);
@@ -1377,7 +1540,12 @@ function AppointmentBlock({
       ? Math.max(24, resizePreviewMin * pxPerMin)
       : heightPx;
 
-  const color = appointment.service.category_color ?? 'hsl(220 9% 46%)';
+  // Color + status from the BLOCK's primary service (first service in
+  // this group), so a split visit can show different colors per slot
+  // (Botox blue on Dr. A's column, Facial green on Esth. B's). The
+  // appointment-level status (cancelled/etc.) still applies to every
+  // slot since they belong to the same visit.
+  const color = block.primaryServiceInBlock.category_color ?? 'hsl(220 9% 46%)';
   const stage = appointmentStageStyle(appointment);
   const cancelled = appointment.status === 'cancelled' || appointment.status === 'no_show';
 
@@ -1386,8 +1554,13 @@ function AppointmentBlock({
   const veryTight = tightVertical && isNarrow;
 
   const timeText = veryTight
-    ? formatStartCompact(appointment.start_time, timezone)
-    : formatTimeRange(appointment, timezone);
+    ? formatStartCompact(blockStartIso, timezone)
+    : formatTimeRangeMs(block.startMs, block.endMs, timezone);
+  // Extras count for the "+N" badge — within THIS block's group (for
+  // non-split visits this equals the appointment's total extras; for
+  // split visits it's just the extras that share this provider in
+  // this contiguous group).
+  const extrasInBlock = Math.max(0, block.servicesInBlockCount - 1);
 
   // While dragging, hide the original block — DragOverlay renders the floating
   // clone. Use opacity instead of display:none so the popover trigger ref doesn't
@@ -1428,7 +1601,7 @@ function AppointmentBlock({
         // Source-of-reschedule treatment: faded with a burgundy ring so
         // it's obvious which appointment is "in flight."
         isReschedulingSource && 'opacity-50 ring-2 ring-accent ring-offset-1 cursor-not-allowed',
-        !isTerminal && !isReschedulingSource && 'cursor-grab active:cursor-grabbing',
+        isInteractive && 'cursor-grab active:cursor-grabbing',
       )}
       style={{
         top: `${topPx}px`,
@@ -1438,8 +1611,8 @@ function AppointmentBlock({
         transform: transformStyle,
         ...horizontalStyle,
       }}
-      aria-label={`${appointment.customer.full_name} · ${appointment.service.name} · ${formatTimeRange(appointment, timezone)}${appointment.invoice_status === 'paid' ? ' · paid' : ''}`}
-      title={`${appointment.customer.full_name} · ${appointment.service.name} · ${formatTimeRange(appointment, timezone)}${appointment.invoice_status === 'paid' ? ' · paid' : ''}`}
+      aria-label={`${appointment.customer.full_name} · ${block.primaryServiceInBlock.name} · ${timeText}${appointment.invoice_status === 'paid' ? ' · paid' : ''}`}
+      title={`${appointment.customer.full_name} · ${block.primaryServiceInBlock.name} · ${timeText}${appointment.invoice_status === 'paid' ? ' · paid' : ''}`}
     >
       {/* Paid badge — top-right corner. Only renders on PAID invoices so
           the default state (open) stays visual-quiet; showing a marker
@@ -1476,10 +1649,8 @@ function AppointmentBlock({
                 )}
                 style={{ color }}
               >
-                {appointment.service.name}
-                {appointment.extra_services.length > 0
-                  ? ` +${appointment.extra_services.length}`
-                  : ''}
+                {block.primaryServiceInBlock.name}
+                {extrasInBlock > 0 ? ` +${extrasInBlock}` : ''}
               </p>
               <p
                 className={cn(
@@ -2123,22 +2294,18 @@ interface LaneInfo {
   lanesInCluster: number;
 }
 
-/** Anything that competes for column space — appointments and time
- *  blocks share the same lane computation so a block laid over an
- *  existing appointment narrows both side-by-side, matching the
- *  visual treatment of a real double-booking. */
+/** Anything that competes for column space — renderable appointment
+ *  blocks and time blocks share the same lane computation so an
+ *  overlap narrows both side-by-side, matching the visual treatment
+ *  of a real double-booking. The caller picks the `key` (RenderableBlock
+ *  brings its own `blockKey`, time blocks use `tb-<id>`) and supplies
+ *  pre-parsed `startMs`/`endMs` so the algorithm doesn't re-parse ISO
+ *  strings inside the inner loop. */
 type LaneItem = {
-  kind: 'appt' | 'block';
-  id: number;
-  start_time: string;
-  end_time: string;
+  key: string;
+  startMs: number;
+  endMs: number;
 };
-
-/** Composite key — appointment IDs and block IDs share neither a
- *  table nor a namespace, so we tag by kind to disambiguate. */
-function laneKey(kind: 'appt' | 'block', id: number): string {
-  return `${kind}-${id}`;
-}
 
 function computeLanesForColumn(
   items: LaneItem[],
@@ -2147,9 +2314,9 @@ function computeLanesForColumn(
   if (items.length === 0) return result;
 
   const sorted = [...items].sort((a, b) => {
-    const sd = new Date(a.start_time).getTime() - new Date(b.start_time).getTime();
+    const sd = a.startMs - b.startMs;
     if (sd !== 0) return sd;
-    return new Date(a.end_time).getTime() - new Date(b.end_time).getTime();
+    return a.endMs - b.endMs;
   });
 
   let cluster: LaneItem[] = [];
@@ -2163,14 +2330,12 @@ function computeLanesForColumn(
   };
 
   for (const item of sorted) {
-    const startMs = new Date(item.start_time).getTime();
-    const endMs = new Date(item.end_time).getTime();
-    if (cluster.length > 0 && startMs >= clusterEndMs) {
+    if (cluster.length > 0 && item.startMs >= clusterEndMs) {
       // Gap — close out the previous cluster.
       flushCluster();
     }
     cluster.push(item);
-    clusterEndMs = Math.max(clusterEndMs, endMs);
+    clusterEndMs = Math.max(clusterEndMs, item.endMs);
   }
   flushCluster();
 
@@ -2183,32 +2348,26 @@ function assignLanesInCluster(
 ) {
   const laneEnds: number[] = []; // index = lane, value = endMs of latest item in that lane
   for (const item of cluster) {
-    const startMs = new Date(item.start_time).getTime();
-    const endMs = new Date(item.end_time).getTime();
     let assigned = -1;
     for (let i = 0; i < laneEnds.length; i += 1) {
-      if (laneEnds[i] <= startMs) {
+      if (laneEnds[i] <= item.startMs) {
         assigned = i;
-        laneEnds[i] = endMs;
+        laneEnds[i] = item.endMs;
         break;
       }
     }
     if (assigned === -1) {
       assigned = laneEnds.length;
-      laneEnds.push(endMs);
+      laneEnds.push(item.endMs);
     }
     // Record the lane now; lanesInCluster gets stamped after the loop
     // (since we don't know the final width until the cluster's settled).
-    result.set(laneKey(item.kind, item.id), {
-      lane: assigned,
-      lanesInCluster: 0,
-    });
+    result.set(item.key, { lane: assigned, lanesInCluster: 0 });
   }
   const lanesInCluster = laneEnds.length;
   for (const item of cluster) {
-    const k = laneKey(item.kind, item.id);
-    const info = result.get(k)!;
-    result.set(k, { lane: info.lane, lanesInCluster });
+    const info = result.get(item.key)!;
+    result.set(item.key, { lane: info.lane, lanesInCluster });
   }
 }
 
@@ -2302,14 +2461,27 @@ function formatHourLabel(hour: number): string {
 }
 
 function formatTimeRange(appt: Appointment, timezone: string): string {
+  return formatTimeRangeMs(
+    new Date(appt.start_time).getTime(),
+    new Date(appt.end_time).getTime(),
+    timezone,
+  );
+}
+
+/** Lower-level time-range formatter taking ms epochs — used by the
+ *  renderable block paths where the slot's start/end aren't the
+ *  appointment's start/end (split visits). */
+function formatTimeRangeMs(
+  startMs: number, endMs: number, timezone: string,
+): string {
   const opts: Intl.DateTimeFormatOptions = {
     timeZone: timezone,
     hour: 'numeric',
     minute: '2-digit',
     hour12: true,
   };
-  const start = new Date(appt.start_time).toLocaleTimeString('en-US', opts);
-  const end = new Date(appt.end_time).toLocaleTimeString('en-US', opts);
+  const start = new Date(startMs).toLocaleTimeString('en-US', opts);
+  const end = new Date(endMs).toLocaleTimeString('en-US', opts);
   return `${start} – ${end}`;
 }
 
