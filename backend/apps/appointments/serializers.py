@@ -73,11 +73,31 @@ class _ExtraServiceSerializer(serializers.ModelSerializer):
     """Read shape for an additional service on an appointment."""
 
     service = _ServiceSummary(read_only=True)
+    # Per-service provider override. Null when the extra inherits the
+    # appointment's primary provider (the common case). When set, the
+    # popover shows the override so the front desk can see "this Botox
+    # is performed by Dr. A, this facial right after by Esthetician B."
+    provider = _ProviderSummary(read_only=True, allow_null=True)
 
     class Meta:
         model = AppointmentService
-        fields = ['id', 'service', 'price_cents', 'duration_minutes', 'sort_order']
+        fields = [
+            'id', 'service', 'provider',
+            'price_cents', 'duration_minutes', 'sort_order',
+        ]
         read_only_fields = fields
+
+
+class _ExtraServiceInputSerializer(serializers.Serializer):
+    """One row in the `extras` array on the create payload — a service
+    to attach alongside the primary, optionally with its own provider.
+    `provider_id=None` (or omitted) means inherit the appointment's
+    primary provider."""
+
+    service_id = serializers.IntegerField(min_value=1)
+    provider_id = serializers.IntegerField(
+        min_value=1, required=False, allow_null=True,
+    )
 
 
 class AppointmentSerializer(serializers.ModelSerializer):
@@ -91,17 +111,21 @@ class AppointmentSerializer(serializers.ModelSerializer):
     # them on create.
     extra_services = _ExtraServiceSerializer(many=True, read_only=True)
     # Write-only on create: additional services to attach in the same
-    # round-trip as the primary one. Each id is snapshotted into an
+    # round-trip as the primary one. Each row is snapshotted into an
     # `AppointmentService` row and into a matching invoice line, so the
     # caller doesn't have to chain `POST /add-service/` calls after the
     # initial booking. After-the-fact additions still go through the
     # `add-service` action; we keep that flow as the only mutation
     # surface for an *existing* appointment.
-    extra_service_ids = serializers.ListField(
-        child=serializers.IntegerField(min_value=1),
+    #
+    # Each row carries `service_id` plus an optional `provider_id`
+    # override — letting the booking flow capture "Botox by Dr. A,
+    # facial right after by Esthetician B" in one POST instead of
+    # forcing two appointments.
+    extras = _ExtraServiceInputSerializer(
+        many=True,
         write_only=True,
         required=False,
-        allow_empty=True,
     )
     # Primary service price + every extra. Model property.
     total_price_cents = serializers.IntegerField(read_only=True)
@@ -157,7 +181,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
             'customer', 'customer_id',
             'provider', 'provider_id',
             'service', 'service_id',
-            'extra_services', 'extra_service_ids',
+            'extra_services', 'extras',
             'location_id',
             'start_time', 'end_time', 'duration_minutes',
             'status', 'invoice_status',
@@ -364,34 +388,100 @@ class AppointmentSerializer(serializers.ModelSerializer):
         # only on create — after-the-fact additions go through the
         # /add-service/ action so every mutation on an existing
         # appointment is an explicit, audited write (HIPAA §164.312(b)).
-        extra_ids = attrs.get('extra_service_ids') or []
-        if extra_ids:
+        extras_input = attrs.get('extras') or []
+        if extras_input:
             if self.instance is not None:
                 raise serializers.ValidationError({
-                    'extra_service_ids': (
+                    'extras': (
                         'Cannot add services through update. POST '
                         '/api/appointments/<id>/add-service/ instead.'
                     ),
                 })
             from apps.tenants.context import get_current_tenant
             tenant = get_current_tenant()
+
+            # Batch-fetch services (tenant-scoped + active). Duplicates
+            # in the payload are allowed — two areas of Botox is a
+            # legitimate booking — so we keep input order and look each
+            # one up against the deduped fetch map.
+            service_ids = [e['service_id'] for e in extras_input]
             services_by_id = {
                 s.pk: s for s in Service.objects.filter(
-                    tenant=tenant, pk__in=extra_ids, is_active=True,
+                    tenant=tenant, pk__in=service_ids, is_active=True,
                 )
             }
-            unknown = [sid for sid in extra_ids if sid not in services_by_id]
-            if unknown:
+            unknown_svc = [
+                sid for sid in service_ids if sid not in services_by_id
+            ]
+            if unknown_svc:
                 raise serializers.ValidationError({
-                    'extra_service_ids': (
-                        f'Unknown or inactive service id(s): {unknown}.'
+                    'extras': (
+                        f'Unknown or inactive service id(s): {unknown_svc}.'
                     ),
                 })
-            # Preserve order + allow duplicates (two areas of Botox is
-            # a legitimate booking). The view pops both keys before
+
+            # Per-service provider overrides — optional. When set, the
+            # provider must belong to the tenant, be bookable, AND be
+            # assigned to the appointment's location (same guardrails as
+            # the primary provider, since both end up scheduling time
+            # on someone's calendar).
+            provider_ids = [
+                e.get('provider_id') for e in extras_input
+                if e.get('provider_id')
+            ]
+            providers_by_id: dict[int, TenantMembership] = {}
+            if provider_ids:
+                providers_by_id = {
+                    p.pk: p for p in TenantMembership.objects
+                    .filter(tenant=tenant, pk__in=provider_ids)
+                    .select_related('user')
+                }
+                unknown_prov = [
+                    pid for pid in provider_ids if pid not in providers_by_id
+                ]
+                if unknown_prov:
+                    raise serializers.ValidationError({
+                        'extras': (
+                            f'Unknown provider id(s): {unknown_prov}.'
+                        ),
+                    })
+                # Location to validate against — same resolution order
+                # as the primary-provider check above.
+                ext_location = location
+                if ext_location is None:
+                    from apps.tenants.context import get_current_location
+                    ext_location = get_current_location()
+                for pid, p in providers_by_id.items():
+                    if not p.is_bookable:
+                        raise serializers.ValidationError({
+                            'extras': (
+                                f'{p.user.email} is not bookable.'
+                            ),
+                        })
+                    if ext_location is not None:
+                        assigned = MembershipLocation.objects.filter(
+                            membership=p,
+                            location=ext_location,
+                            is_active=True,
+                        ).exists()
+                        if not assigned:
+                            raise serializers.ValidationError({
+                                'extras': (
+                                    f'{p.user.email} is not assigned to '
+                                    f'{ext_location.name}.'
+                                ),
+                            })
+
+            # Resolved input — ordered list of (service, provider_or_None).
+            # The view pops this + the raw `extras` field before
             # serializer.save() so neither leaks into the model layer.
-            attrs['_resolved_extra_services'] = [
-                services_by_id[sid] for sid in extra_ids
+            attrs['_resolved_extras'] = [
+                (
+                    services_by_id[e['service_id']],
+                    providers_by_id.get(e.get('provider_id'))
+                    if e.get('provider_id') else None,
+                )
+                for e in extras_input
             ]
 
         return attrs

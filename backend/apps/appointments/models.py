@@ -250,6 +250,24 @@ class AppointmentService(models.Model):
         on_delete=models.PROTECT,
         related_name='+',
     )
+    # Optional per-service provider override. NULL means "performed by
+    # the appointment's primary provider" — the common case for a
+    # single-room visit. Set when an extra service is performed by a
+    # different staff member (e.g. Botox by the NP, facial right after
+    # by an esthetician). Stored as `TenantMembership` (same shape as
+    # `Appointment.provider`) so commissions / per-provider reports can
+    # attribute the line correctly.
+    provider = models.ForeignKey(
+        'tenants.TenantMembership',
+        on_delete=models.PROTECT,
+        related_name='+',
+        null=True,
+        blank=True,
+        help_text=(
+            'Staff member performing this service. Null inherits the '
+            "appointment's primary provider."
+        ),
+    )
     price_cents = models.PositiveIntegerField(
         default=0,
         help_text='Snapshot of the service price when it was added.',
@@ -271,6 +289,14 @@ class AppointmentService(models.Model):
     )
     sort_order = models.IntegerField(default=0)
     created_at = models.DateTimeField(auto_now_add=True)
+
+    @property
+    def effective_provider(self):
+        """The staff member actually performing this service — the
+        per-service override if set, else the appointment's primary
+        provider. Reads cleanly in templates / serializers without the
+        caller having to remember the fallback."""
+        return self.provider or self.appointment.provider
 
     class Meta:
         ordering = ['sort_order', 'id']

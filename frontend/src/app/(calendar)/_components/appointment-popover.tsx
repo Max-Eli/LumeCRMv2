@@ -301,6 +301,7 @@ function ServiceLine({
   color,
   priceCents,
   durationMinutes,
+  providerLabel,
   pending,
   changeLabel,
   onChange,
@@ -311,6 +312,11 @@ function ServiceLine({
   color: string | null;
   priceCents: number;
   durationMinutes: number;
+  /** Per-service provider name — rendered only when this service has
+   *  an override (different from the appointment's primary provider).
+   *  Surfacing it here so staff can see "this Botox by Dr. A, this
+   *  facial by Esthetician B" without leaving the popover. */
+  providerLabel?: string;
   pending: boolean;
   changeLabel?: string;
   onChange?: () => void;
@@ -328,7 +334,11 @@ function ServiceLine({
         <p className="font-medium text-sm truncate" style={{ color: dot }}>
           {name}
         </p>
-        {code ? (
+        {providerLabel ? (
+          <p className="text-[11px] text-muted-foreground truncate">
+            by {providerLabel}
+          </p>
+        ) : code ? (
           <p className="text-[11px] text-muted-foreground font-mono tabular-nums">
             {code}
           </p>
@@ -536,18 +546,33 @@ function ServiceSummary({
         }
       />
 
-      {appointment.extra_services.map((es) => (
-        <ServiceLine
-          key={es.id}
-          name={es.service.name}
-          code={es.service.code}
-          color={es.service.category_color}
-          priceCents={es.price_cents}
-          durationMinutes={es.duration_minutes}
-          pending={pending}
-          onRemove={editable ? () => handleRemove(es.id) : undefined}
-        />
-      ))}
+      {appointment.extra_services.map((es) => {
+        // Only label the per-service provider when it's an override
+        // (different from the appointment's primary provider). Same-as-
+        // primary stays unlabeled to avoid noise; the operator already
+        // knows the primary from the main appointment row.
+        const overrideProvider =
+          es.provider && es.provider.id !== appointment.provider.id
+            ? es.provider
+            : null;
+        const providerLabel = overrideProvider
+          ? `${overrideProvider.user_first_name} ${overrideProvider.user_last_name}`.trim()
+            || overrideProvider.user_email
+          : undefined;
+        return (
+          <ServiceLine
+            key={es.id}
+            name={es.service.name}
+            code={es.service.code}
+            color={es.service.category_color}
+            priceCents={es.price_cents}
+            durationMinutes={es.duration_minutes}
+            providerLabel={providerLabel}
+            pending={pending}
+            onRemove={editable ? () => handleRemove(es.id) : undefined}
+          />
+        );
+      })}
 
       {editable && pickerMode ? (
         <div className="mt-2">

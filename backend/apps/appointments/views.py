@@ -177,11 +177,13 @@ class AppointmentViewSet(viewsets.ModelViewSet):
 
         # Pop the create-only extras before save() so the validated_data
         # passed into the model layer stays clean (the model has no such
-        # field). The serializer's validate() already verified each id
-        # is tenant-scoped + active and stashed the resolved Service
-        # instances under `_resolved_extra_services`.
-        extras = serializer.validated_data.pop('_resolved_extra_services', [])
-        serializer.validated_data.pop('extra_service_ids', None)
+        # field). The serializer's validate() already verified each
+        # service is tenant-scoped + active, validated each provider
+        # override is bookable + assigned to the location, and stashed
+        # the resolved (service, provider_or_None) tuples under
+        # `_resolved_extras`.
+        extras = serializer.validated_data.pop('_resolved_extras', [])
+        serializer.validated_data.pop('extras', None)
 
         # Default `location` from the active location when the caller
         # didn't supply one. The serializer field is optional + defaulted
@@ -215,9 +217,12 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             instance = serializer.save(**save_kwargs)
             if extras:
                 invoice = getattr(instance, 'invoice', None)
-                for i, extra_service in enumerate(extras, start=1):
+                for i, (extra_service, extra_provider) in enumerate(
+                    extras, start=1,
+                ):
                     self._attach_extra_service(
                         instance, extra_service, invoice, i,
+                        provider=extra_provider,
                     )
 
         # Auto-assign forms (intake on first ever appointment + consent
@@ -238,7 +243,13 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 'service_id': instance.service_id,
                 'provider_id': instance.provider_id,
                 'start': instance.start_time.isoformat(),
-                'extra_service_ids': [s.pk for s in extras],
+                'extras': [
+                    {
+                        'service_id': s.pk,
+                        'provider_id': p.pk if p is not None else None,
+                    }
+                    for (s, p) in extras
+                ],
                 'auto_assigned_forms': [
                     {
                         'submission_id': s.id,
@@ -397,13 +408,19 @@ class AppointmentViewSet(viewsets.ModelViewSet):
     # booking takes one round-trip instead of N follow-up writes.
 
     @staticmethod
-    def _attach_extra_service(appointment, service, invoice, sort_order):
+    def _attach_extra_service(
+        appointment, service, invoice, sort_order, *, provider=None,
+    ):
         """Create an `AppointmentService` row plus its matching invoice
         line. Shared between the create-time bulk attach (perform_create)
         and after-the-fact add (the `add-service` action). Does NOT
         touch `appointment.end_time` — callers handle that since the
         rules differ: create trusts the caller's end time, add extends
-        the block by the new service's duration."""
+        the block by the new service's duration.
+
+        `provider` is the optional per-service override; None inherits
+        the appointment's primary provider (the common case).
+        """
         from apps.invoices.models import InvoiceLineItem
         line = None
         if invoice is not None:
@@ -418,6 +435,7 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         return AppointmentService.objects.create(
             appointment=appointment,
             service=service,
+            provider=provider,
             price_cents=service.price_cents,
             duration_minutes=service.duration_minutes,
             invoice_line=line,

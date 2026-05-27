@@ -56,6 +56,11 @@ export interface AppointmentProviderSummary {
 export interface AppointmentExtraService {
   id: number;
   service: AppointmentServiceSummary;
+  /** Per-service provider override. Null when this extra inherits the
+   *  appointment's primary provider (the common case). When set, the
+   *  popover surfaces it so staff can see "this Botox is done by Dr.
+   *  A, this facial right after by Esthetician B." */
+  provider: AppointmentProviderSummary | null;
   /** Price snapshot at the time the service was added. */
   price_cents: number;
   /** Duration snapshot at the time the service was added. */
@@ -97,16 +102,24 @@ export interface Appointment {
   updated_at: string;
 }
 
+/** One row in the create payload's `extras` array. `provider_id` is
+ *  optional — when null/omitted the extra inherits the appointment's
+ *  primary `provider_id`. */
+export interface AppointmentExtraInput {
+  service_id: number;
+  provider_id?: number | null;
+}
+
 export interface CreateAppointmentInput {
   customer_id: number;
   provider_id: number;
   service_id: number;
-  /** Additional services attached to the same visit. Each one is
-   *  snapshotted into an `AppointmentService` row and an invoice line
-   *  in the same transaction — saves chaining `add-service` calls
-   *  after the initial booking. Omit or pass `[]` for a single-service
-   *  appointment. */
-  extra_service_ids?: number[];
+  /** Additional services attached to the same visit. Each row carries
+   *  its own service id plus an optional provider override — letting
+   *  one POST capture "Botox by Dr. A, facial right after by
+   *  Esthetician B" instead of forcing two appointments. Omit or pass
+   *  `[]` for a single-service single-provider booking. */
+  extras?: AppointmentExtraInput[];
   start_time: string; // ISO-8601 UTC
   end_time: string;
   status?: AppointmentStatus;

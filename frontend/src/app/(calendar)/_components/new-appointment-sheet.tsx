@@ -75,7 +75,11 @@ import {
 } from '@/lib/calendar-datetime';
 import { type CustomerListItem, useCreateCustomer, useCustomers } from '@/lib/customers';
 import { isProviderEligible } from '@/lib/eligibility';
-import { membershipName, useBookableMemberships } from '@/lib/memberships';
+import {
+  type Membership,
+  membershipName,
+  useBookableMemberships,
+} from '@/lib/memberships';
 import { type Service, useServiceCategories, useServices } from '@/lib/services';
 
 // ── Validation ───────────────────────────────────────────────────────────
@@ -83,12 +87,19 @@ import { type Service, useServiceCategories, useServices } from '@/lib/services'
 const schema = z.object({
   customer_id: z.number().int().positive({ message: 'Pick a customer' }),
   service_id: z.number().int().positive({ message: 'Pick a service' }),
-  // Additional services on the same visit (Facial + Botox, etc.). Each
-  // one stretches the block + appears as its own invoice line. Duplicate
-  // ids are allowed — two areas of Botox is a legit booking. Always
-  // present in form state (defaulted to []); zod's `.default()` would
+  // Additional services on the same visit (Facial + Botox, etc.).
+  // Each row carries its own `service_id` plus an optional
+  // `provider_id` override — null means "inherit the appointment's
+  // primary provider" (the common case). Duplicate service_ids are
+  // allowed (two areas of Botox is a legit booking). Always present
+  // in form state (defaulted to []); zod's `.default()` would
   // introduce an asymmetric input/output type that breaks the resolver.
-  extra_service_ids: z.array(z.number().int().positive()),
+  extras: z.array(
+    z.object({
+      service_id: z.number().int().positive(),
+      provider_id: z.number().int().nullable(),
+    }),
+  ),
   provider_id: z.number().int().positive({ message: 'Pick a provider' }),
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Pick a date'),
   time: z.string().regex(/^\d{2}:\d{2}$/, 'Pick a time'),
@@ -137,7 +148,7 @@ export function NewAppointmentSheet({
   const buildDefaults = (): FormValues => ({
     customer_id: 0,
     service_id: 0,
-    extra_service_ids: [],
+    extras: [],
     provider_id: defaultProviderId ?? 0,
     date: defaultDate ?? todayLocalISODate(),
     time: defaultTime ?? defaultStartTimeLabel(),
@@ -166,16 +177,33 @@ export function NewAppointmentSheet({
     [services, watched.service_id],
   );
 
-  // Resolve each extra-service id back to the full Service so we can
-  // show name/duration/price and roll up totals. Skips any id that no
-  // longer matches an active service (cache-staleness guard).
-  const extraServicesResolved = useMemo<Service[]>(() => {
-    const ids = watched.extra_service_ids ?? [];
-    const all = services ?? [];
-    return ids
-      .map((id) => all.find((s) => s.id === id))
-      .filter((s): s is Service => Boolean(s));
-  }, [services, watched.extra_service_ids]);
+  // Resolve each extras row to the full Service + (optional) provider
+  // membership so the card can show name/duration/price and the
+  // "performed by" select can render the chosen staff name. Skips any
+  // service id that no longer matches an active service
+  // (cache-staleness guard).
+  type ResolvedExtra = {
+    service: Service;
+    /** The per-service provider override resolved to a full
+     *  membership row, or null when the extra inherits the primary
+     *  provider (the common case). */
+    provider: Membership | null;
+  };
+  const extraServicesResolved = useMemo<ResolvedExtra[]>(() => {
+    const rows = watched.extras ?? [];
+    const allServices = services ?? [];
+    const allProviders = providers ?? [];
+    return rows
+      .map((row) => {
+        const service = allServices.find((s) => s.id === row.service_id);
+        if (!service) return null;
+        const provider = row.provider_id != null
+          ? allProviders.find((p) => p.id === row.provider_id) ?? null
+          : null;
+        return { service, provider };
+      })
+      .filter((r): r is ResolvedExtra => r !== null);
+  }, [services, providers, watched.extras]);
 
   // Total visit duration — drives both the calendar block end_time and
   // the conflict-window check below so a multi-service booking can't
@@ -183,32 +211,49 @@ export function NewAppointmentSheet({
   const totalDurationMinutes =
     (selectedService?.duration_minutes ?? 0)
     + extraServicesResolved.reduce(
-        (sum, s) => sum + s.duration_minutes,
+        (sum, r) => sum + r.service.duration_minutes,
         0,
       );
 
   const totalPriceCents =
     (selectedService?.price_cents ?? 0)
-    + extraServicesResolved.reduce((sum, s) => sum + s.price_cents, 0);
+    + extraServicesResolved.reduce(
+        (sum, r) => sum + r.service.price_cents,
+        0,
+      );
 
   // True while the inline "+ Add another service" picker is open.
   const [addingExtra, setAddingExtra] = useState(false);
 
-  const appendExtraService = (id: number) => {
-    if (id <= 0) return;
-    const current = form.getValues('extra_service_ids') ?? [];
-    form.setValue('extra_service_ids', [...current, id], {
-      shouldValidate: false,
-      shouldDirty: true,
-    });
+  const appendExtraService = (serviceId: number) => {
+    if (serviceId <= 0) return;
+    const current = form.getValues('extras') ?? [];
+    form.setValue(
+      'extras',
+      [...current, { service_id: serviceId, provider_id: null }],
+      { shouldValidate: false, shouldDirty: true },
+    );
     setAddingExtra(false);
   };
 
-  const removeExtraServiceAt = (index: number) => {
-    const current = form.getValues('extra_service_ids') ?? [];
+  const removeExtraAt = (index: number) => {
+    const current = form.getValues('extras') ?? [];
     form.setValue(
-      'extra_service_ids',
+      'extras',
       current.filter((_, i) => i !== index),
+      { shouldValidate: false, shouldDirty: true },
+    );
+  };
+
+  const setExtraProviderAt = (
+    index: number, providerId: number | null,
+  ) => {
+    const current = form.getValues('extras') ?? [];
+    form.setValue(
+      'extras',
+      current.map((row, i) =>
+        i === index ? { ...row, provider_id: providerId } : row,
+      ),
       { shouldValidate: false, shouldDirty: true },
     );
   };
@@ -292,13 +337,13 @@ export function NewAppointmentSheet({
     // Block length covers primary + every extra so the calendar reflects
     // the real time commitment and the backend doesn't have to guess.
     const end = new Date(start.getTime() + totalDurationMinutes * 60_000);
-    const extras = values.extra_service_ids ?? [];
+    const extras = values.extras ?? [];
 
     create.mutate(
       {
         customer_id: values.customer_id,
         service_id: values.service_id,
-        extra_service_ids: extras,
+        extras,
         provider_id: values.provider_id,
         start_time: start.toISOString(),
         end_time: end.toISOString(),
@@ -330,7 +375,7 @@ export function NewAppointmentSheet({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent side="bottom">
+      <SheetContent side="right">
         <SheetHeader>
           <SheetTitle>New appointment</SheetTitle>
           <SheetDescription>
@@ -383,29 +428,84 @@ export function NewAppointmentSheet({
             {extraServicesResolved.length > 0 ? (
               <Field>
                 <FieldLabel>Additional services</FieldLabel>
-                <ul className="space-y-1.5">
-                  {extraServicesResolved.map((svc, index) => (
-                    <li
-                      key={`${svc.id}-${index}`}
-                      className="flex items-center justify-between gap-2 rounded-md border bg-muted/30 px-3 h-9 text-sm"
-                    >
-                      <span className="truncate">
-                        {svc.name}
-                        <span className="text-muted-foreground">
-                          {' '}· {svc.duration_minutes}m · $
-                          {(svc.price_cents / 100).toFixed(2)}
-                        </span>
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => removeExtraServiceAt(index)}
-                        aria-label={`Remove ${svc.name}`}
-                        className="inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-destructive transition-colors"
+                <ul className="space-y-2">
+                  {extraServicesResolved.map((row, index) => {
+                    const { service: svc, provider: pickedProv } = row;
+                    return (
+                      <li
+                        key={`${svc.id}-${index}`}
+                        className="rounded-md border bg-muted/30 p-2.5 space-y-2"
                       >
-                        <X className="size-3.5" />
-                      </button>
-                    </li>
-                  ))}
+                        <div className="flex items-start gap-2">
+                          <div className="min-w-0 flex-1 text-sm">
+                            <p className="font-medium truncate">{svc.name}</p>
+                            <p className="text-[11px] text-muted-foreground font-mono tabular-nums mt-0.5">
+                              {svc.duration_minutes}m · $
+                              {(svc.price_cents / 100).toFixed(2)}
+                            </p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => removeExtraAt(index)}
+                            aria-label={`Remove ${svc.name}`}
+                            className="shrink-0 inline-flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-muted hover:text-destructive transition-colors"
+                          >
+                            <X className="size-3.5" />
+                          </button>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <label
+                            className="text-[11px] text-muted-foreground shrink-0"
+                            htmlFor={`extra-prov-${index}`}
+                          >
+                            Performed by
+                          </label>
+                          <Select
+                            value={
+                              pickedProv ? String(pickedProv.id) : ''
+                            }
+                            onValueChange={(v) =>
+                              setExtraProviderAt(
+                                index,
+                                v && v.length > 0 ? Number(v) : null,
+                              )
+                            }
+                          >
+                            <SelectTrigger
+                              id={`extra-prov-${index}`}
+                              className="h-7 text-xs"
+                            >
+                              <SelectValue placeholder="Same as main provider">
+                                {(v) =>
+                                  pickedProv && v
+                                    ? membershipName(pickedProv)
+                                    : 'Same as main provider'
+                                }
+                              </SelectValue>
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="">
+                                Same as main provider
+                              </SelectItem>
+                              {(providers ?? []).map((p) => (
+                                <SelectItem
+                                  key={p.id}
+                                  value={String(p.id)}
+                                >
+                                  {membershipName(p)}
+                                  {p.job_title_name ? (
+                                    <span className="text-muted-foreground">
+                                      {' '}· {p.job_title_name}
+                                    </span>
+                                  ) : null}
+                                </SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+                      </li>
+                    );
+                  })}
                 </ul>
               </Field>
             ) : null}
@@ -415,9 +515,7 @@ export function NewAppointmentSheet({
                 <FieldLabel>Pick an additional service</FieldLabel>
                 <ServicePicker
                   value={0}
-                  services={(services ?? []).filter(
-                    (s) => s.id !== watched.service_id,
-                  )}
+                  services={services ?? []}
                   onChange={appendExtraService}
                 />
                 <button

@@ -1366,8 +1366,10 @@ class AppointmentServiceEditingTests(TestCase):
 class AppointmentCreateWithExtraServicesTests(TestCase):
     """Multi-service bookings via `POST /api/appointments/`.
 
-    The frontend supplies `extra_service_ids` alongside the primary
-    `service_id`; the server snapshots each into an `AppointmentService`
+    The frontend supplies an `extras` array alongside the primary
+    `service_id`. Each row carries `service_id` and an optional
+    `provider_id` override (null = inherit the appointment's primary
+    provider). The server snapshots each into an `AppointmentService`
     row and adds a matching invoice line in the same transaction, so
     one round-trip books a Facial + Botox + Peel visit cleanly.
     """
@@ -1375,6 +1377,9 @@ class AppointmentCreateWithExtraServicesTests(TestCase):
     def setUp(self):
         self.tenant, self.owner = _make_tenant('appt-create-extras')
         self.provider = _make_provider(self.tenant)
+        # Second provider used for the per-service-provider override
+        # tests below — also assigned to the default location.
+        self.other_provider = _make_provider(self.tenant)
         self.customer = _make_customer(self.tenant)
         self.category = ServiceCategory.objects.create(
             tenant=self.tenant, name='Treatments',
@@ -1401,13 +1406,20 @@ class AppointmentCreateWithExtraServicesTests(TestCase):
             hour=14, minute=0, second=0, microsecond=0,
         )
         end = start + dt.timedelta(minutes=total_minutes)
+        # Normalize each extra to `{service_id, provider_id?}` dict
+        # form (callers can pass either a bare service-id int or a
+        # dict for compactness).
+        normalized_extras = [
+            {'service_id': e} if isinstance(e, int) else e
+            for e in extras
+        ]
         return {
             'customer_id': self.customer.pk,
             'service_id': self.facial.pk,
             'provider_id': self.provider.pk,
             'start_time': start.isoformat(),
             'end_time': end.isoformat(),
-            'extra_service_ids': list(extras),
+            'extras': normalized_extras,
         }
 
     def test_create_with_extras_creates_rows_and_lines(self):
@@ -1429,6 +1441,8 @@ class AppointmentCreateWithExtraServicesTests(TestCase):
         self.assertEqual(botox_es.price_cents, 20000)
         self.assertEqual(botox_es.duration_minutes, 20)
         self.assertIsNotNone(botox_es.invoice_line_id)
+        # No provider override → null (inherits primary).
+        self.assertIsNone(botox_es.provider_id)
         invoice = Invoice.objects.get(appointment=appt)
         # Primary + two extras.
         self.assertEqual(invoice.line_items.count(), 3)
@@ -1446,7 +1460,7 @@ class AppointmentCreateWithExtraServicesTests(TestCase):
         appt = Appointment.objects.get(pk=resp.data['id'])
         self.assertEqual(appt.extra_services.count(), 0)
 
-    def test_create_audit_records_extra_service_ids(self):
+    def test_create_audit_records_extras(self):
         self.client.post(
             self.url,
             self._payload(total_minutes=30 + 20, extras=[self.botox.pk]),
@@ -1462,7 +1476,8 @@ class AppointmentCreateWithExtraServicesTests(TestCase):
         )
         self.assertIsNotNone(log)
         self.assertEqual(
-            log.metadata.get('extra_service_ids'), [self.botox.pk],
+            log.metadata.get('extras'),
+            [{'service_id': self.botox.pk, 'provider_id': None}],
         )
 
     def test_create_with_unknown_extra_rejected(self):
@@ -1525,11 +1540,118 @@ class AppointmentCreateWithExtraServicesTests(TestCase):
         )
         resp = self.client.patch(
             reverse('appointment-detail', args=[appt.pk]),
-            {'extra_service_ids': [self.botox.pk]},
+            {'extras': [{'service_id': self.botox.pk}]},
             format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
         )
         self.assertEqual(resp.status_code, 400)
-        self.assertIn('extra_service_ids', resp.data)
+        self.assertIn('extras', resp.data)
+
+    # ── Per-service provider overrides ───────────────────────────────
+
+    def test_extra_with_provider_override_persists(self):
+        resp = self.client.post(
+            self.url,
+            self._payload(
+                total_minutes=30 + 20,
+                extras=[{
+                    'service_id': self.botox.pk,
+                    'provider_id': self.other_provider.pk,
+                }],
+            ),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        appt = Appointment.objects.get(pk=resp.data['id'])
+        es = appt.extra_services.get(service=self.botox)
+        self.assertEqual(es.provider_id, self.other_provider.pk)
+
+    def test_extra_with_unknown_provider_rejected(self):
+        resp = self.client.post(
+            self.url,
+            self._payload(
+                total_minutes=30 + 20,
+                extras=[{
+                    'service_id': self.botox.pk,
+                    'provider_id': 999999,
+                }],
+            ),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('extras', resp.data)
+
+    def test_extra_with_cross_tenant_provider_rejected(self):
+        other_tenant, _ = _make_tenant('appt-extras-prov-iso')
+        cross_provider = _make_provider(other_tenant)
+        resp = self.client.post(
+            self.url,
+            self._payload(
+                total_minutes=30 + 20,
+                extras=[{
+                    'service_id': self.botox.pk,
+                    'provider_id': cross_provider.pk,
+                }],
+            ),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_extra_with_provider_not_at_location_rejected(self):
+        # Make a second location and assign no provider to it; the
+        # default-location-scoped booking should reject a provider
+        # who isn't a `MembershipLocation` at that site.
+        from apps.tenants.models import Location
+        Location.objects.create(
+            tenant=self.tenant, name='Brooklyn', slug='brooklyn',
+            timezone='America/New_York', is_active=True, is_default=False,
+        )
+        # other_provider IS assigned to the default location via the
+        # _make_provider helper — so this test instead un-assigns them
+        # to simulate "provider not at this site."
+        from apps.tenants.models import MembershipLocation
+        MembershipLocation.objects.filter(
+            membership=self.other_provider,
+        ).update(is_active=False)
+        resp = self.client.post(
+            self.url,
+            self._payload(
+                total_minutes=30 + 20,
+                extras=[{
+                    'service_id': self.botox.pk,
+                    'provider_id': self.other_provider.pk,
+                }],
+            ),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_audit_records_provider_override(self):
+        self.client.post(
+            self.url,
+            self._payload(
+                total_minutes=30 + 20,
+                extras=[{
+                    'service_id': self.botox.pk,
+                    'provider_id': self.other_provider.pk,
+                }],
+            ),
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = (
+            AuditLog.objects.filter(
+                resource_type='appointment',
+                action=AuditLog.Action.CREATE,
+            )
+            .order_by('-timestamp')
+            .first()
+        )
+        self.assertEqual(
+            log.metadata.get('extras'),
+            [{
+                'service_id': self.botox.pk,
+                'provider_id': self.other_provider.pk,
+            }],
+        )
 
 
 # ── Schedule blocks (non-bookable time on a provider's calendar) ────
