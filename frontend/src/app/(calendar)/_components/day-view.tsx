@@ -681,7 +681,7 @@ export function DayView({
           'snap-x snap-mandatory scroll-pl-20 md:snap-none md:scroll-pl-0',
         )}
       >
-        <div className="flex min-w-full">
+        <div className="relative flex min-w-full">
           {/* Time axis (sticky-left so labels stay visible on horizontal scroll) */}
           <div className="sticky left-0 z-20 w-20 shrink-0 bg-card border-r">
             <div className="h-16 border-b bg-card" />
@@ -732,6 +732,18 @@ export function DayView({
           ))}
 
           <FillerColumn dayHeight={dayHeight} hourHeight={hourHeight} hours={hoursArray} />
+
+          {/* Now-line — a horizontal accent line + time chip at the
+              current wall-clock time. Rendered as a sibling of the
+              columns so it spans every provider lane. Only mounts on
+              today's view and within the visible day window. */}
+          <CurrentTimeIndicator
+            date={date}
+            timezone={timezone}
+            dayStartHour={dayStartHour}
+            dayEndHour={dayEndHour}
+            pxPerMin={pxPerMin}
+          />
         </div>
       </div>
 
@@ -1741,6 +1753,109 @@ function formatBlockTimeRange(block: TimeBlock, timezone: string): string {
   const s = fmt.format(new Date(block.start_time));
   const e = fmt.format(new Date(block.end_time));
   return `${s} – ${e}`;
+}
+
+// ── Now-line (current-time indicator) ────────────────────────────────────
+
+/** Header height above each column's time grid — the provider name
+ *  row + the time-axis header sit at the top before the grid begins.
+ *  Mirrors the `h-16` Tailwind class used by both header cells. */
+const COLUMN_HEADER_PX = 64;
+
+/**
+ * Horizontal accent line spanning every provider column at the
+ * current wall-clock time, with a small time chip floating over the
+ * sticky time axis. Standard "now line" pattern from Google Calendar
+ * / Outlook / every professional scheduling product.
+ *
+ * Rules:
+ *   - Hidden when the focus date isn't today (in the location's
+ *     timezone — staff in NY viewing the LA spa's calendar should
+ *     see the indicator at LA's "now", not theirs).
+ *   - Hidden when "now" falls outside the visible day window so the
+ *     line never sits on top of the column header or off the bottom
+ *     of the grid.
+ *   - Re-renders on minute boundaries (a setTimeout aligned to the
+ *     next wall-clock minute, re-scheduled after each tick).
+ *
+ * Visual: the brand burgundy at z-30 — above appointment + block
+ * components, above the sticky time axis labels, but pointer-events-
+ * none so it never blocks a click on what's underneath.
+ */
+function CurrentTimeIndicator({
+  date,
+  timezone,
+  dayStartHour,
+  dayEndHour,
+  pxPerMin,
+}: {
+  date: string;
+  timezone: string;
+  dayStartHour: number;
+  dayEndHour: number;
+  pxPerMin: number;
+}) {
+  // Tick on minute boundaries. Scheduling for `60000 - (now % 60000)`
+  // aligns the first fire to the next :00; rescheduling inside the
+  // handler keeps subsequent fires aligned (vs. setInterval(60_000)
+  // which drifts).
+  const [nowTs, setNowTs] = useState(() => Date.now());
+  useEffect(() => {
+    let cancelled = false;
+    let timeoutId: ReturnType<typeof setTimeout>;
+    function schedule() {
+      const ms = 60_000 - (Date.now() % 60_000);
+      timeoutId = setTimeout(() => {
+        if (cancelled) return;
+        setNowTs(Date.now());
+        schedule();
+      }, ms);
+    }
+    schedule();
+    return () => {
+      cancelled = true;
+      clearTimeout(timeoutId);
+    };
+  }, []);
+
+  const now = new Date(nowTs);
+  // YYYY-MM-DD in the location's timezone — en-CA happens to output
+  // the ISO order without faff. Compared against the focus date so
+  // the indicator only mounts on today's view.
+  const localToday = now.toLocaleDateString('en-CA', { timeZone: timezone });
+  if (localToday !== date) return null;
+
+  const nowMin = minutesIntoLocalDay(now.toISOString(), timezone);
+  const startMin = dayStartHour * 60;
+  const endMin = dayEndHour * 60;
+  if (nowMin < startMin || nowMin >= endMin) return null;
+
+  const topPx = COLUMN_HEADER_PX + (nowMin - startMin) * pxPerMin;
+  const label = now.toLocaleTimeString('en-US', {
+    timeZone: timezone,
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+
+  return (
+    <div
+      className="pointer-events-none absolute inset-x-0 z-30"
+      style={{ top: `${topPx}px` }}
+      aria-label={`Current time ${label}`}
+    >
+      {/* Time chip — small pill floating over the sticky time-axis
+          column. Burgundy on near-white so it pops against any
+          background underneath. */}
+      <div className="absolute left-1 -top-2.5 inline-flex items-center rounded-full bg-accent px-1.5 py-0.5 text-[10px] font-medium text-accent-foreground tabular-nums shadow-sm ring-1 ring-accent/40">
+        {label}
+      </div>
+      {/* Thin accent line — 1px tall, spans the column area starting
+          just after the time axis (w-20 = 80px) so it doesn't
+          underline the time-axis labels. */}
+      <div className="absolute left-20 right-0 h-px bg-accent shadow-[0_0_4px_0_var(--color-accent)]" />
+    </div>
+  );
 }
 
 // ── Drag overlay block (floats with cursor while dragging) ───────────────
