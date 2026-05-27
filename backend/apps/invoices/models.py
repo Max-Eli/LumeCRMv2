@@ -166,6 +166,53 @@ class Invoice(TenantedModel):
     tax_cents = models.PositiveIntegerField(default=0)
     total_cents = models.PositiveIntegerField(default=0)
 
+    # Discount fields. Two layers stacked: each `InvoiceLineItem` can
+    # carry its own per-line discount; this header carries an additional
+    # invoice-level discount that's distributed pro-rata across the
+    # already-line-discounted lines by `recalculate_totals`.
+    #
+    # `*_kind` is the operator's choice ('amount' or 'percent'); `*_input`
+    # is the typed value (e.g. 10.00 = $10 off OR 10% off depending on
+    # kind); `*_cents` is the derived cents that actually came off the
+    # invoice. `_reason` is an optional free-form note surfaced on the
+    # printed invoice and in the audit log so financial review can
+    # answer "why was this $20 taken off?". Owner / Manager edit the
+    # discount directly; everyone else needs a manager-override on the
+    # API call (validated against the tenant's owner / manager roster).
+
+    class InvoiceDiscountKind(models.TextChoices):
+        AMOUNT = 'amount', 'Amount off ($)'
+        PERCENT = 'percent', 'Percent off (%)'
+
+    invoice_discount_kind = models.CharField(
+        max_length=10,
+        choices=InvoiceDiscountKind.choices,
+        default=InvoiceDiscountKind.AMOUNT,
+    )
+    invoice_discount_input = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0,
+        help_text=(
+            "Operator-typed value. For 'amount' kind: dollars off "
+            "(5.00 = $5). For 'percent' kind: percent off (10.00 = 10%)."
+        ),
+    )
+    invoice_discount_cents = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            'Derived cents knocked off the invoice. Computed by '
+            '`recalculate_totals` from kind + input + line basis, '
+            'capped at the after-line-discount basis (never below $0).'
+        ),
+    )
+    invoice_discount_reason = models.CharField(
+        max_length=200, blank=True, default='',
+    )
+
+    # Denormalized aggregate of all line-level discounts on this invoice.
+    # Stored so the DB-level "subtotal − discounts + tax = total"
+    # constraint can verify the rollup without aggregating across rows.
+    line_discounts_total_cents = models.PositiveIntegerField(default=0)
+
     # Gift card credits applied as a payment toward this invoice.
     # Mutated by the apply-gift-card / reverse-gift-card-redemption
     # actions; reduces the residual `amount_due_cents` paid via
@@ -248,10 +295,24 @@ class Invoice(TenantedModel):
         constraints = [
             # SOC 2 PI1.1 — data integrity: a stored total can never
             # disagree with its parts. If a code path tries to write an
-            # inconsistent row, the DB rejects it.
+            # inconsistent row, the DB rejects it. With discounts the
+            # math is:
+            #   total = subtotal − line_discounts − invoice_discount + tax
+            # `subtotal_cents` stays the pre-discount sum of
+            # `line_subtotal_cents` (so reports that have always read it
+            # as "gross sales" don't shift meaning). The line + invoice
+            # discount fields capture the deductions; `total_cents` is
+            # the post-discount, post-tax customer charge.
             models.CheckConstraint(
-                condition=models.Q(total_cents=models.F('subtotal_cents') + models.F('tax_cents')),
-                name='invoices_total_equals_subtotal_plus_tax',
+                condition=models.Q(
+                    total_cents=(
+                        models.F('subtotal_cents')
+                        - models.F('line_discounts_total_cents')
+                        - models.F('invoice_discount_cents')
+                        + models.F('tax_cents')
+                    ),
+                ),
+                name='invoices_total_equals_subtotal_minus_discounts_plus_tax',
             ),
             # PAID requires a closed_at timestamp. OPEN may or may not
             # have one (after a reopen, status=OPEN with closed_at set).
@@ -319,23 +380,133 @@ class Invoice(TenantedModel):
     # ── Money recompute ──────────────────────────────────────────────────
 
     def recalculate_totals(self, save: bool = True) -> None:
-        """Recompute subtotal/tax/total from the current line items.
+        """Recompute the full money rollup from the current line items,
+        including pro-rata distribution of the invoice-level discount.
 
-        Called automatically by `save()` so denormalized totals can never
-        drift from the lines. The DB-level CheckConstraint is a final
-        backstop.
+        Called automatically by `InvoiceLineItem.save()` and whenever
+        an invoice-level discount is changed. The DB-level
+        CheckConstraint (`total = subtotal − line_discounts −
+        invoice_discount + tax`) is the final backstop.
+
+        Cascade safety: per-line updates use `QuerySet.update()` —
+        skipping `save()` — so we never re-enter the line save path
+        that triggered us.
+
+        Math:
+          1. Pull each line's (subtotal, per-line discount, tax_rate).
+          2. Compute the after-line-discount basis per line:
+                line_basis = max(0, subtotal − line_discount)
+          3. Compute total invoice-level discount cents from
+             `invoice_discount_kind` + `invoice_discount_input`,
+             capped at sum(line_basis).
+          4. Distribute that across lines pro-rata on `line_basis`,
+             absorbing the rounding remainder on the largest line so
+             the per-line shares sum exactly to the invoice total.
+          5. Recompute each line's tax on
+                taxable = max(0, line_basis − invoice_share)
+          6. Write back per-line `invoice_discount_share_cents` +
+             `line_tax_cents` via `.update()`.
+          7. Roll up `subtotal_cents`, `line_discounts_total_cents`,
+             `invoice_discount_cents`, `tax_cents`, `total_cents` on
+             the invoice header.
         """
-        agg = self.line_items.aggregate(
-            sub=models.Sum('line_subtotal_cents'),
-            tax=models.Sum('line_tax_cents'),
+        from decimal import ROUND_HALF_UP, Decimal
+
+        # Always pull lines via an explicit queryset, NOT
+        # `self.line_items.all()`. The reverse manager returns the
+        # `prefetch_related('line_items')` cache when the viewset has
+        # prefetched it — and our caller may have just inserted a new
+        # line (`InvoiceLineItem.save()` calls us right after super().save).
+        # The prefetch cache wouldn't see that new line, and recalc
+        # would skip it, leaving the header totals stale.
+        lines = list(
+            InvoiceLineItem.objects.filter(invoice=self).order_by('id'),
         )
-        self.subtotal_cents = agg['sub'] or 0
-        self.tax_cents = agg['tax'] or 0
-        self.total_cents = self.subtotal_cents + self.tax_cents
-        if save:
-            super().save(
-                update_fields=['subtotal_cents', 'tax_cents', 'total_cents', 'updated_at'],
+        if not lines:
+            self.subtotal_cents = 0
+            self.line_discounts_total_cents = 0
+            self.invoice_discount_cents = 0
+            self.tax_cents = 0
+            self.total_cents = 0
+            if save:
+                super().save(update_fields=[
+                    'subtotal_cents', 'line_discounts_total_cents',
+                    'invoice_discount_cents', 'tax_cents',
+                    'total_cents', 'updated_at',
+                ])
+            return
+
+        # Step 1-2: per-line basis after the line's own discount.
+        line_bases = [
+            max(0, ln.line_subtotal_cents - ln.discount_cents)
+            for ln in lines
+        ]
+        total_basis = sum(line_bases)
+
+        # Step 3: target invoice-level discount in cents.
+        if self.invoice_discount_input and self.invoice_discount_input > 0:
+            if self.invoice_discount_kind == self.InvoiceDiscountKind.PERCENT:
+                pct = Decimal(self.invoice_discount_input)
+                invoice_disc_cents = int(
+                    (Decimal(total_basis) * pct / Decimal(100))
+                    .quantize(Decimal('1'), rounding=ROUND_HALF_UP),
+                )
+            else:
+                invoice_disc_cents = int(Decimal(self.invoice_discount_input) * 100)
+        else:
+            invoice_disc_cents = 0
+        invoice_disc_cents = min(max(0, invoice_disc_cents), total_basis)
+
+        # Step 4: pro-rata distribution across lines on line_basis. We
+        # floor-divide the natural share, then absorb the rounding
+        # remainder on whichever line carries the largest basis so the
+        # per-line shares sum to exactly `invoice_disc_cents`.
+        shares = [0] * len(lines)
+        if invoice_disc_cents > 0 and total_basis > 0:
+            for i, basis in enumerate(line_bases):
+                shares[i] = (basis * invoice_disc_cents) // total_basis
+            remainder = invoice_disc_cents - sum(shares)
+            if remainder != 0:
+                # Largest-basis line absorbs the leftover. Ties go to
+                # the first occurrence — deterministic per-line ordering
+                # (Meta.ordering = ['id']) keeps recomputes stable.
+                largest_idx = max(
+                    range(len(lines)), key=lambda j: line_bases[j],
+                )
+                # Clamp so a stray +1 / −1 can't push us past basis.
+                shares[largest_idx] = max(
+                    0,
+                    min(line_bases[largest_idx], shares[largest_idx] + remainder),
+                )
+
+        # Step 5-6: recompute tax + write per-line shares + line tax.
+        new_line_taxes = [0] * len(lines)
+        for i, ln in enumerate(lines):
+            taxable = max(0, line_bases[i] - shares[i])
+            new_line_taxes[i] = compute_line_tax_cents(taxable, ln.tax_rate_percent)
+            # Skip save() — uses QuerySet.update() to avoid re-entry.
+            type(ln).objects.filter(pk=ln.pk).update(
+                invoice_discount_share_cents=shares[i],
+                line_tax_cents=new_line_taxes[i],
             )
+
+        # Step 7: roll up to the invoice header.
+        self.subtotal_cents = sum(ln.line_subtotal_cents for ln in lines)
+        self.line_discounts_total_cents = sum(ln.discount_cents for ln in lines)
+        self.invoice_discount_cents = invoice_disc_cents
+        self.tax_cents = sum(new_line_taxes)
+        self.total_cents = (
+            self.subtotal_cents
+            - self.line_discounts_total_cents
+            - self.invoice_discount_cents
+            + self.tax_cents
+        )
+        if save:
+            super().save(update_fields=[
+                'subtotal_cents', 'line_discounts_total_cents',
+                'invoice_discount_cents', 'tax_cents',
+                'total_cents', 'updated_at',
+            ])
 
     # ── Inventory side effects ───────────────────────────────────────────
 
@@ -1143,6 +1314,43 @@ class InvoiceLineItem(models.Model):
     line_subtotal_cents = models.PositiveIntegerField(default=0)
     line_tax_cents = models.PositiveIntegerField(default=0)
 
+    # Per-line discount. Same kind / input / cents shape as the
+    # invoice-level discount above — see `Invoice.invoice_discount_*`
+    # for the rationale. Per-line discount is the operator's "$5 off
+    # this Botox / 20% off this peel" lever; invoice-level layers on
+    # top of any per-line discounts and is distributed pro-rata.
+
+    class LineDiscountKind(models.TextChoices):
+        AMOUNT = 'amount', 'Amount off ($)'
+        PERCENT = 'percent', 'Percent off (%)'
+
+    discount_kind = models.CharField(
+        max_length=10,
+        choices=LineDiscountKind.choices,
+        default=LineDiscountKind.AMOUNT,
+    )
+    discount_input = models.DecimalField(
+        max_digits=8, decimal_places=2, default=0,
+        help_text=(
+            "Operator-typed value. For 'amount' kind: dollars off "
+            "this line. For 'percent' kind: percent off this line."
+        ),
+    )
+    discount_cents = models.PositiveIntegerField(
+        default=0,
+        help_text=(
+            "Derived cents off this line. Computed in `save()` from "
+            "kind + input, capped at `line_subtotal_cents`."
+        ),
+    )
+    discount_reason = models.CharField(
+        max_length=200, blank=True, default='',
+    )
+    # The per-line absorption of the invoice-level discount, computed
+    # by `Invoice.recalculate_totals` pro-rata on the after-line-
+    # discount basis. Not directly mutable by callers.
+    invoice_discount_share_cents = models.PositiveIntegerField(default=0)
+
     created_at = models.DateTimeField(auto_now_add=True)
 
     class Meta:
@@ -1179,13 +1387,49 @@ class InvoiceLineItem(models.Model):
     def save(self, *args, **kwargs):
         # Recompute denormalized totals from the source-of-truth fields.
         self.line_subtotal_cents = self.quantity * self.unit_price_cents
+        # Per-line discount derives from kind + input, capped at the
+        # line's pre-discount subtotal so we never go negative. The
+        # invoice's share of the invoice-level discount is NOT applied
+        # here — `Invoice.recalculate_totals` overwrites
+        # `invoice_discount_share_cents` + `line_tax_cents` after this
+        # save returns. The intermediate tax we compute here is just a
+        # sane initial value in case the recalc is skipped (which it
+        # isn't in normal flow).
+        self.discount_cents = self._compute_line_discount_cents()
+        post_discount = max(0, self.line_subtotal_cents - self.discount_cents)
         self.line_tax_cents = compute_line_tax_cents(
-            self.line_subtotal_cents, self.tax_rate_percent,
+            post_discount, self.tax_rate_percent,
         )
         super().save(*args, **kwargs)
-        # Roll the change up to the invoice header so totals stay consistent.
-        # Cheap: a single aggregate query plus a partial update.
+        # Roll the change up to the invoice header so totals stay
+        # consistent. `recalculate_totals` will redistribute the
+        # invoice-level discount + recompute each line's tax on the
+        # final post-discount basis via QuerySet.update() (bypassing
+        # save() to avoid re-entering this method).
         self.invoice.recalculate_totals()
+
+    def _compute_line_discount_cents(self) -> int:
+        """Translate the operator-typed (kind, input) into cents. Caps
+        at `line_subtotal_cents` so a 200% discount or a $999 amount
+        on a $50 line both come out as the full $50 off — never
+        below zero. The cap matches what spas expect (no negative
+        line items)."""
+        if self.discount_input is None or self.discount_input <= 0:
+            return 0
+        if self.discount_kind == self.LineDiscountKind.PERCENT:
+            # Decimal math to avoid float drift on common values
+            # (10% of $33.33 etc.). Round half-up.
+            from decimal import ROUND_HALF_UP, Decimal
+            pct = Decimal(self.discount_input)
+            cents = int(
+                (Decimal(self.line_subtotal_cents) * pct / Decimal(100))
+                .quantize(Decimal('1'), rounding=ROUND_HALF_UP),
+            )
+        else:
+            # 'amount' kind — input is dollars, multiply by 100 → cents.
+            from decimal import Decimal
+            cents = int(Decimal(self.discount_input) * 100)
+        return min(max(0, cents), self.line_subtotal_cents)
 
 
 # ── Domain exceptions ────────────────────────────────────────────────────

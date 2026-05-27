@@ -2696,3 +2696,332 @@ class StandaloneInvoiceCreateTests(TestCase):
         )
         self.assertIsNotNone(log)
         self.assertEqual(log.metadata.get('event'), 'standalone_invoice_created')
+
+
+# ── Line price + discount edits (with manager override) ────────────
+
+
+class InvoicePriceAndDiscountTests(TestCase):
+    """Owner / manager can edit a line's unit price and add a
+    per-line or invoice-level discount. Front-desk (no
+    EDIT_INVOICE_PRICE) must supply an owner/manager's email +
+    password as a manager override on the same request.
+    """
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('inv-price')
+        # Manager who can authorize overrides. `_make_user` hardcodes
+        # a password, so set a known one explicitly after create.
+        self.manager_user = _make_user('mgr-price@test.local')
+        self.manager_user.set_password('mgr-pw-123!')
+        self.manager_user.save(update_fields=['password'])
+        _make_membership(
+            user=self.manager_user, tenant=self.tenant,
+            role=TenantMembership.Role.MANAGER,
+        )
+        # Front-desk: no EDIT_INVOICE_PRICE — needs override.
+        self.fd_user = _make_user('fd-price@test.local')
+        self.fd_user.set_password('fd-pw-123!')
+        self.fd_user.save(update_fields=['password'])
+        _make_membership(
+            user=self.fd_user, tenant=self.tenant,
+            role=TenantMembership.Role.FRONT_DESK,
+        )
+        self.provider_user = _make_user('prov-price@test.local')
+        self.provider = _make_membership(
+            user=self.provider_user, tenant=self.tenant,
+            role=TenantMembership.Role.PROVIDER, is_bookable=True,
+        )
+        self.customer = _make_customer(self.tenant)
+        # $100 service, 10% tax — so the discount/tax interplay shows up.
+        self.service = _make_service(
+            self.tenant, price_cents=10000, tax='10',
+        )
+        self.appt = _make_appointment(
+            self.tenant, customer=self.customer, service=self.service,
+            provider=self.provider, status=Appointment.Status.CHECKED_IN,
+            created_by=self.owner,
+        )
+        self.invoice = Invoice.objects.get(appointment=self.appt)
+        self.line = self.invoice.line_items.first()
+        self.client = APIClient()
+
+    def _edit_line_url(self, invoice_pk, line_pk):
+        return reverse(
+            'invoice-edit-line',
+            kwargs={'pk': invoice_pk, 'line_pk': line_pk},
+        )
+
+    def _set_discount_url(self, invoice_pk):
+        return reverse(
+            'invoice-set-discount', kwargs={'pk': invoice_pk},
+        )
+
+    # ── Manager / Owner direct edits ─────────────────────────────────
+
+    def test_owner_can_edit_unit_price(self):
+        self.client.force_login(self.owner)
+        resp = self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {'unit_price_cents': 8000},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.unit_price_cents, 8000)
+        self.invoice.refresh_from_db()
+        # 8000 + 10% tax = 8800.
+        self.assertEqual(self.invoice.subtotal_cents, 8000)
+        self.assertEqual(self.invoice.tax_cents, 800)
+        self.assertEqual(self.invoice.total_cents, 8800)
+
+    def test_manager_can_set_line_discount_amount(self):
+        self.client.force_login(self.manager_user)
+        resp = self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {
+                'discount_kind': 'amount',
+                'discount_input': '15.00',
+                'discount_reason': 'VIP regular',
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.line.refresh_from_db()
+        # $15 off a $100 line → 1500 cents discount, basis 8500, tax 850.
+        self.assertEqual(self.line.discount_cents, 1500)
+        self.assertEqual(self.line.discount_reason, 'VIP regular')
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.line_discounts_total_cents, 1500)
+        self.assertEqual(self.invoice.tax_cents, 850)
+        # 10000 − 1500 + 850 = 9350.
+        self.assertEqual(self.invoice.total_cents, 9350)
+
+    def test_owner_can_set_line_discount_percent(self):
+        self.client.force_login(self.owner)
+        resp = self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {'discount_kind': 'percent', 'discount_input': '20'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.line.refresh_from_db()
+        # 20% of $100 = $20 → 2000 cents off.
+        self.assertEqual(self.line.discount_cents, 2000)
+        self.invoice.refresh_from_db()
+        # Basis 8000, tax 800, total = 10000 − 2000 + 800 = 8800.
+        self.assertEqual(self.invoice.total_cents, 8800)
+
+    def test_line_discount_capped_at_subtotal(self):
+        """A $999 discount or 200% discount on a $100 line both cap at
+        the line's subtotal — no negative line items."""
+        self.client.force_login(self.owner)
+        resp = self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {'discount_kind': 'amount', 'discount_input': '999.00'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.discount_cents, 10000)  # capped
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.total_cents, 0)
+
+    # ── Front-desk: manager-override required ────────────────────────
+
+    def test_front_desk_without_override_rejected(self):
+        self.client.force_login(self.fd_user)
+        resp = self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {'unit_price_cents': 8000},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertIn('authorized_by_email', resp.data)
+
+    def test_front_desk_with_valid_override_allowed(self):
+        self.client.force_login(self.fd_user)
+        resp = self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {
+                'unit_price_cents': 8000,
+                'authorized_by_email': 'mgr-price@test.local',
+                'authorized_by_password': 'mgr-pw-123!',
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.line.refresh_from_db()
+        self.assertEqual(self.line.unit_price_cents, 8000)
+
+    def test_front_desk_with_wrong_override_password_rejected(self):
+        self.client.force_login(self.fd_user)
+        resp = self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {
+                'unit_price_cents': 8000,
+                'authorized_by_email': 'mgr-price@test.local',
+                'authorized_by_password': 'wrong-pw',
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_front_desk_override_with_non_manager_rejected(self):
+        """Even with valid creds, the authorizer must be owner/manager
+        on the tenant — front-desk-A can't authorize for front-desk-B."""
+        other_fd = _make_user('other-fd@test.local')
+        other_fd.set_password('other-pw!')
+        other_fd.save(update_fields=['password'])
+        _make_membership(
+            user=other_fd, tenant=self.tenant,
+            role=TenantMembership.Role.FRONT_DESK,
+        )
+        self.client.force_login(self.fd_user)
+        resp = self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {
+                'unit_price_cents': 8000,
+                'authorized_by_email': 'other-fd@test.local',
+                'authorized_by_password': 'other-pw!',
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_override_audit_records_authorizer(self):
+        self.client.force_login(self.fd_user)
+        self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {
+                'unit_price_cents': 8000,
+                'authorized_by_email': 'mgr-price@test.local',
+                'authorized_by_password': 'mgr-pw-123!',
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        log = (
+            AuditLog.objects.filter(
+                resource_type='invoice',
+                resource_id=str(self.invoice.pk),
+                action=AuditLog.Action.UPDATE,
+            )
+            .order_by('-timestamp')
+            .first()
+        )
+        self.assertIsNotNone(log)
+        self.assertEqual(log.metadata.get('event'), 'line_edited')
+        self.assertEqual(
+            log.metadata.get('authorized_by_email'),
+            'mgr-price@test.local',
+        )
+        self.assertEqual(log.metadata.get('before')['unit_price_cents'], 10000)
+        self.assertEqual(log.metadata.get('after')['unit_price_cents'], 8000)
+
+    # ── Invoice-level discount ──────────────────────────────────────
+
+    def test_owner_can_set_invoice_discount_amount(self):
+        self.client.force_login(self.owner)
+        resp = self.client.patch(
+            self._set_discount_url(self.invoice.pk),
+            {
+                'invoice_discount_kind': 'amount',
+                'invoice_discount_input': '10.00',
+                'invoice_discount_reason': 'First-visit promo',
+            },
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.invoice.refresh_from_db()
+        # $10 off the $100 invoice (no per-line discount). Tax 10% on
+        # the $90 basis = $9. Total = 10000 − 0 − 1000 + 900 = 9900.
+        self.assertEqual(self.invoice.invoice_discount_cents, 1000)
+        self.assertEqual(self.invoice.tax_cents, 900)
+        self.assertEqual(self.invoice.total_cents, 9900)
+
+    def test_invoice_discount_distributed_pro_rata(self):
+        # Add a 2nd line (qty=2 product at $50, no tax) so the invoice
+        # has lines of different sizes — pro-rata share is meaningful.
+        from apps.products.models import Product
+        product = Product.objects.create(
+            tenant=self.tenant, name='Cream', sku='CR',
+            price_cents=5000, tax_rate_percent=Decimal('0'),
+            track_inventory=False, stock_quantity=0,
+        )
+        self.client.force_login(self.owner)
+        self.client.post(
+            reverse('invoice-add-line', kwargs={'pk': self.invoice.pk}),
+            data={'product_id': product.pk, 'quantity': 2},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        # Subtotal: $100 service + $100 product = $200. No line discounts.
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.subtotal_cents, 20000)
+
+        # Apply $40 invoice-level discount. Pro-rata across $100/$100 →
+        # $20 share each.
+        self.client.patch(
+            self._set_discount_url(self.invoice.pk),
+            {'invoice_discount_kind': 'amount', 'invoice_discount_input': '40.00'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.invoice_discount_cents, 4000)
+        # Per-line shares.
+        lines = list(self.invoice.line_items.order_by('id'))
+        self.assertEqual(lines[0].invoice_discount_share_cents, 2000)
+        self.assertEqual(lines[1].invoice_discount_share_cents, 2000)
+        # Tax: service line basis $80 × 10% = $8. Product line tax 0.
+        self.assertEqual(self.invoice.tax_cents, 800)
+        # Total: 20000 − 0 − 4000 + 800 = 16800.
+        self.assertEqual(self.invoice.total_cents, 16800)
+
+    def test_invoice_discount_capped_at_subtotal(self):
+        self.client.force_login(self.owner)
+        resp = self.client.patch(
+            self._set_discount_url(self.invoice.pk),
+            {'invoice_discount_kind': 'amount', 'invoice_discount_input': '999.00'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.invoice.refresh_from_db()
+        # Capped at $100 (subtotal); total = 0.
+        self.assertEqual(self.invoice.invoice_discount_cents, 10000)
+        self.assertEqual(self.invoice.total_cents, 0)
+
+    def test_invoice_discount_can_be_cleared(self):
+        self.client.force_login(self.owner)
+        # First set $10 off.
+        self.client.patch(
+            self._set_discount_url(self.invoice.pk),
+            {'invoice_discount_kind': 'amount', 'invoice_discount_input': '10.00'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        # Then clear it.
+        resp = self.client.patch(
+            self._set_discount_url(self.invoice.pk),
+            {'invoice_discount_input': '0'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.invoice.refresh_from_db()
+        self.assertEqual(self.invoice.invoice_discount_cents, 0)
+        self.assertEqual(self.invoice.total_cents, 11000)
+
+    # ── Paid lock ────────────────────────────────────────────────────
+
+    def test_edits_rejected_on_paid_invoice(self):
+        self.invoice.close(by_user=self.owner, payment_method='cash')
+        self.client.force_login(self.owner)
+        edit = self.client.patch(
+            self._edit_line_url(self.invoice.pk, self.line.pk),
+            {'unit_price_cents': 8000},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(edit.status_code, 409)
+        disc = self.client.patch(
+            self._set_discount_url(self.invoice.pk),
+            {'invoice_discount_kind': 'amount', 'invoice_discount_input': '5'},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(disc.status_code, 409)

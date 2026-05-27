@@ -76,6 +76,12 @@ class InvoicePermission(BasePermission):
             'reverse_gift_card_redemption',
         }:
             return membership.has(P.PROCESS_PAYMENT)
+        # Price + discount edits. PROCESS_PAYMENT is the baseline "can
+        # touch this invoice at all" gate; the action body then enforces
+        # EDIT_INVOICE_PRICE OR a valid owner/manager credential
+        # override before persisting the change.
+        if action in {'edit_line', 'set_discount'}:
+            return membership.has(P.PROCESS_PAYMENT)
 
         return False
 

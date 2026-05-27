@@ -69,6 +69,14 @@ class InvoiceLineItemSerializer(serializers.ModelSerializer):
             'description', 'quantity',
             'unit_price_cents', 'tax_rate_percent',
             'line_subtotal_cents', 'line_tax_cents',
+            # Per-line discount fields. `discount_kind` + `discount_input`
+            # are the operator's choice; `discount_cents` is the derived
+            # cents off; `invoice_discount_share_cents` is this line's
+            # absorbed share of the invoice-level discount (set by
+            # recalculate_totals). All read-only — write through the
+            # PATCH /lines/{pk}/edit/ endpoint.
+            'discount_kind', 'discount_input', 'discount_cents',
+            'discount_reason', 'invoice_discount_share_cents',
             'created_at',
         ]
         read_only_fields = fields
@@ -104,6 +112,13 @@ class InvoiceSerializer(serializers.ModelSerializer):
             'customer', 'appointment',
             'status',
             'subtotal_cents', 'tax_cents', 'total_cents',
+            # Discount fields. The invoice-level discount layers on top
+            # of any per-line discounts and is distributed pro-rata
+            # across lines by `recalculate_totals`. Read-only here —
+            # mutations go through PATCH /api/invoices/{id}/discount/.
+            'invoice_discount_kind', 'invoice_discount_input',
+            'invoice_discount_cents', 'invoice_discount_reason',
+            'line_discounts_total_cents',
             'gift_card_credits_cents', 'amount_due_cents',
             'payment_method', 'payment_reference',
             'notes',

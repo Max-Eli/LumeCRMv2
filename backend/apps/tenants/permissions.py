@@ -44,6 +44,13 @@ class P:
     ISSUE_REFUND = 'issue_refund'
     ISSUE_REFUND_UNLIMITED = 'issue_refund_unlimited'
     VOID_INVOICE = 'void_invoice'
+    # Editing line-item prices and adding line / invoice discounts
+    # changes recognized revenue. Owner + manager default; lower roles
+    # must obtain a manager override (verified email + password of an
+    # owner / manager on the same tenant) on the API call. Audit
+    # captures both the acting user and the authorizer (SOC 2 PI1.1
+    # + HIPAA §164.312(b)).
+    EDIT_INVOICE_PRICE = 'edit_invoice_price'
     # Reopening a closed (paid) invoice — gated to owner/manager only and
     # locked against per-user override (separation-of-duties; ADR 0007).
     # Time-bounded to 60 days from first close; window enforced in

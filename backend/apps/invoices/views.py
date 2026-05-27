@@ -1053,6 +1053,329 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
         invoice.refresh_from_db()
         return Response(self.get_serializer(invoice).data)
 
+    # ── Price + discount editing (with manager override) ────────────
+    #
+    # Owner + manager can edit a line's `unit_price_cents` and set a
+    # per-line or invoice-level discount directly (they have the
+    # `EDIT_INVOICE_PRICE` permission). Lower roles (front-desk in
+    # particular) need to obtain a manager override on the API call by
+    # including `authorized_by_email` + `authorized_by_password` in the
+    # payload — verified against the tenant's owner / manager roster.
+    # Every change is audit-logged with before + after values, the
+    # acting user, the authorizing manager (if override), and an
+    # optional `reason` so financial review can answer "why was this
+    # $20 taken off?" — SOC 2 PI1.1 + HIPAA §164.312(b).
+
+    @staticmethod
+    def _verify_price_authorization(request, invoice):
+        """Return (acting_user, authorizer_or_none) when the request is
+        authorized to edit prices/discounts on `invoice`, else raise
+        a 403-equivalent ValidationError.
+
+        Three paths:
+          1. Acting user already has EDIT_INVOICE_PRICE → no override
+             needed; authorizer is None.
+          2. Override creds provided + valid against an owner/manager
+             on this tenant → authorizer is that user.
+          3. Anything else → 403.
+        """
+        from apps.tenants.permissions import P
+        from apps.tenants.models import TenantMembership
+
+        membership = getattr(request, 'tenant_membership', None)
+        acting = request.user
+        if membership and membership.has(P.EDIT_INVOICE_PRICE):
+            return acting, None
+
+        email = (request.data.get('authorized_by_email') or '').strip().lower()
+        password = request.data.get('authorized_by_password') or ''
+        if not email or not password:
+            raise ValidationError({
+                'authorized_by_email': (
+                    'A manager or owner must authorize this change. '
+                    'Re-submit with `authorized_by_email` and '
+                    '`authorized_by_password`.'
+                ),
+            })
+        # Match against an active owner/manager TenantMembership on the
+        # CURRENT tenant — credentials from a manager at another tenant
+        # don't carry over. iexact on the email mirrors how login works.
+        candidates = TenantMembership.objects.filter(
+            tenant_id=invoice.tenant_id,
+            role__in=[
+                TenantMembership.Role.OWNER,
+                TenantMembership.Role.MANAGER,
+            ],
+            is_active=True,
+            user__email__iexact=email,
+        ).select_related('user')
+        for cand in candidates:
+            if cand.user.check_password(password):
+                return acting, cand.user
+        raise ValidationError({
+            'authorized_by_email': (
+                'No active owner or manager on this tenant matches the '
+                'provided credentials.'
+            ),
+        })
+
+    @extend_schema(
+        responses={
+            200: InvoiceSerializer,
+            400: OpenApiResponse(description='Validation error / bad override creds'),
+            403: OpenApiResponse(description='Missing PROCESS_PAYMENT permission'),
+            404: OpenApiResponse(description='Line not on this invoice'),
+            409: OpenApiResponse(description='Invoice not OPEN'),
+        },
+    )
+    @action(
+        detail=True,
+        methods=['patch'],
+        # Distinct sub-path so it doesn't collide with the existing
+        # DELETE `lines/{pk}/` handler (router-level URL resolution
+        # ignores HTTP method when picking a pattern, so two @actions
+        # at the same path are a foot-gun).
+        url_path=r'lines/(?P<line_pk>[^/.]+)/edit',
+        url_name='edit-line',
+    )
+    def edit_line(self, request, pk=None, line_pk=None):
+        """Edit `unit_price_cents` and/or the per-line discount on a
+        single OPEN invoice line. Body fields (all optional, only
+        provided ones are changed):
+
+          - `unit_price_cents`  (int, ≥ 0)
+          - `discount_kind`     ('amount' | 'percent')
+          - `discount_input`    (decimal — dollars off OR percent off)
+          - `discount_reason`   (string, ≤ 200 chars)
+          - `authorized_by_email` + `authorized_by_password`
+            (required when the caller lacks `EDIT_INVOICE_PRICE`)
+
+        Returns the updated invoice payload. Recalculates the invoice
+        header totals (subtotal, line_discounts_total, invoice_discount
+        share distribution, tax, total) in the same transaction.
+        """
+        from decimal import Decimal, InvalidOperation
+
+        from django.db import transaction
+
+        invoice = self.get_object()
+        if invoice.status != Invoice.Status.OPEN:
+            return Response(
+                {
+                    'detail': (
+                        f'Cannot edit a line on a '
+                        f'{invoice.get_status_display().lower()} invoice.'
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        try:
+            line = invoice.line_items.get(pk=line_pk)
+        except InvoiceLineItem.DoesNotExist:
+            return Response(
+                {'detail': 'Line not found on this invoice.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        acting, authorizer = self._verify_price_authorization(request, invoice)
+
+        data = request.data
+        before = {
+            'unit_price_cents': line.unit_price_cents,
+            'discount_kind': line.discount_kind,
+            'discount_input': str(line.discount_input),
+            'discount_cents': line.discount_cents,
+            'discount_reason': line.discount_reason,
+        }
+
+        changes: dict = {}
+        if 'unit_price_cents' in data:
+            try:
+                new_price = int(data['unit_price_cents'])
+            except (TypeError, ValueError):
+                raise ValidationError({
+                    'unit_price_cents': 'Must be a whole number of cents.',
+                })
+            if new_price < 0:
+                raise ValidationError({
+                    'unit_price_cents': 'Cannot be negative.',
+                })
+            line.unit_price_cents = new_price
+            changes['unit_price_cents'] = new_price
+
+        # Discount fields move together. Accepting just `discount_input`
+        # without `discount_kind` keeps the current kind; accepting
+        # `discount_kind` alone is a kind-switch with the existing
+        # input. Clearing requires explicit `discount_input=0`.
+        if 'discount_kind' in data:
+            kind = data['discount_kind']
+            valid_kinds = [k for k, _ in InvoiceLineItem.LineDiscountKind.choices]
+            if kind not in valid_kinds:
+                raise ValidationError({
+                    'discount_kind': f"Must be one of {valid_kinds}.",
+                })
+            line.discount_kind = kind
+            changes['discount_kind'] = kind
+        if 'discount_input' in data:
+            try:
+                line.discount_input = Decimal(str(data['discount_input']))
+            except (InvalidOperation, TypeError, ValueError):
+                raise ValidationError({
+                    'discount_input': 'Must be a number.',
+                })
+            if line.discount_input < 0:
+                raise ValidationError({
+                    'discount_input': 'Cannot be negative.',
+                })
+            changes['discount_input'] = str(line.discount_input)
+        if 'discount_reason' in data:
+            line.discount_reason = (data['discount_reason'] or '').strip()[:200]
+            changes['discount_reason'] = line.discount_reason
+
+        with transaction.atomic():
+            line.save()
+            # line.save() already calls invoice.recalculate_totals().
+            invoice.refresh_from_db()
+
+        after = {
+            'unit_price_cents': line.unit_price_cents,
+            'discount_kind': line.discount_kind,
+            'discount_input': str(line.discount_input),
+            'discount_cents': line.discount_cents,
+            'discount_reason': line.discount_reason,
+        }
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='invoice',
+            resource_id=invoice.pk,
+            request=request,
+            metadata={
+                'event': 'line_edited',
+                'line_id': line.pk,
+                'fields_changed': sorted(changes.keys()),
+                'before': before,
+                'after': after,
+                'authorized_by_email': authorizer.email if authorizer else None,
+                'reason': line.discount_reason or None,
+            },
+        )
+        return Response(self.get_serializer(invoice).data)
+
+    @extend_schema(
+        responses={
+            200: InvoiceSerializer,
+            400: OpenApiResponse(description='Validation error / bad override creds'),
+            403: OpenApiResponse(description='Missing PROCESS_PAYMENT permission'),
+            409: OpenApiResponse(description='Invoice not OPEN'),
+        },
+    )
+    @action(
+        detail=True,
+        methods=['patch'],
+        url_path='discount',
+        url_name='set-discount',
+    )
+    def set_discount(self, request, pk=None):
+        """Set / change / clear the invoice-level discount (distributed
+        pro-rata across lines by `recalculate_totals`). Body:
+
+          - `invoice_discount_kind`  ('amount' | 'percent')
+          - `invoice_discount_input` (decimal — dollars off OR % off)
+          - `invoice_discount_reason` (string, ≤ 200 chars)
+          - `authorized_by_email` + `authorized_by_password`
+            (required when the caller lacks `EDIT_INVOICE_PRICE`)
+
+        Pass `invoice_discount_input=0` to clear an existing discount.
+        """
+        from decimal import Decimal, InvalidOperation
+
+        from django.db import transaction
+
+        invoice = self.get_object()
+        if invoice.status != Invoice.Status.OPEN:
+            return Response(
+                {
+                    'detail': (
+                        f'Cannot change the discount on a '
+                        f'{invoice.get_status_display().lower()} invoice.'
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        acting, authorizer = self._verify_price_authorization(request, invoice)
+
+        data = request.data
+        before = {
+            'invoice_discount_kind': invoice.invoice_discount_kind,
+            'invoice_discount_input': str(invoice.invoice_discount_input),
+            'invoice_discount_cents': invoice.invoice_discount_cents,
+            'invoice_discount_reason': invoice.invoice_discount_reason,
+        }
+
+        changes: dict = {}
+        if 'invoice_discount_kind' in data:
+            kind = data['invoice_discount_kind']
+            valid = [k for k, _ in Invoice.InvoiceDiscountKind.choices]
+            if kind not in valid:
+                raise ValidationError({
+                    'invoice_discount_kind': f'Must be one of {valid}.',
+                })
+            invoice.invoice_discount_kind = kind
+            changes['invoice_discount_kind'] = kind
+        if 'invoice_discount_input' in data:
+            try:
+                invoice.invoice_discount_input = Decimal(str(data['invoice_discount_input']))
+            except (InvalidOperation, TypeError, ValueError):
+                raise ValidationError({
+                    'invoice_discount_input': 'Must be a number.',
+                })
+            if invoice.invoice_discount_input < 0:
+                raise ValidationError({
+                    'invoice_discount_input': 'Cannot be negative.',
+                })
+            changes['invoice_discount_input'] = str(invoice.invoice_discount_input)
+        if 'invoice_discount_reason' in data:
+            invoice.invoice_discount_reason = (
+                data['invoice_discount_reason'] or ''
+            ).strip()[:200]
+            changes['invoice_discount_reason'] = invoice.invoice_discount_reason
+
+        with transaction.atomic():
+            # We only need a partial save here — recalculate_totals
+            # will overwrite invoice_discount_cents + the rollup fields
+            # based on kind + input.
+            invoice.save(update_fields=[
+                'invoice_discount_kind',
+                'invoice_discount_input',
+                'invoice_discount_reason',
+                'updated_at',
+            ])
+            invoice.recalculate_totals()
+            invoice.refresh_from_db()
+
+        after = {
+            'invoice_discount_kind': invoice.invoice_discount_kind,
+            'invoice_discount_input': str(invoice.invoice_discount_input),
+            'invoice_discount_cents': invoice.invoice_discount_cents,
+            'invoice_discount_reason': invoice.invoice_discount_reason,
+        }
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='invoice',
+            resource_id=invoice.pk,
+            request=request,
+            metadata={
+                'event': 'invoice_discount_changed',
+                'fields_changed': sorted(changes.keys()),
+                'before': before,
+                'after': after,
+                'authorized_by_email': authorizer.email if authorizer else None,
+                'reason': invoice.invoice_discount_reason or None,
+            },
+        )
+        return Response(self.get_serializer(invoice).data)
+
     @extend_schema(
         responses={
             200: InvoiceSerializer,

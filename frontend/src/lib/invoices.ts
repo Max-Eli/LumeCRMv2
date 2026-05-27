@@ -86,6 +86,12 @@ export const PAYMENT_METHOD_LABELS: Record<PaymentMethod, string> = {
   other: 'Other',
 };
 
+/** A discount specified either as a flat cents-off ('amount') or
+ *  a percent-off ('percent'). Operator picks the kind per line / per
+ *  invoice; the input is what they typed (e.g. 10.00 = $10 OR 10%
+ *  depending on kind). */
+export type DiscountKind = 'amount' | 'percent';
+
 export interface InvoiceLineItem {
   id: number;
   service: number | null;
@@ -98,6 +104,16 @@ export interface InvoiceLineItem {
   tax_rate_percent: string; // Decimal as string from DRF
   line_subtotal_cents: number;
   line_tax_cents: number;
+  /** Per-line discount fields. `discount_input` is whatever the
+   *  operator typed (dollars off when kind=amount, percent when
+   *  kind=percent); `discount_cents` is the derived cents. */
+  discount_kind: DiscountKind;
+  discount_input: string;
+  discount_cents: number;
+  discount_reason: string;
+  /** This line's share of the invoice-level discount, distributed
+   *  pro-rata across lines by the server's `recalculate_totals`. */
+  invoice_discount_share_cents: number;
   created_at: string;
 }
 
@@ -153,6 +169,19 @@ export interface Invoice {
   subtotal_cents: number;
   tax_cents: number;
   total_cents: number;
+  /** Invoice-level discount (layers on top of any per-line discounts
+   *  and is distributed pro-rata across lines by the server). The
+   *  display formula is:
+   *    total = subtotal − line_discounts_total − invoice_discount + tax
+   */
+  invoice_discount_kind: DiscountKind;
+  invoice_discount_input: string;
+  invoice_discount_cents: number;
+  invoice_discount_reason: string;
+  /** Sum of every line's per-line discount cents — kept denormalized
+   *  on the invoice header so the totals box doesn't have to sum line
+   *  by line and the DB-level constraint can verify the rollup. */
+  line_discounts_total_cents: number;
   /** Total of gift card credits applied toward this invoice.
    *  Reduces `amount_due_cents`. Mutated by the apply-gift-card /
    *  reverse-gift-card-redemption actions. */
@@ -376,6 +405,73 @@ export function useReopenInvoice(invoiceId: number) {
         });
       }
       qc.invalidateQueries({ queryKey: ['appointments'] });
+    },
+  });
+}
+
+/** Body for `PATCH /api/invoices/<id>/lines/<line_id>/edit/` — edit a
+ *  line's unit price and/or per-line discount. Only the fields you
+ *  provide are changed. `authorized_by_email` + `authorized_by_password`
+ *  are required when the acting user lacks `EDIT_INVOICE_PRICE`; an
+ *  owner / manager's credentials authorize the change and the audit
+ *  log captures both the acting user and the authorizer. */
+export interface EditInvoiceLineInput {
+  unit_price_cents?: number;
+  discount_kind?: DiscountKind;
+  /** Operator-typed value (dollars off when kind=amount, percent
+   *  when kind=percent). Send 0 to clear. */
+  discount_input?: string;
+  discount_reason?: string;
+  authorized_by_email?: string;
+  authorized_by_password?: string;
+}
+
+export function useEditInvoiceLine(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<
+    Invoice,
+    Error,
+    { line_id: number; payload: EditInvoiceLineInput }
+  >({
+    mutationFn: ({ line_id, payload }) =>
+      api.patch<Invoice>(
+        `/api/invoices/${invoiceId}/lines/${line_id}/edit/`, payload,
+      ),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+    },
+  });
+}
+
+/** Body for `PATCH /api/invoices/<id>/discount/` — set or clear the
+ *  invoice-level discount. Same manager-override shape as
+ *  `EditInvoiceLineInput`. Send `invoice_discount_input: '0'` to
+ *  clear an existing discount. */
+export interface SetInvoiceDiscountInput {
+  invoice_discount_kind?: DiscountKind;
+  invoice_discount_input?: string;
+  invoice_discount_reason?: string;
+  authorized_by_email?: string;
+  authorized_by_password?: string;
+}
+
+export function useSetInvoiceDiscount(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, SetInvoiceDiscountInput>({
+    mutationFn: (payload) =>
+      api.patch<Invoice>(`/api/invoices/${invoiceId}/discount/`, payload),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
     },
   });
 }
