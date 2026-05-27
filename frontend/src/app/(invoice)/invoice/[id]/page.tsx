@@ -103,7 +103,7 @@ import {
   type InvoiceLineItem,
   type PaymentMethod,
 } from '@/lib/invoices';
-import { centsFromDollars, useGiftCardLookup } from '@/lib/giftcards';
+import { centsFromDollars, dollarsFromCents, useGiftCardLookup } from '@/lib/giftcards';
 import {
   useCustomerPurchasedPackages,
   usePackages,
@@ -852,7 +852,7 @@ function LineEditPanel({
   // "10.00"; for amount it echoes the dollars-off string. Treat both
   // as plain strings the operator can keep typing into.
   const [discountInput, setDiscountInput] = useState(
-    () => normalizeDiscountInputForEdit(line.discount_kind, line.discount_input),
+    () => normalizeDiscountInputForEdit(line.discount_input),
   );
   const [discountReason, setDiscountReason] = useState(line.discount_reason);
   const [authEmail, setAuthEmail] = useState('');
@@ -860,7 +860,6 @@ function LineEditPanel({
 
   const initialPriceDollars = dollarsFromCents(line.unit_price_cents);
   const initialDiscountInput = normalizeDiscountInputForEdit(
-    line.discount_kind,
     line.discount_input,
   );
   const priceChanged = priceDollars !== initialPriceDollars;
@@ -1118,19 +1117,12 @@ function ManagerOverrideFields({
  *  discounts — show that as an empty string so the field reads as
  *  "no discount set" rather than a stray '0.00' the operator has
  *  to clear before typing. */
-function normalizeDiscountInputForEdit(
-  kind: DiscountKind,
-  raw: string,
-): string {
+function normalizeDiscountInputForEdit(raw: string): string {
   const trimmed = (raw ?? '').trim();
   if (!trimmed) return '';
   const n = Number(trimmed);
   if (Number.isFinite(n) && n === 0) return '';
   return trimmed;
-}
-
-function dollarsFromCents(cents: number): string {
-  return (cents / 100).toFixed(2);
 }
 
 type AddLineKind = 'product' | 'service' | 'package' | 'membership';
@@ -1557,7 +1549,6 @@ function InvoiceDiscountPanel({
 }) {
   const setDiscount = useSetInvoiceDiscount(invoice.id);
   const initialInput = normalizeDiscountInputForEdit(
-    invoice.invoice_discount_kind,
     invoice.invoice_discount_input,
   );
   const [kind, setKind] = useState<DiscountKind>(invoice.invoice_discount_kind);
