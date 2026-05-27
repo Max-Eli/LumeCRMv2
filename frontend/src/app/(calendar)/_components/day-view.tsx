@@ -251,6 +251,27 @@ function computeRenderableBlocks(appointment: Appointment): RenderableBlock[] {
   }
 
   const isSplit = groups.length > 1;
+  // Non-split path: one block covering the appointment's full window.
+  // We use the appointment's actual `start_time`/`end_time` here
+  // (NOT `startMs + sum(durations)`) so a drag-resize that patches
+  // `end_time` is reflected immediately. The per-service-duration
+  // math is only meaningful for split visits, where we need the
+  // sub-slots inside the window.
+  if (!isSplit) {
+    return [{
+      appointment,
+      providerId: primaryProviderId,
+      startMs,
+      endMs: new Date(appointment.end_time).getTime(),
+      primaryServiceInBlock: appointment.service,
+      // Every service is in this single group when the visit isn't
+      // split, so the "+N" badge can still count extras correctly.
+      servicesInBlockCount: 1 + sortedExtras.length,
+      hasPrimaryService: true,
+      isSplit: false,
+      blockKey: `appt-${appointment.id}-grp-0`,
+    }];
+  }
   return groups.map((group, idx) => ({
     appointment,
     providerId: group[0].providerId,
