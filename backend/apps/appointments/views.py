@@ -520,6 +520,16 @@ class AppointmentViewSet(viewsets.ModelViewSet):
             )
             appointment.save(update_fields=['end_time', 'updated_at'])
 
+            # Assign consent forms mapped to the newly attached service.
+            # Mirrors the per-service loop in `assign_forms_for_appointment`
+            # so a Botox add-on stapled onto a Facial gets its own
+            # consent prompt the same way it would if it'd been on the
+            # appointment from the start.
+            from apps.forms.services import assign_consent_for_extra_service
+            assigned = assign_consent_for_extra_service(
+                appointment=appointment, service_id=service.pk,
+            )
+
         record(
             action=AuditLog.Action.UPDATE,
             resource_type='appointment',
@@ -532,6 +542,14 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 'price_cents': service.price_cents,
                 'appointment_service_id': extra.pk,
                 'invoice_line_id': extra.invoice_line_id,
+                'auto_assigned_forms': [
+                    {
+                        'submission_id': s.id,
+                        'template_id': s.form_template_id,
+                        'template_version': s.template_version_at_assignment,
+                    }
+                    for s in assigned
+                ],
             },
         )
         appointment.refresh_from_db()
@@ -592,6 +610,17 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 line.save()
                 invoice_synced = True
 
+            # Assign consent forms mapped to the new primary service.
+            # The old service's already-pending or signed consents stay
+            # untouched — they're the customer's record at the point in
+            # time the appointment carried that service. Voiding them
+            # is an operator decision, not an automatic side-effect of a
+            # service swap.
+            from apps.forms.services import assign_consent_for_extra_service
+            assigned = assign_consent_for_extra_service(
+                appointment=appointment, service_id=new_service.pk,
+            )
+
         record(
             action=AuditLog.Action.UPDATE,
             resource_type='appointment',
@@ -604,6 +633,14 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 'to_service_id': new_service.pk,
                 'to_service_name': new_service.name,
                 'invoice_synced': invoice_synced,
+                'auto_assigned_forms': [
+                    {
+                        'submission_id': s.id,
+                        'template_id': s.form_template_id,
+                        'template_version': s.template_version_at_assignment,
+                    }
+                    for s in assigned
+                ],
             },
         )
         appointment.refresh_from_db()

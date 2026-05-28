@@ -671,6 +671,286 @@ class BookingAutoAssignsViaAppointmentApiTests(TestCase):
         self.assertEqual(subs.first().status, FormSubmission.Status.PENDING)
 
 
+# ── Multi-service consent assignment ──────────────────────────────
+
+
+class MultiServiceConsentAssignmentTests(TestCase):
+    """Consent forms must auto-assign for every service on an
+    appointment — primary AND extras — not just the primary one.
+
+    Regression test for the bug where ``assign_forms_for_appointment``
+    only inspected ``appointment.service`` and silently skipped any
+    consent template mapped to an ``AppointmentService`` extra. That
+    left the customer's profile and the appointment popover both
+    empty even though the operator had wired the templates correctly.
+    """
+
+    def setUp(self):
+        from apps.appointments.models import AppointmentService
+
+        self.tenant, self.owner = _make_tenant('multi-svc-consent')
+        self.provider = _make_provider_with_assignment(self.tenant)
+        self.facial = _make_service(self.tenant, name='Facial')
+        self.botox = _make_service(self.tenant, name='Botox 20u')
+        self.peel = _make_service(self.tenant, name='Peel')
+
+        self.facial_consent = FormTemplate.objects.create(
+            tenant=self.tenant, name='Facial consent',
+            form_type=FormTemplate.FormType.CONSENT,
+            recurrence=FormTemplate.Recurrence.PER_VISIT,
+            schema=_valid_schema('f1'),
+        )
+        self.botox_consent = FormTemplate.objects.create(
+            tenant=self.tenant, name='Botox consent',
+            form_type=FormTemplate.FormType.CONSENT,
+            recurrence=FormTemplate.Recurrence.PER_VISIT,
+            schema=_valid_schema('b1'),
+        )
+        ServiceFormAssignment.objects.create(
+            tenant=self.tenant,
+            form_template=self.facial_consent, service=self.facial,
+        )
+        ServiceFormAssignment.objects.create(
+            tenant=self.tenant,
+            form_template=self.botox_consent, service=self.botox,
+        )
+        self.customer = _make_customer(self.tenant)
+        # AppointmentService import retained in setUp for downstream
+        # tests that build extras directly.
+        self.AppointmentService = AppointmentService
+
+    def test_extras_consent_templates_assign_on_creation(self):
+        # Build a multi-service visit directly (the API path is
+        # exercised by BookingAutoAssignsViaAppointmentApiTests below).
+        appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, service=self.facial,
+        )
+        self.AppointmentService.objects.create(
+            appointment=appt, service=self.botox,
+            price_cents=self.botox.price_cents,
+            duration_minutes=self.botox.duration_minutes,
+            sort_order=1,
+        )
+        created = assign_forms_for_appointment(appt)
+        templates = {s.form_template_id for s in created}
+        # Both the facial AND the botox consent should land — not
+        # just the primary.
+        self.assertIn(self.facial_consent.id, templates)
+        self.assertIn(self.botox_consent.id, templates)
+
+    def test_same_template_on_primary_and_extra_does_not_duplicate(self):
+        # An aftercare consent that's wired to BOTH a Facial and a
+        # Peel — the customer should sign once for the visit, not
+        # twice. Per-visit dedup at the (template, appointment) level.
+        shared = FormTemplate.objects.create(
+            tenant=self.tenant, name='Aftercare consent',
+            form_type=FormTemplate.FormType.CONSENT,
+            recurrence=FormTemplate.Recurrence.PER_VISIT,
+            schema=_valid_schema('a1'),
+        )
+        ServiceFormAssignment.objects.create(
+            tenant=self.tenant, form_template=shared, service=self.facial,
+        )
+        ServiceFormAssignment.objects.create(
+            tenant=self.tenant, form_template=shared, service=self.peel,
+        )
+        appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, service=self.facial,
+        )
+        self.AppointmentService.objects.create(
+            appointment=appt, service=self.peel,
+            price_cents=self.peel.price_cents,
+            duration_minutes=self.peel.duration_minutes,
+            sort_order=1,
+        )
+        assign_forms_for_appointment(appt)
+        count = FormSubmission.objects.filter(
+            appointment=appt, form_template=shared,
+        ).count()
+        self.assertEqual(count, 1)
+
+
+class AddServiceTriggersConsentAssignmentTests(TestCase):
+    """When an extra service is bolted onto an existing appointment
+    via the add-service action, its consent templates must auto-
+    assign — same as if it had been on the appointment from the
+    start. Without this the customer's record would silently miss
+    consents for anything added post-booking."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant('add-svc-consent')
+        self.provider = _make_provider_with_assignment(self.tenant)
+        self.facial = _make_service(self.tenant, name='Facial')
+        self.botox = _make_service(self.tenant, name='Botox')
+        self.botox_consent = FormTemplate.objects.create(
+            tenant=self.tenant, name='Botox consent',
+            form_type=FormTemplate.FormType.CONSENT,
+            recurrence=FormTemplate.Recurrence.PER_VISIT,
+            schema=_valid_schema(),
+        )
+        ServiceFormAssignment.objects.create(
+            tenant=self.tenant,
+            form_template=self.botox_consent, service=self.botox,
+        )
+        self.customer = _make_customer(self.tenant)
+        self.appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, service=self.facial,
+        )
+        # Sweep any consents that may have been created at booking
+        # time for the primary (none in this setUp, but be defensive).
+        FormSubmission.objects.filter(appointment=self.appt).delete()
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def test_add_service_creates_pending_consent(self):
+        url = reverse('appointment-add-service', args=[self.appt.pk])
+        resp = self.client.post(
+            url, {'service_id': self.botox.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        subs = FormSubmission.objects.filter(
+            appointment=self.appt, form_template=self.botox_consent,
+        )
+        self.assertEqual(subs.count(), 1)
+        self.assertEqual(subs.first().status, FormSubmission.Status.PENDING)
+
+
+class ChangeServiceTriggersConsentAssignmentTests(TestCase):
+    """Swapping the primary service has to assign consents for the
+    new service too. The old service's consents stay (they're the
+    customer's record at the point that service was on the
+    appointment) — they're not auto-voided."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant('change-svc-consent')
+        self.provider = _make_provider_with_assignment(self.tenant)
+        self.facial = _make_service(self.tenant, name='Facial')
+        self.botox = _make_service(self.tenant, name='Botox')
+        self.botox_consent = FormTemplate.objects.create(
+            tenant=self.tenant, name='Botox consent',
+            form_type=FormTemplate.FormType.CONSENT,
+            recurrence=FormTemplate.Recurrence.PER_VISIT,
+            schema=_valid_schema(),
+        )
+        ServiceFormAssignment.objects.create(
+            tenant=self.tenant,
+            form_template=self.botox_consent, service=self.botox,
+        )
+        self.customer = _make_customer(self.tenant)
+        self.appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, service=self.facial,
+        )
+        FormSubmission.objects.filter(appointment=self.appt).delete()
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def test_change_to_consent_mapped_service_assigns_consent(self):
+        url = reverse('appointment-change-service', args=[self.appt.pk])
+        resp = self.client.post(
+            url, {'service_id': self.botox.pk},
+            format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        subs = FormSubmission.objects.filter(
+            appointment=self.appt, form_template=self.botox_consent,
+        )
+        self.assertEqual(subs.count(), 1)
+
+
+class BackfillConsentFormsCommandTests(TestCase):
+    """The ``backfill_appointment_consent_forms`` management command
+    has to fill in consent submissions that were missed before the
+    multi-service fix, without re-issuing anything already on file."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant('backfill-consent')
+        self.provider = _make_provider_with_assignment(self.tenant)
+        self.facial = _make_service(self.tenant, name='Facial')
+        self.botox = _make_service(self.tenant, name='Botox')
+        self.consent = FormTemplate.objects.create(
+            tenant=self.tenant, name='Botox consent',
+            form_type=FormTemplate.FormType.CONSENT,
+            recurrence=FormTemplate.Recurrence.PER_VISIT,
+            schema=_valid_schema(),
+        )
+        ServiceFormAssignment.objects.create(
+            tenant=self.tenant,
+            form_template=self.consent, service=self.botox,
+        )
+        self.customer = _make_customer(self.tenant)
+        # Build an appointment that — under the old bug — would have
+        # missed its botox consent because botox is an extra, not the
+        # primary. Create the extra directly, bypassing
+        # assign_forms_for_appointment, to simulate the historical
+        # state we're backfilling away.
+        from apps.appointments.models import AppointmentService
+        self.appt = _make_appointment(
+            tenant=self.tenant, customer=self.customer,
+            provider=self.provider, service=self.facial,
+        )
+        AppointmentService.objects.create(
+            appointment=self.appt, service=self.botox,
+            price_cents=self.botox.price_cents,
+            duration_minutes=self.botox.duration_minutes,
+            sort_order=1,
+        )
+        FormSubmission.objects.filter(appointment=self.appt).delete()
+
+    def test_backfill_creates_missing_consent(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        call_command(
+            'backfill_appointment_consent_forms',
+            tenant=self.tenant.slug,
+            stdout=out,
+        )
+        subs = FormSubmission.objects.filter(
+            appointment=self.appt, form_template=self.consent,
+        )
+        self.assertEqual(subs.count(), 1)
+        self.assertIn('created 1 pending submission', out.getvalue())
+
+    def test_backfill_is_idempotent(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        call_command(
+            'backfill_appointment_consent_forms',
+            tenant=self.tenant.slug, stdout=StringIO(),
+        )
+        # Second run on the same data shouldn't double up.
+        call_command(
+            'backfill_appointment_consent_forms',
+            tenant=self.tenant.slug, stdout=StringIO(),
+        )
+        subs = FormSubmission.objects.filter(
+            appointment=self.appt, form_template=self.consent,
+        )
+        self.assertEqual(subs.count(), 1)
+
+    def test_backfill_dry_run_writes_nothing(self):
+        from django.core.management import call_command
+        from io import StringIO
+
+        out = StringIO()
+        call_command(
+            'backfill_appointment_consent_forms',
+            tenant=self.tenant.slug, dry_run=True, stdout=out,
+        )
+        subs = FormSubmission.objects.filter(
+            appointment=self.appt, form_template=self.consent,
+        )
+        self.assertEqual(subs.count(), 0)
+        self.assertIn('would create', out.getvalue())
+
+
 # ── FormSubmission list + detail + void API ────────────────────────
 
 

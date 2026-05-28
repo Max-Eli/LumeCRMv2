@@ -87,18 +87,86 @@ def assign_forms_for_appointment(appointment: Appointment) -> list[FormSubmissio
             if sub:
                 created.append(sub)
 
-    # ── Consent forms (per service) ─────────────────────────────────
-    consent_assignments = (
+    # ── Consent forms (per service — primary + every extra) ─────────
+    # Multi-service visits add their additional services as
+    # `AppointmentService` rows hanging off `appointment.extra_services`.
+    # A consent template mapped to ANY of those services has to assign
+    # too — otherwise a Botox-touch-up bolted onto a Facial would slip
+    # through without its consent on file. De-dup by service id so the
+    # same template doesn't fire twice when a service appears as both
+    # the primary and an extra (legal but unusual).
+    service_ids: list[int] = []
+    seen: set[int] = set()
+    if appointment.service_id is not None and appointment.service_id not in seen:
+        service_ids.append(appointment.service_id)
+        seen.add(appointment.service_id)
+    for extra in appointment.extra_services.all():
+        if extra.service_id is not None and extra.service_id not in seen:
+            service_ids.append(extra.service_id)
+            seen.add(extra.service_id)
+
+    for service_id in service_ids:
+        created.extend(
+            _assign_consent_for_service(
+                tenant=tenant,
+                customer=customer,
+                appointment=appointment,
+                service_id=service_id,
+            )
+        )
+
+    return created
+
+
+def assign_consent_for_extra_service(
+    *,
+    appointment: Appointment,
+    service_id: int,
+) -> list[FormSubmission]:
+    """Public entry point for "an extra service was added to this
+    appointment — make sure its consent forms are assigned too."
+
+    Called by `AppointmentViewSet.add_service` after the
+    `AppointmentService` row is saved, and by `change_service` when
+    the primary swaps. Tenant + customer come off the appointment;
+    callers only have to know the service id they just attached.
+
+    Returns the newly created submissions (typically 0 or 1; can be
+    more if the service maps to multiple consent templates). Idempotent
+    — if a pending or completed-once submission already covers the
+    template, no duplicate is created.
+    """
+    return _assign_consent_for_service(
+        tenant=appointment.tenant,
+        customer=appointment.customer,
+        appointment=appointment,
+        service_id=service_id,
+    )
+
+
+def _assign_consent_for_service(
+    *,
+    tenant: 'Tenant',
+    customer,
+    appointment: Appointment,
+    service_id: int,
+) -> list[FormSubmission]:
+    """Internal helper — create pending consent submissions for a
+    single service on a given appointment. Shared between the
+    booking-time loop and the post-booking add/change-service actions
+    so the recurrence + duplicate-guard rules can't drift."""
+    assignments = (
         ServiceFormAssignment.objects
         .filter(
             tenant=tenant,
-            service=appointment.service,
+            service_id=service_id,
             form_template__is_active=True,
             form_template__form_type=FormTemplate.FormType.CONSENT,
         )
         .select_related('form_template')
     )
-    for assignment in consent_assignments:
+    created: list[FormSubmission] = []
+    for assignment in assignments:
         sub = _maybe_create_submission(
             tenant=tenant,
             template=assignment.form_template,
@@ -108,7 +176,6 @@ def assign_forms_for_appointment(appointment: Appointment) -> list[FormSubmissio
         )
         if sub:
             created.append(sub)
-
     return created
 
 
@@ -151,6 +218,23 @@ def _maybe_create_submission(
             tenant=tenant,
             form_template=template,
             customer=customer,
+            status=FormSubmission.Status.PENDING,
+        ).exists()
+        if already_pending:
+            return None
+
+    # Per-visit dedup: don't create a second pending submission of
+    # the same template on the same appointment. This is the path
+    # taken when two services on a multi-service visit both map to
+    # the same consent template (e.g. a single "Facial Aftercare"
+    # consent attached to the Facial AND the Microneedling add-on).
+    # The customer should sign one form, not two identical ones.
+    if template.recurrence == FormTemplate.Recurrence.PER_VISIT:
+        already_pending = FormSubmission.objects.filter(
+            tenant=tenant,
+            form_template=template,
+            customer=customer,
+            appointment=appointment,
             status=FormSubmission.Status.PENDING,
         ).exists()
         if already_pending:

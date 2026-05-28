@@ -904,14 +904,19 @@ function LogsLinkRow({ appointmentId }: { appointmentId: number }) {
 }
 
 /**
- * Forms section — shows pending + completed forms for this
- * appointment. Pending forms get a prominent "Open for signing"
- * action that opens the public `/sign/[token]` URL in a new tab —
- * the same URL works whether opened on a phone (client) or an iPad
- * (front desk handing it across the counter).
+ * Forms section — always rendered for an appointment so the operator
+ * never has to wonder "is the section missing or are there just no
+ * forms?" Pending forms get a prominent amber row with an "Open for
+ * signing" action that opens the public `/sign/[token]` URL in a new
+ * tab — the same URL works whether opened on a phone (client) or an
+ * iPad (front desk handing it across the counter). Completed forms
+ * show a green "Signed" tag + the email-a-copy button.
  *
- * Hidden when there are no submissions (don't add chrome to the
- * popover when there's nothing to surface).
+ * With nothing to surface we show an explicit empty state. That's
+ * how a professional CRM treats a section the operator might look
+ * to during checkout: it makes the absence of forms a confirmed
+ * negative ("nothing required for this visit"), not an ambiguous
+ * silence.
  */
 function FormsSection({
   appointmentId,
@@ -926,19 +931,6 @@ function FormsSection({
   // customer has 1 unsigned intake" alongside the appointment-
   // specific consents).
   const { data: subs, isLoading } = useFormSubmissions({ customerId });
-  if (isLoading) return null;
-
-  // Filter to forms that matter for THIS appointment context: any
-  // intake (per-customer) + any consent that's appointment-pinned to
-  // this one.
-  const relevant = (subs ?? []).filter(
-    (s) =>
-      s.template_form_type === 'intake' || s.appointment_id === appointmentId,
-  );
-  if (relevant.length === 0) return null;
-
-  const pending = relevant.filter((s) => s.status === 'pending');
-  const completed = relevant.filter((s) => s.status === 'completed');
 
   return (
     <div className="px-4 py-3 space-y-2.5">
@@ -946,43 +938,94 @@ function FormsSection({
         <p className="text-[11px] uppercase tracking-wide text-muted-foreground font-medium">
           Forms
         </p>
-        {pending.length > 0 ? (
-          <span className="text-[11px] font-medium text-amber-600 dark:text-amber-500">
-            {pending.length} pending
-          </span>
-        ) : null}
-      </div>
-      <ul className="space-y-1">
-        {pending.map((sub) => (
-          <li
-            key={sub.id}
-            className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10 px-2.5 py-1.5"
-          >
-            <span className="text-xs flex-1 truncate">{sub.template_name}</span>
-            <a
-              href={`/sign/${sub.token}`}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-500 hover:underline"
-            >
-              Open for signing
-            </a>
-          </li>
-        ))}
-        {completed.map((sub) => (
-          <li
-            key={sub.id}
-            className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-muted-foreground"
-          >
-            <span className="text-xs flex-1 truncate">{sub.template_name}</span>
-            <span className="text-[11px] text-emerald-700 dark:text-emerald-500">
-              Signed
+        {(() => {
+          if (isLoading) return null;
+          const pendingCount = (subs ?? []).filter(
+            (s) =>
+              (s.template_form_type === 'intake'
+                || s.appointment_id === appointmentId)
+              && s.status === 'pending',
+          ).length;
+          return pendingCount > 0 ? (
+            <span className="text-[11px] font-medium text-amber-600 dark:text-amber-500">
+              {pendingCount} pending
             </span>
-            <PopoverEmailButton submissionId={sub.id} />
-          </li>
-        ))}
-      </ul>
+          ) : null;
+        })()}
+      </div>
+
+      <FormsSectionBody
+        appointmentId={appointmentId}
+        subs={subs}
+        isLoading={isLoading}
+      />
     </div>
+  );
+}
+
+function FormsSectionBody({
+  appointmentId,
+  subs,
+  isLoading,
+}: {
+  appointmentId: number;
+  subs: ReturnType<typeof useFormSubmissions>['data'];
+  isLoading: boolean;
+}) {
+  if (isLoading) {
+    return (
+      <p className="text-[11px] text-muted-foreground">Loading…</p>
+    );
+  }
+  // Filter to forms that matter for THIS appointment context: any
+  // intake (per-customer) + any consent appointment-pinned to this one.
+  const relevant = (subs ?? []).filter(
+    (s) =>
+      s.template_form_type === 'intake' || s.appointment_id === appointmentId,
+  );
+  const pending = relevant.filter((s) => s.status === 'pending');
+  const completed = relevant.filter((s) => s.status === 'completed');
+
+  if (relevant.length === 0) {
+    return (
+      <p className="text-[11px] text-muted-foreground leading-relaxed">
+        No forms required for this visit. Consent forms auto-attach
+        when the service is mapped to one in Settings → Forms.
+      </p>
+    );
+  }
+
+  return (
+    <ul className="space-y-1">
+      {pending.map((sub) => (
+        <li
+          key={sub.id}
+          className="flex items-center gap-2 rounded-md border border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/10 px-2.5 py-1.5"
+        >
+          <span className="text-xs flex-1 truncate">{sub.template_name}</span>
+          <a
+            href={`/sign/${sub.token}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center gap-1 text-[11px] font-medium text-amber-700 dark:text-amber-500 hover:underline"
+          >
+            Open for signing
+          </a>
+        </li>
+      ))}
+      {completed.map((sub) => (
+        <li
+          key={sub.id}
+          className="flex items-center gap-2 rounded-md px-2.5 py-1.5 text-muted-foreground"
+        >
+          <span className="text-xs flex-1 truncate">{sub.template_name}</span>
+          <span className="text-[11px] text-emerald-700 dark:text-emerald-500">
+            Signed
+          </span>
+          <PopoverEmailButton submissionId={sub.id} />
+        </li>
+      ))}
+    </ul>
   );
 }
 
