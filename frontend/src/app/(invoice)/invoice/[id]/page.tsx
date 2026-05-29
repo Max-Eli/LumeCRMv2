@@ -116,6 +116,8 @@ import {
   useMembershipPlans,
 } from '@/lib/subscriptions';
 
+import { ChargeCardDialog } from '@/components/payments/charge-card-dialog';
+
 import { CustomPackageBuilder } from './_components/custom-package-builder';
 import { cn } from '@/lib/utils';
 
@@ -369,6 +371,10 @@ function InvoiceBody({
   // the same affordances, but the edit panel surfaces a manager-
   // authorization sub-form whose creds are submitted with the PATCH.
   const canDirectEditPrice = EDIT_PRICE_ROLES.has(role);
+  // Stripe-Connect charge dialog. Distinct from `mode='pay'` (which
+  // is the manual-record flow for cash/check/etc.) — the dialog
+  // mounts Stripe Elements + calls the connected account directly.
+  const [chargeCardOpen, setChargeCardOpen] = useState(false);
 
   const tz = DEFAULT_TIMEZONE;
 
@@ -435,6 +441,7 @@ function InvoiceBody({
             canReopen={canReopen}
             canVoid={canVoid}
             onPay={() => setMode('pay')}
+            onChargeCard={() => setChargeCardOpen(true)}
             onReopen={() => setMode('reopen')}
             onVoid={() => setMode('void')}
           />
@@ -464,6 +471,25 @@ function InvoiceBody({
           />
         ) : null}
       </div>
+
+      <ChargeCardDialog
+        open={chargeCardOpen}
+        onOpenChange={setChargeCardOpen}
+        invoiceId={invoice.id}
+        amountDueCents={invoice.amount_due_cents}
+        invoiceNumber={invoice.invoice_number}
+        customerName={invoice.customer?.full_name}
+        onSuccess={() => {
+          toast.success(
+            'Card charged — waiting for confirmation from Stripe',
+            { icon: <CheckCircle2 className="size-4" /> },
+          );
+          // Webhook auto-closes the invoice when the PI succeeds.
+          // The invoice query auto-refetches on next focus (TanStack
+          // default) so the operator will see the paid state when
+          // they look again.
+        }}
+      />
     </div>
   );
 }
@@ -2402,6 +2428,7 @@ function ActionRow({
   canReopen,
   canVoid,
   onPay,
+  onChargeCard,
   onReopen,
   onVoid,
 }: {
@@ -2409,15 +2436,27 @@ function ActionRow({
   canReopen: boolean;
   canVoid: boolean;
   onPay: () => void;
+  onChargeCard: () => void;
   onReopen: () => void;
   onVoid: () => void;
 }) {
   if (invoice.status === 'open') {
     return (
       <div className="flex flex-col sm:flex-row sm:flex-wrap sm:items-center gap-2">
-        <Button type="button" onClick={onPay} size="lg" className="w-full sm:w-auto">
+        {/* Charge card = primary CTA. Card is ~80% of medspa
+            payments. The dialog opens Stripe Elements and confirms
+            on the spa's connected account; if the tenant hasn't
+            connected Stripe yet the API surfaces a 503 with a clear
+            "set up payments first" toast. */}
+        <Button type="button" onClick={onChargeCard} size="lg" className="w-full sm:w-auto">
           <CreditCard className="size-4" />
-          Take payment · {formatMoneyCents(invoice.total_cents)}
+          Charge card · {formatMoneyCents(invoice.amount_due_cents)}
+        </Button>
+        {/* Manual entry path for cash / check / external terminal /
+            gift card / other. The existing PayForm handles all of
+            these via a single Select. */}
+        <Button type="button" variant="outline" onClick={onPay} className="w-full sm:w-auto">
+          Record other payment
         </Button>
         {canVoid ? (
           <Button

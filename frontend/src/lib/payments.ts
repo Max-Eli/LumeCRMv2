@@ -109,3 +109,92 @@ export function paymentsErrorMessage(err: unknown, fallback: string): string {
   }
   return fallback;
 }
+
+// ── Charge a card on an invoice (Stripe Elements flow) ─────────────
+
+export interface ChargeCardInput {
+  /** Invoice ID to charge against. */
+  invoiceId: number;
+  /** Amount in cents. Caller is responsible for not exceeding
+   *  invoice.amount_due_cents — backend re-validates only that it's
+   *  positive (Stripe permits overpayment; we trust the operator UI
+   *  not to send too much). */
+  amount_cents: number;
+}
+
+/** What ``POST /api/payments/invoices/<id>/charge-card/`` returns.
+ *  Everything the frontend Stripe Elements widget needs to confirm
+ *  the payment is in this payload — no separate env-var dependency
+ *  for the publishable key. */
+export interface ChargeCardResponse {
+  /** Local Charge row PK. Useful for the activity log + post-confirm
+   *  refetches. */
+  charge_id: number;
+  /** Stripe PaymentIntent client secret. Pass this to
+   *  ``stripe.confirmPayment()`` along with the Elements instance. */
+  client_secret: string;
+  /** Stripe publishable key — same Voxtro LLC account as the secret
+   *  key in the backend. Echoed from backend env so rotation only
+   *  requires updating the backend, not the frontend bundle. */
+  publishable_key: string;
+  /** The spa's Stripe Connect Account ID. Required to initialize
+   *  Stripe.js against the right connected account (direct charges
+   *  on the connected account need this). */
+  stripe_account_id: string;
+}
+
+/** Create a PaymentIntent on the spa's connected account. The
+ *  caller (typically a ChargeCardDialog) takes the returned client
+ *  secret + initializes Stripe Elements to collect the card.
+ *
+ *  Mutation only — no cache invalidation here because the actual
+ *  payment state lands via webhook + the dialog is the natural
+ *  refetch trigger after a successful confirm. */
+export function useChargeCard() {
+  return useMutation<ChargeCardResponse, Error, ChargeCardInput>({
+    mutationFn: ({ invoiceId, amount_cents }) =>
+      api.post<ChargeCardResponse>(
+        `/api/payments/invoices/${invoiceId}/charge-card/`,
+        { amount_cents },
+      ),
+  });
+}
+
+// ── Refund a card charge ───────────────────────────────────────────
+
+export interface RefundChargeInput {
+  /** Charge row PK (NOT Stripe charge ID — the local one). */
+  chargeId: number;
+  /** Refund amount in cents. Must be > 0 and <= charge.refundable_cents. */
+  amount_cents: number;
+  /** Operator-typed reason (audit trail). Backend requires non-empty
+   *  and ≤ 255 chars. */
+  reason: string;
+}
+
+export interface RefundChargeResponse {
+  refund_id: number;
+  status: 'pending' | 'succeeded' | 'failed';
+  amount_cents: number;
+  /** New total refunded on the parent charge after this refund. */
+  charge_refunded_cents: number;
+}
+
+/** Issue a Stripe refund + persist a local Refund row. Caller is
+ *  responsible for invalidating any cached Charge list it's
+ *  displaying. */
+export function useRefundCharge() {
+  const qc = useQueryClient();
+  return useMutation<RefundChargeResponse, Error, RefundChargeInput>({
+    mutationFn: ({ chargeId, amount_cents, reason }) =>
+      api.post<RefundChargeResponse>(
+        `/api/payments/charges/${chargeId}/refund/`,
+        { amount_cents, reason },
+      ),
+    onSuccess: () => {
+      // Refunds change invoice "fully paid" state in some UIs; broad
+      // invalidation is cheap.
+      qc.invalidateQueries({ queryKey: ['invoices'] });
+    },
+  });
+}

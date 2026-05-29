@@ -456,7 +456,16 @@ def sync_charge_from_payment_intent(stripe_pi_obj) -> 'Charge | None':
                     charge.fee_cents = max(0, int(getattr(bt, 'fee', 0) or 0))
                     charge.net_cents = max(0, int(getattr(bt, 'net', 0) or 0))
 
-    elif pi_status in {'requires_payment_method', 'canceled'}:
+        charge.save()
+        # If this success covers the invoice's outstanding balance,
+        # auto-close the invoice so the operator (or self-paying
+        # customer) doesn't have to do a second manual "record
+        # payment" step. Avoids the dual-flow UX of "charge a card,
+        # then go close the invoice anyway."
+        _maybe_auto_close_invoice(charge)
+        return charge
+
+    if pi_status in {'requires_payment_method', 'canceled'}:
         # Failed or abandoned — keep details for the activity log.
         charge.status = Charge.Status.FAILED
         last_error = getattr(stripe_pi_obj, 'last_payment_error', None)
@@ -478,6 +487,89 @@ def sync_charge_from_payment_intent(stripe_pi_obj) -> 'Charge | None':
 
     charge.save()
     return charge
+
+
+def _maybe_auto_close_invoice(charge) -> None:
+    """Close the invoice automatically if this charge brings the
+    outstanding balance to zero.
+
+    Triggered from ``sync_charge_from_payment_intent`` when a Charge
+    flips to SUCCEEDED. Why:
+
+      - Operator UX: charging a card AND then manually closing the
+        invoice is a dual-step flow operators forget. Auto-close
+        means the single "Charge card" action is the entire
+        payment workflow.
+      - Customer-portal self-pay: there's no operator to do the
+        manual close at all; auto-close is the only way.
+
+    Idempotent + race-safe: ``Invoice.close()`` uses select_for_update
+    and refuses to re-close an already-PAID invoice (raises
+    InvoiceStateError, caught + ignored here). Two webhook events
+    arriving concurrently for the same invoice serialize.
+
+    NOT called for partial coverage (split-tender): if the customer
+    only puts $50 on a card toward a $100 invoice, the invoice stays
+    open and the remaining balance is paid via another method. The
+    rollup math (sum of succeeded charges >= total) is the gate.
+    """
+    from apps.invoices.models import Invoice
+    from apps.payments.models import Charge
+
+    invoice = charge.invoice
+    if invoice.status != Invoice.Status.OPEN:
+        return
+
+    # Sum of every succeeded charge on this invoice (current charge
+    # included). Using the database aggregate instead of refetching +
+    # iterating so this stays cheap on invoices with lots of partial-
+    # tender charges.
+    from django.db.models import Sum
+    succeeded_sum = Charge.objects.filter(
+        invoice=invoice,
+        status=Charge.Status.SUCCEEDED,
+    ).aggregate(total=Sum('amount_cents'))['total'] or 0
+
+    # ``amount_due_cents`` accounts for any gift-card credits already
+    # applied. We compare against the FULL invoice total (cents) for
+    # safety — gift-card credits + card charge could overlap, and the
+    # invoice close machinery handles the rollup. Use total_cents to
+    # match what an operator would see in the totals box.
+    if succeeded_sum < invoice.total_cents:
+        return
+
+    # Customer-portal self-pay charges have created_by=None — the
+    # current Invoice.close() flow passes by_user through to several
+    # downstream operations that may not tolerate null. For v1, log +
+    # skip in that case; the operator can manually close the invoice
+    # on the next visit. Customer portal pay-now lands in chunk 2.6
+    # with a proper system-user pattern.
+    if charge.created_by is None:
+        logger.info(
+            'Skipping auto-close for invoice %s — charge %s was '
+            'customer-portal self-pay (no operator). Operator must '
+            'close manually until system-user pattern lands.',
+            invoice.pk, charge.pk,
+        )
+        return
+
+    try:
+        invoice.close(
+            payment_method=Invoice.PaymentMethod.CARD_STRIPE,
+            payment_reference=(
+                f'Stripe charge {charge.stripe_charge_id}'
+                if charge.stripe_charge_id else f'Charge #{charge.pk}'
+            ),
+            by_user=charge.created_by,
+        )
+    except Exception as e:
+        # Never let an auto-close failure unwind the charge sync —
+        # the charge IS succeeded, we'll just need to close the
+        # invoice manually. Log so ops sees the discrepancy.
+        logger.exception(
+            'Auto-close failed for invoice %s after charge %s: %s',
+            invoice.pk, charge.pk, e,
+        )
 
 
 def _first_charge_from_pi(stripe_pi_obj):
