@@ -21,6 +21,26 @@ class PlatformTenantListSerializer(serializers.ModelSerializer):
     member_count = serializers.IntegerField(read_only=True)
     location_count = serializers.IntegerField(read_only=True)
     owner_email = serializers.SerializerMethodField()
+    # Billing-related computed fields. Computed so the wire format
+    # stays stable even as the underlying Stripe sync evolves. Each
+    # is documented inline; the platform admin reads all of these to
+    # surface trial / billing state on the tenants list + detail page.
+    trial_days_remaining = serializers.SerializerMethodField(
+        help_text=(
+            'Integer days until trial_ends_at, clamped at 0. Null for '
+            'tenants not currently in trial (active / past_due / suspended / '
+            'cancelled / grandfathered).'
+        ),
+    )
+    has_stripe_subscription = serializers.SerializerMethodField(
+        help_text='True when the tenant has a Stripe Subscription ID on file.',
+    )
+    has_payment_method = serializers.SerializerMethodField(
+        help_text=(
+            'True when the tenant has a Stripe Customer + a default payment '
+            'method (card on file). Proxy for "they can be auto-charged."'
+        ),
+    )
 
     class Meta:
         model = Tenant
@@ -29,9 +49,18 @@ class PlatformTenantListSerializer(serializers.ModelSerializer):
             'name',
             'slug',
             'status',
+            'plan',
+            'billing_cycle',
+            'grandfathered',
             'member_count',
             'location_count',
             'owner_email',
+            'billing_email',
+            'trial_ends_at',
+            'current_period_end',
+            'trial_days_remaining',
+            'has_stripe_subscription',
+            'has_payment_method',
             'created_at',
             'updated_at',
         ]
@@ -44,6 +73,31 @@ class PlatformTenantListSerializer(serializers.ModelSerializer):
             return obj._owner_email
         owner = obj.memberships.filter(role='owner', is_active=True).first()
         return owner.user.email if owner else None
+
+    def get_trial_days_remaining(self, obj):
+        # Only meaningful while the tenant is actually in trial — for
+        # everyone else we return None and the frontend hides the
+        # countdown chip.
+        if obj.status != Tenant.Status.TRIAL or obj.trial_ends_at is None:
+            return None
+        from django.utils import timezone as djtz
+        delta = obj.trial_ends_at - djtz.now()
+        # Round UP so the badge says "1 day left" until the very last
+        # hour, not "0 days left" most of the final day.
+        seconds = max(0, int(delta.total_seconds()))
+        return (seconds + 86_399) // 86_400  # ceil-divide by a day
+
+    def get_has_stripe_subscription(self, obj):
+        return bool(obj.stripe_subscription_id)
+
+    def get_has_payment_method(self, obj):
+        # Best-effort proxy: a tenant with a Stripe Customer ID has at
+        # least gone through signup. The presence of a default payment
+        # method specifically would require a Stripe API call — we
+        # don't make one per list row. The webhook syncs subscription
+        # state, which is the signal that actually matters for
+        # auto-charge eligibility.
+        return bool(obj.stripe_customer_id)
 
 
 class PlatformTenantMemberSerializer(serializers.Serializer):
@@ -61,7 +115,8 @@ class PlatformTenantMemberSerializer(serializers.Serializer):
 
 
 class PlatformTenantDetailSerializer(PlatformTenantListSerializer):
-    """Full tenant detail — adds members + branding fields."""
+    """Full tenant detail — adds members + branding fields + the deeper
+    Stripe-side IDs that the list view doesn't need to surface."""
 
     members = PlatformTenantMemberSerializer(source='memberships', many=True, read_only=True)
 
@@ -70,6 +125,20 @@ class PlatformTenantDetailSerializer(PlatformTenantListSerializer):
             'primary_color',
             'logo_url',
             'members',
+            # Stripe identifiers — useful for ops when reconciling
+            # against the Stripe dashboard. Never exposed outside the
+            # platform-admin scope.
+            'stripe_customer_id',
+            'stripe_subscription_id',
+            # Add-on quantities the tenant has purchased, mirrored from
+            # the Stripe Subscription items. Same shape as
+            # /api/billing/summary's `addons`.
+            'addon_quantities',
+            # Usage counters for the current billing period — exposed
+            # so platform admins can spot tenants approaching their
+            # quotas without opening Stripe.
+            'current_period_sms_count',
+            'current_period_email_count',
         ]
 
 

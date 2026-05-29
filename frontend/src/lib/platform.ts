@@ -23,16 +23,42 @@ import {
 
 import { api } from './api';
 
-export type PlatformTenantStatus = 'trial' | 'active' | 'suspended' | 'cancelled';
+export type PlatformTenantStatus =
+  | 'trial'
+  | 'active'
+  | 'past_due'
+  | 'suspended'
+  | 'cancelled';
+
+export type PlatformPlan = 'trial' | 'starter' | 'pro' | 'enterprise';
+export type PlatformBillingCycle = 'monthly' | 'annual';
 
 export interface PlatformTenantListItem {
   id: number;
   name: string;
   slug: string;
   status: PlatformTenantStatus;
+  /** Subscription tier — drives feature gating + capacity caps. */
+  plan: PlatformPlan;
+  billing_cycle: PlatformBillingCycle;
+  /** True for the original launch spas that predate self-serve.
+   *  Exempt from capacity gates + Stripe enrollment. Always show
+   *  a "legacy" badge in the admin UI so ops knows not to touch
+   *  their billing. */
+  grandfathered: boolean;
   member_count: number;
   location_count: number;
   owner_email: string | null;
+  billing_email: string;
+  trial_ends_at: string | null;
+  current_period_end: string | null;
+  /** Integer days until trial expiry, rounded up; null when the
+   *  tenant isn't in trial. Drives the "X days left" countdown chip. */
+  trial_days_remaining: number | null;
+  has_stripe_subscription: boolean;
+  /** True when the tenant has a Stripe Customer on file — proxy for
+   *  "they can be auto-charged when the trial ends." */
+  has_payment_method: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -53,6 +79,16 @@ export interface PlatformTenantDetail extends PlatformTenantListItem {
   primary_color: string;
   logo_url: string;
   members: PlatformTenantMember[];
+  /** Stripe identifiers — useful for ops reconciliation against the
+   *  Stripe dashboard. Empty for grandfathered tenants. */
+  stripe_customer_id: string;
+  stripe_subscription_id: string;
+  /** Add-on quantities the tenant has purchased, keyed by addon
+   *  identifier. Mirrors Stripe SubscriptionItem quantities. */
+  addon_quantities: Record<string, number>;
+  /** Current-period usage counters — reset on Stripe period roll. */
+  current_period_sms_count: number;
+  current_period_email_count: number;
 }
 
 export interface PlatformTenantDetailWithTempPassword extends PlatformTenantDetail {
@@ -173,6 +209,7 @@ export function usePlatformSummary() {
 export const STATUS_LABELS: Record<PlatformTenantStatus, string> = {
   trial: 'Trial',
   active: 'Active',
+  past_due: 'Past due',
   suspended: 'Suspended',
   cancelled: 'Cancelled',
 };
@@ -181,8 +218,16 @@ export const STATUS_LABELS: Record<PlatformTenantStatus, string> = {
 export const STATUS_TONE: Record<PlatformTenantStatus, string> = {
   trial: 'bg-amber-500/15 text-amber-300 ring-amber-500/30',
   active: 'bg-emerald-500/15 text-emerald-300 ring-emerald-500/30',
+  past_due: 'bg-orange-500/15 text-orange-300 ring-orange-500/30',
   suspended: 'bg-rose-500/15 text-rose-300 ring-rose-500/30',
   cancelled: 'bg-foreground/10 text-foreground/60 ring-foreground/20',
+};
+
+export const PLAN_LABELS: Record<PlatformPlan, string> = {
+  trial: 'Trial',
+  starter: 'Starter',
+  pro: 'Pro',
+  enterprise: 'Enterprise',
 };
 
 

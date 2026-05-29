@@ -32,8 +32,10 @@ import {
   TableRow,
 } from '@/components/ui/table';
 import {
+  PLAN_LABELS,
   STATUS_LABELS,
   STATUS_TONE,
+  type PlatformPlan,
   type PlatformTenantListItem,
   type PlatformTenantStatus,
   usePlatformTenants,
@@ -46,6 +48,10 @@ const STATUS_FILTERS: { id: StatusFilter; label: string }[] = [
   { id: 'all', label: 'All' },
   { id: 'active', label: 'Active' },
   { id: 'trial', label: 'Trial' },
+  // Past-due was added when self-serve billing landed — payment
+  // failed but workspace not yet suspended. Operationally critical to
+  // see at a glance because these tenants are 7 days from suspension.
+  { id: 'past_due', label: 'Past due' },
   { id: 'suspended', label: 'Suspended' },
   { id: 'cancelled', label: 'Cancelled' },
 ];
@@ -78,6 +84,7 @@ export default function PlatformTenantsListPage() {
       all: 0,
       active: 0,
       trial: 0,
+      past_due: 0,
       suspended: 0,
       cancelled: 0,
     };
@@ -97,7 +104,10 @@ export default function PlatformTenantsListPage() {
       return (
         t.name.toLowerCase().includes(q) ||
         t.slug.toLowerCase().includes(q) ||
-        (t.owner_email ?? '').toLowerCase().includes(q)
+        (t.owner_email ?? '').toLowerCase().includes(q) ||
+        // Billing email often differs from the owner email (finance
+        // dept). Ops searches by it to reconcile against Stripe.
+        t.billing_email.toLowerCase().includes(q)
       );
     });
   }, [tenants, search, statusFilter]);
@@ -140,7 +150,7 @@ export default function PlatformTenantsListPage() {
             aria-hidden
           />
           <Input
-            placeholder="Search by name, slug, or owner email…"
+            placeholder="Search by name, slug, owner or billing email…"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="pl-9"
@@ -206,10 +216,11 @@ export default function PlatformTenantsListPage() {
               <Table>
                 <TableHeader>
                   <TableRow className="bg-muted/30 hover:bg-muted/30">
-                    <TableHead className="w-[35%]">Tenant</TableHead>
+                    <TableHead className="w-[28%]">Tenant</TableHead>
                     <TableHead>Owner</TableHead>
-                    <TableHead className="w-[120px]">Status</TableHead>
-                    <TableHead className="w-[100px] text-right">Members</TableHead>
+                    <TableHead className="w-[110px]">Plan</TableHead>
+                    <TableHead className="w-[130px]">Status</TableHead>
+                    <TableHead className="w-[90px] text-right">Members</TableHead>
                     <TableHead className="w-[120px]">Signed up</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -232,7 +243,10 @@ export default function PlatformTenantsListPage() {
                   >
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0 flex-1">
-                        <p className="font-medium text-foreground truncate">{t.name}</p>
+                        <div className="flex items-center gap-2 min-w-0">
+                          <p className="font-medium text-foreground truncate">{t.name}</p>
+                          {t.grandfathered ? <LegacyBadge /> : null}
+                        </div>
                         <p className="text-xs text-muted-foreground font-mono truncate mt-0.5">
                           {t.slug}
                         </p>
@@ -240,13 +254,20 @@ export default function PlatformTenantsListPage() {
                           {t.owner_email ?? 'No owner'}
                         </p>
                       </div>
-                      <StatusPill status={t.status} />
+                      <div className="flex flex-col items-end gap-1 shrink-0">
+                        <StatusPill status={t.status} />
+                        <PlanPill plan={t.plan} />
+                      </div>
                     </div>
                     <div className="mt-3 pt-3 border-t border-border flex items-center justify-between gap-4 text-xs text-muted-foreground tabular-nums">
                       <span>
                         {t.member_count} {t.member_count === 1 ? 'member' : 'members'}
                       </span>
-                      <span>Joined {formatDate(t.created_at)}</span>
+                      {t.status === 'trial' && t.trial_days_remaining !== null ? (
+                        <TrialCountdown days={t.trial_days_remaining} />
+                      ) : (
+                        <span>Joined {formatDate(t.created_at)}</span>
+                      )}
                     </div>
                   </button>
                 </li>
@@ -270,7 +291,10 @@ function TenantRow({
     <TableRow className="cursor-pointer" onClick={onClick}>
       <TableCell className="py-3">
         <div className="min-w-0">
-          <p className="font-medium text-foreground truncate">{tenant.name}</p>
+          <div className="flex items-center gap-2 min-w-0">
+            <p className="font-medium text-foreground truncate">{tenant.name}</p>
+            {tenant.grandfathered ? <LegacyBadge /> : null}
+          </div>
           <p className="text-xs text-muted-foreground font-mono truncate">
             {tenant.slug}.xn--lumcrm-5ua.com
           </p>
@@ -280,7 +304,15 @@ function TenantRow({
         {tenant.owner_email ?? '—'}
       </TableCell>
       <TableCell>
-        <StatusPill status={tenant.status} />
+        <PlanPill plan={tenant.plan} />
+      </TableCell>
+      <TableCell>
+        <div className="flex flex-col gap-1 items-start">
+          <StatusPill status={tenant.status} />
+          {tenant.status === 'trial' && tenant.trial_days_remaining !== null ? (
+            <TrialCountdown days={tenant.trial_days_remaining} />
+          ) : null}
+        </div>
       </TableCell>
       <TableCell className="text-right tabular-nums text-foreground/80">
         {tenant.member_count}
@@ -301,6 +333,69 @@ function StatusPill({ status }: { status: PlatformTenantStatus }) {
       )}
     >
       {STATUS_LABELS[status]}
+    </span>
+  );
+}
+
+/** Compact plan-tier badge. Visual hierarchy: Pro stands out (most
+ *  common upgrade target), Enterprise gets a subtle premium tone,
+ *  Trial signals "not yet on a paid tier so be patient with them." */
+function PlanPill({ plan }: { plan: PlatformPlan }) {
+  const tone: Record<PlatformPlan, string> = {
+    trial: 'bg-amber-500/10 text-amber-300 ring-amber-500/20',
+    starter: 'bg-foreground/8 text-foreground/85 ring-foreground/15',
+    pro: 'bg-blue-500/15 text-blue-300 ring-blue-500/30',
+    enterprise: 'bg-purple-500/15 text-purple-300 ring-purple-500/30',
+  };
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center h-5 px-2 rounded text-[10px] uppercase tracking-wide font-medium ring-1 whitespace-nowrap',
+        tone[plan],
+      )}
+    >
+      {PLAN_LABELS[plan]}
+    </span>
+  );
+}
+
+/** Trial countdown that nudges toward urgent tones as the trial ends.
+ *  Operators scan this column for "who's about to churn unless we
+ *  intervene" — the colors do the triage automatically. */
+function TrialCountdown({ days }: { days: number }) {
+  const tone =
+    days <= 1
+      ? 'text-rose-300'
+      : days <= 7
+        ? 'text-orange-300'
+        : 'text-muted-foreground';
+  return (
+    <span
+      className={cn(
+        'inline-flex items-center text-[10px] tabular-nums whitespace-nowrap',
+        tone,
+      )}
+    >
+      {days === 0
+        ? 'Ends today'
+        : days === 1
+          ? '1 day left'
+          : `${days} days left`}
+    </span>
+  );
+}
+
+/** "Legacy" badge for the 2 launch spas that predate self-serve
+ *  pricing. Ops MUST see this on every list/detail surface — it's the
+ *  signal not to attempt billing changes (they're grandfathered into
+ *  Pro with no Stripe enrollment). Wrong call here breaks live spas. */
+function LegacyBadge() {
+  return (
+    <span
+      className="inline-flex items-center h-4 px-1.5 rounded text-[9px] uppercase tracking-wide font-medium ring-1 ring-yellow-500/30 bg-yellow-500/10 text-yellow-300 whitespace-nowrap"
+      title="Grandfathered launch spa — no Stripe enrollment. Contact founder before changing billing."
+    >
+      Legacy
     </span>
   );
 }

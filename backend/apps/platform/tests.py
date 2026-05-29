@@ -117,6 +117,96 @@ class PlatformTenantListTests(TestCase):
         self.assertEqual(alpha['member_count'], 1)
         self.assertEqual(alpha['owner_email'], 'alpha-owner@test.local')
 
+    def test_list_includes_plan_and_billing_visibility_fields(self):
+        # Platform admin must be able to scan plan / trial state /
+        # Stripe enrollment at a glance, without opening Stripe.
+        response = self.client.get(reverse('platform-tenant-list'))
+        alpha = next(r for r in response.data if r['slug'] == 'alpha')
+        # All the billing fields the admin UI renders must be present.
+        for key in (
+            'plan',
+            'billing_cycle',
+            'grandfathered',
+            'billing_email',
+            'trial_ends_at',
+            'current_period_end',
+            'trial_days_remaining',
+            'has_stripe_subscription',
+            'has_payment_method',
+        ):
+            self.assertIn(key, alpha, f'missing billing field: {key}')
+
+    def test_trial_days_remaining_for_active_tenant_is_none(self):
+        # The badge should only appear for tenants actually in trial.
+        # Active (or any non-trial) tenants should serialize null so
+        # the frontend hides the countdown.
+        self.tenant_a.status = Tenant.Status.ACTIVE
+        self.tenant_a.save()
+        response = self.client.get(reverse('platform-tenant-list'))
+        alpha = next(r for r in response.data if r['slug'] == 'alpha')
+        self.assertIsNone(alpha['trial_days_remaining'])
+
+    def test_trial_days_remaining_for_trial_tenant_counts_down(self):
+        # 5 days from now → 5 (or possibly 4 if we just crossed a day
+        # boundary in the test; assert >= 4 to avoid flakiness).
+        import datetime as dt
+        from django.utils import timezone as djtz
+        self.tenant_a.status = Tenant.Status.TRIAL
+        self.tenant_a.trial_ends_at = djtz.now() + dt.timedelta(days=5)
+        self.tenant_a.save()
+        response = self.client.get(reverse('platform-tenant-list'))
+        alpha = next(r for r in response.data if r['slug'] == 'alpha')
+        self.assertIsNotNone(alpha['trial_days_remaining'])
+        self.assertGreaterEqual(alpha['trial_days_remaining'], 4)
+        self.assertLessEqual(alpha['trial_days_remaining'], 5)
+
+    def test_has_stripe_subscription_reflects_field(self):
+        self.tenant_a.stripe_subscription_id = 'sub_123'
+        self.tenant_a.save()
+        response = self.client.get(reverse('platform-tenant-list'))
+        alpha = next(r for r in response.data if r['slug'] == 'alpha')
+        self.assertTrue(alpha['has_stripe_subscription'])
+
+    def test_grandfathered_flag_visible_in_list(self):
+        # Critical: ops needs to see "this is a grandfathered tenant,
+        # don't touch their billing" at a glance — otherwise someone
+        # could try to "fix" them.
+        self.tenant_a.grandfathered = True
+        self.tenant_a.save()
+        response = self.client.get(reverse('platform-tenant-list'))
+        alpha = next(r for r in response.data if r['slug'] == 'alpha')
+        self.assertTrue(alpha['grandfathered'])
+
+
+class PlatformTenantDetailBillingTests(TestCase):
+    """The detail endpoint exposes the deeper billing identifiers
+    (Stripe Customer/Subscription IDs, add-on quantities, usage
+    counters) that don't belong on the list view."""
+
+    def setUp(self):
+        self.tenant, _ = _make_tenant('detail-spa')
+        self.tenant.stripe_customer_id = 'cus_xyz'
+        self.tenant.stripe_subscription_id = 'sub_xyz'
+        self.tenant.addon_quantities = {'staff': 3, 'location': 1}
+        self.tenant.current_period_sms_count = 42
+        self.tenant.current_period_email_count = 1234
+        self.tenant.save()
+        self.user, self.client = _superuser_client()
+
+    def test_detail_includes_stripe_ids_and_addons_and_usage(self):
+        response = self.client.get(
+            reverse('platform-tenant-detail', args=['detail-spa']),
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.data['stripe_customer_id'], 'cus_xyz')
+        self.assertEqual(response.data['stripe_subscription_id'], 'sub_xyz')
+        self.assertEqual(
+            response.data['addon_quantities'],
+            {'staff': 3, 'location': 1},
+        )
+        self.assertEqual(response.data['current_period_sms_count'], 42)
+        self.assertEqual(response.data['current_period_email_count'], 1234)
+
 
 class PlatformTenantCreateTests(TestCase):
     def setUp(self):

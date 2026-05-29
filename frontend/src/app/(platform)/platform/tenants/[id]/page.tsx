@@ -41,6 +41,7 @@ import { Input } from '@/components/ui/input';
 import {
   STATUS_LABELS,
   STATUS_TONE,
+  type PlatformTenantDetail,
   type PlatformTenantMember,
   type PlatformTenantStatus,
   useReactivatePlatformTenant,
@@ -158,6 +159,7 @@ export default function PlatformTenantDetailPage({
 
       {/* ─── Sections ─────────────────────────────────────────────── */}
       <div className="mt-8 space-y-6 lg:space-y-8">
+        <BillingSection tenant={tenant} />
         <IdentitySection
           slug={slug}
           tenantName={tenant.name}
@@ -167,6 +169,163 @@ export default function PlatformTenantDetailPage({
         <MembersSection members={tenant.members} />
         <LifecycleSection slug={slug} status={tenant.status} />
       </div>
+    </div>
+  );
+}
+
+// ── Billing section ──────────────────────────────────────────────
+//
+// Surfaces everything the platform admin needs to reconcile against
+// Stripe without leaving this page: plan, billing cycle, trial timing,
+// Stripe identifiers (clickable into the Stripe dashboard via copy),
+// add-on quantities, current-period usage counters.
+//
+// Grandfathered tenants get an explicit "no Stripe enrollment" copy
+// block so ops doesn't waste time looking for IDs that don't exist.
+
+function BillingSection({ tenant }: { tenant: PlatformTenantDetail }) {
+  const isGrandfathered = tenant.grandfathered;
+  const isOnStripe = tenant.has_stripe_subscription;
+
+  return (
+    <SectionCard title="Billing">
+      {isGrandfathered ? (
+        <div className="rounded-md border border-yellow-500/30 bg-yellow-500/5 p-3 text-xs text-yellow-200/90">
+          <strong className="font-medium text-yellow-100">Legacy account.</strong>{' '}
+          Onboarded before self-serve pricing existed. Not enrolled in
+          Stripe Billing; capacity gates do not apply. Contact the founder
+          before changing any billing-related fields on this tenant.
+        </div>
+      ) : null}
+
+      <dl className="grid gap-x-6 gap-y-4 sm:grid-cols-2 lg:grid-cols-3 mt-4">
+        <DetailField label="Plan">
+          <span className="text-foreground capitalize">
+            {tenant.plan}
+            <span className="text-muted-foreground"> · billed {tenant.billing_cycle}</span>
+          </span>
+        </DetailField>
+
+        <DetailField label="Billing email">
+          {tenant.billing_email || (
+            <span className="text-muted-foreground/60">—</span>
+          )}
+        </DetailField>
+
+        <DetailField label="Trial ends">
+          {tenant.trial_ends_at ? (
+            <>
+              {formatDate(tenant.trial_ends_at)}
+              {tenant.trial_days_remaining !== null ? (
+                <span className="text-muted-foreground tabular-nums">
+                  {' '}({tenant.trial_days_remaining}d left)
+                </span>
+              ) : null}
+            </>
+          ) : (
+            <span className="text-muted-foreground/60">—</span>
+          )}
+        </DetailField>
+
+        <DetailField label="Next renewal">
+          {tenant.current_period_end ? (
+            formatDate(tenant.current_period_end)
+          ) : (
+            <span className="text-muted-foreground/60">—</span>
+          )}
+        </DetailField>
+
+        <DetailField label="Stripe Customer">
+          {isOnStripe && tenant.stripe_customer_id ? (
+            <code className="font-mono text-xs text-foreground/80">
+              {tenant.stripe_customer_id}
+            </code>
+          ) : (
+            <span className="text-muted-foreground/60">Not enrolled</span>
+          )}
+        </DetailField>
+
+        <DetailField label="Stripe Subscription">
+          {isOnStripe && tenant.stripe_subscription_id ? (
+            <code className="font-mono text-xs text-foreground/80">
+              {tenant.stripe_subscription_id}
+            </code>
+          ) : (
+            <span className="text-muted-foreground/60">Not enrolled</span>
+          )}
+        </DetailField>
+      </dl>
+
+      {/* Add-on quantities — visible only when there are any. */}
+      {Object.keys(tenant.addon_quantities ?? {}).length > 0 ? (
+        <div className="mt-6 pt-5 border-t border-border">
+          <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-3">
+            Active add-ons
+          </p>
+          <ul className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3 text-xs">
+            {Object.entries(tenant.addon_quantities ?? {}).map(([key, qty]) => (
+              <li
+                key={key}
+                className="flex items-center justify-between gap-2 rounded border border-border bg-background/40 px-2.5 py-1.5"
+              >
+                <span className="text-foreground/80">{key}</span>
+                <span className="font-mono tabular-nums text-foreground">×{qty}</span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
+      {/* Current-period usage counters. Always rendered so ops can
+          monitor approaching-quota tenants. */}
+      <div className="mt-6 pt-5 border-t border-border">
+        <p className="text-[11px] uppercase tracking-wide text-muted-foreground mb-3">
+          Current period usage
+        </p>
+        <div className="grid grid-cols-2 gap-4 text-xs">
+          <UsageStat
+            label="SMS sent"
+            value={tenant.current_period_sms_count}
+          />
+          <UsageStat
+            label="Emails sent"
+            value={tenant.current_period_email_count}
+          />
+        </div>
+        <p className="mt-3 text-[10px] text-muted-foreground">
+          Counters reset on each Stripe billing-period roll.
+        </p>
+      </div>
+    </SectionCard>
+  );
+}
+
+function DetailField({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="min-w-0">
+      <dt className="text-[10px] uppercase tracking-wide text-muted-foreground/80 mb-1">
+        {label}
+      </dt>
+      <dd className="text-sm text-foreground/85 break-words">{children}</dd>
+    </div>
+  );
+}
+
+function UsageStat({ label, value }: { label: string; value: number }) {
+  return (
+    <div>
+      <p className="text-[10px] uppercase tracking-wide text-muted-foreground/80">
+        {label}
+      </p>
+      <p className="mt-0.5 font-mono tabular-nums text-foreground text-base">
+        {value.toLocaleString()}
+      </p>
     </div>
   );
 }
