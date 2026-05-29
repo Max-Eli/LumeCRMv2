@@ -139,3 +139,277 @@ class MerchantAccount(TenantedModel):
             and self.details_submitted
             and self.disabled_at is None
         )
+
+
+class Charge(TenantedModel):
+    """One successful (or attempted) card charge against an invoice.
+
+    Append-only by design — we never UPDATE a charge once it lands
+    in succeeded / failed terminal state. Refunds are tracked as
+    separate ``Refund`` rows that reference back, with
+    ``refunded_cents`` denormalized here for fast "is this fully
+    refunded?" filtering.
+
+    Created in two paths:
+      - At "Charge card" submit time (status='pending' initially)
+      - Reconciled to terminal state by the ``payment_intent.*``
+        webhook handler
+
+    The webhook is the source of truth for terminal state — the
+    initial API response from Stripe could be optimistic + we want
+    a single code path that handles both the success-on-submit case
+    and the 3DS-challenge-then-succeed case identically.
+
+    HIPAA: no PHI here. Card details are stored only as the
+    PCI-safe last4 + brand (allowed under SAQ-A). Stripe holds the
+    actual PAN.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        SUCCEEDED = 'succeeded', 'Succeeded'
+        FAILED = 'failed', 'Failed'
+
+    tenant = models.ForeignKey(
+        'tenants.Tenant',
+        on_delete=models.PROTECT,
+        related_name='charges',
+    )
+    invoice = models.ForeignKey(
+        'invoices.Invoice',
+        on_delete=models.PROTECT,
+        related_name='charges',
+        help_text='The invoice this charge pays toward. PROTECT because deleting an invoice with charges on it would silently break the audit trail.',
+    )
+    merchant_account = models.ForeignKey(
+        MerchantAccount,
+        on_delete=models.PROTECT,
+        related_name='charges',
+        help_text='Which spa-side merchant account took the money. Almost always tenant.merchant_account but stored explicitly so the link survives if the spa later switches providers.',
+    )
+
+    # ── Amounts (cents, positive ints) ──────────────────────────
+    #
+    # Stripe sends fee + net in a separate balance_transaction that
+    # we fetch when the payment_intent.succeeded webhook lands.
+    # ``net_cents`` may briefly be 0 between the initial submit and
+    # the webhook landing — the API surface should treat it as
+    # "settling" rather than "free."
+    amount_cents = models.PositiveIntegerField(
+        help_text='Gross charge amount in cents. What the customer\'s card is hit for.',
+    )
+    fee_cents = models.PositiveIntegerField(
+        default=0,
+        help_text='Stripe processing fee in cents (2.9%% + 30¢ for standard cards). Filled in when the balance_transaction expands on webhook.',
+    )
+    net_cents = models.PositiveIntegerField(
+        default=0,
+        help_text='What lands in the spa\'s Stripe balance — amount_cents − fee_cents.',
+    )
+    currency = models.CharField(
+        max_length=3,
+        default='usd',
+        help_text='ISO-4217 currency code, lowercase per Stripe convention.',
+    )
+
+    # ── Stripe identifiers ──────────────────────────────────────
+    stripe_payment_intent_id = models.CharField(
+        max_length=64,
+        unique=True,
+        help_text='Stripe PaymentIntent ID (pi_…). Idempotency key for the webhook handler — a duplicate event with the same PI matches the existing row.',
+    )
+    stripe_charge_id = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text='Stripe Charge ID (ch_…). Empty until the payment_intent.succeeded webhook lands.',
+    )
+
+    # ── State ───────────────────────────────────────────────────
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        help_text='Lifecycle: pending → succeeded | failed. Set succeeded/failed by webhook handler; never UPDATEd after that.',
+    )
+    failure_code = models.CharField(
+        max_length=64,
+        blank=True,
+        default='',
+        help_text='Stripe failure_code on declined / errored payments (e.g. card_declined, expired_card). Helps the operator coach the customer on retry.',
+    )
+    failure_message = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text='Human-readable failure message from Stripe. Surfaced in the invoice activity log on failed charges.',
+    )
+
+    # ── PCI-safe card descriptors ───────────────────────────────
+    # SAQ-A scope: we MAY store last4 + brand. We may NOT store the
+    # full PAN, expiration, CVC, or any other card data. Stripe
+    # holds the rest.
+    last4 = models.CharField(
+        max_length=4,
+        blank=True,
+        default='',
+        help_text='Last 4 digits of the card used. PCI SAQ-A compliant; appears on the customer receipt.',
+    )
+    brand = models.CharField(
+        max_length=24,
+        blank=True,
+        default='',
+        help_text='Card brand (visa / mastercard / amex / discover / etc.). Mostly for receipt display.',
+    )
+
+    # ── Refund rollup (denormalized for speed) ──────────────────
+    refunded_cents = models.PositiveIntegerField(
+        default=0,
+        help_text='Sum of every Refund row\'s amount_cents for this Charge. Denormalized so list views can filter for fully/partially refunded without joining the ledger.',
+    )
+
+    # ── Operator + audit ────────────────────────────────────────
+    created_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.PROTECT,
+        related_name='charges_initiated',
+        null=True, blank=True,
+        help_text='Operator who hit "Charge card" on the invoice. Null when the customer self-paid through the portal.',
+    )
+    initiated_via = models.CharField(
+        max_length=24,
+        choices=[
+            ('operator', 'Operator (invoice page)'),
+            ('customer_portal', 'Customer portal (self-pay)'),
+        ],
+        default='operator',
+        help_text='Where the charge originated — useful for analytics and the activity log.',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Charge'
+        verbose_name_plural = 'Charges'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['tenant', '-created_at']),
+            models.Index(fields=['invoice', '-created_at']),
+        ]
+        constraints = [
+            # Sanity: a charge cannot refund more than its amount.
+            # Application code enforces this in the refund service
+            # (with Stripe as the second guard), but the DB check
+            # is the cheap defense against a logic bug ever
+            # corrupting the ledger.
+            models.CheckConstraint(
+                check=models.Q(refunded_cents__lte=models.F('amount_cents')),
+                name='payments_charge_refunded_lte_amount',
+            ),
+            models.CheckConstraint(
+                check=models.Q(amount_cents__gt=0),
+                name='payments_charge_amount_positive',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'Charge #{self.pk} · {self.amount_cents}¢ · {self.status}'
+
+    @property
+    def is_succeeded(self) -> bool:
+        return self.status == self.Status.SUCCEEDED
+
+    @property
+    def refundable_cents(self) -> int:
+        """How much of this charge can still be refunded. Used by the
+        refund-amount input as a max value."""
+        if not self.is_succeeded:
+            return 0
+        return max(0, self.amount_cents - self.refunded_cents)
+
+    @property
+    def is_fully_refunded(self) -> bool:
+        return self.is_succeeded and self.refunded_cents >= self.amount_cents
+
+
+class Refund(TenantedModel):
+    """A single refund event against a Charge.
+
+    Append-only ledger — partial refunds + multiple refunds against
+    the same charge each get their own row. The ``Charge.refunded_cents``
+    rollup is updated atomically in the service layer when a Refund
+    is saved.
+
+    Refunds are operator-initiated (no self-serve customer refund
+    surface in v1). The webhook handler also creates Refund rows
+    when refunds are issued through the Stripe Express dashboard
+    directly — same shape, idempotent on ``stripe_refund_id``.
+    """
+
+    class Status(models.TextChoices):
+        PENDING = 'pending', 'Pending'
+        SUCCEEDED = 'succeeded', 'Succeeded'
+        FAILED = 'failed', 'Failed'
+
+    tenant = models.ForeignKey(
+        'tenants.Tenant',
+        on_delete=models.PROTECT,
+        related_name='refunds',
+    )
+    charge = models.ForeignKey(
+        Charge,
+        on_delete=models.PROTECT,
+        related_name='refunds',
+        help_text='The original charge this refund undoes (fully or partially).',
+    )
+
+    amount_cents = models.PositiveIntegerField(
+        help_text='Refund amount in cents. Must be > 0 and <= charge.refundable_cents at the time the row is created.',
+    )
+    reason = models.CharField(
+        max_length=255,
+        help_text='Operator-typed reason. Stripe accepts duplicate / fraudulent / requested_by_customer as standard codes, but we accept free text for the audit trail.',
+    )
+
+    stripe_refund_id = models.CharField(
+        max_length=64,
+        unique=True,
+        help_text='Stripe Refund ID (re_…). Idempotency key for the webhook handler.',
+    )
+
+    status = models.CharField(
+        max_length=16,
+        choices=Status.choices,
+        default=Status.PENDING,
+        help_text='Lifecycle: pending → succeeded | failed. Card refunds usually settle in seconds but ACH refunds can take days.',
+    )
+
+    created_by = models.ForeignKey(
+        'users.User',
+        on_delete=models.PROTECT,
+        related_name='refunds_issued',
+        null=True, blank=True,
+        help_text='Operator who issued the refund. Null for refunds issued from Stripe Express dashboard directly (webhook still creates the row for the local ledger).',
+    )
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'Refund'
+        verbose_name_plural = 'Refunds'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['tenant', '-created_at']),
+            models.Index(fields=['charge', '-created_at']),
+        ]
+        constraints = [
+            models.CheckConstraint(
+                check=models.Q(amount_cents__gt=0),
+                name='payments_refund_amount_positive',
+            ),
+        ]
+
+    def __str__(self) -> str:
+        return f'Refund #{self.pk} · {self.amount_cents}¢ on charge {self.charge_id}'

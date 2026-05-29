@@ -22,12 +22,16 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 
 from apps.payments.services import (
+    ChargeRefusedError,
+    RefundRefusedError,
     StripeAPIError,
     StripeNotConfigured,
     create_onboarding_link,
+    create_payment_intent_for_invoice,
     ensure_merchant_account,
     is_configured,
     refresh_account_status,
+    refund_charge,
 )
 from apps.tenants.permissions import P
 
@@ -135,3 +139,213 @@ def payments_onboarding_link(request: Request) -> Response:
         )
 
     return Response({'url': url})
+
+
+# ── Charge card flow (invoice page + customer portal) ──────────────
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def charge_invoice_card(request: Request, invoice_id: int) -> Response:
+    """Create a PaymentIntent for the operator to confirm via Stripe Elements.
+
+    Body: ``{amount_cents: int}``. Amount is validated client-side
+    against ``invoice.amount_due_cents``; the backend re-validates as
+    "must be positive" — if the operator tries to charge more than
+    due, Stripe will succeed (over-payment is legal) but the spa is
+    on the hook for refunding the difference. Operator UI prevents
+    this; we trust it here.
+
+    Returns ``{charge_id, client_secret, publishable_key}``. The
+    frontend uses ``client_secret`` with Stripe Elements to mount the
+    Payment Element + confirm. Final status flips via the
+    payment_intent.* webhook (not the synchronous response).
+
+    Permission: PROCESS_PAYMENT (front-desk default).
+    """
+    from apps.invoices.models import Invoice
+    from django.conf import settings as dj_settings
+
+    membership = getattr(request, 'tenant_membership', None)
+    if not membership or not membership.has(P.PROCESS_PAYMENT):
+        return Response(
+            {'detail': 'Process Payment permission required.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        invoice = Invoice.objects.get(
+            pk=invoice_id, tenant=membership.tenant,
+        )
+    except Invoice.DoesNotExist:
+        return Response(
+            {'detail': 'Invoice not found.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    if invoice.status != Invoice.Status.OPEN:
+        return Response(
+            {
+                'detail': f'Cannot charge a {invoice.status} invoice.',
+                'code': 'invoice_not_open',
+            },
+            status=status.HTTP_409_CONFLICT,
+        )
+
+    raw_amount = request.data.get('amount_cents')
+    try:
+        amount_cents = int(raw_amount)
+    except (TypeError, ValueError):
+        return Response(
+            {'detail': 'amount_cents must be an integer.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not is_configured():
+        return Response(
+            {
+                'detail': (
+                    'Stripe is not configured in this environment. '
+                    'Cannot take card payments.'
+                ),
+                'code': 'stripe_not_configured',
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    try:
+        charge, client_secret = create_payment_intent_for_invoice(
+            invoice=invoice,
+            amount_cents=amount_cents,
+            operator=request.user,
+            initiated_via='operator',
+        )
+    except ChargeRefusedError as e:
+        return Response(
+            {'detail': str(e), 'code': 'charge_refused'},
+            status=status.HTTP_409_CONFLICT,
+        )
+    except StripeNotConfigured as e:
+        return Response(
+            {'detail': str(e), 'code': 'stripe_not_configured'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    except StripeAPIError as e:
+        return Response(
+            {'detail': str(e), 'code': 'stripe_error'},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response({
+        'charge_id': charge.pk,
+        'client_secret': client_secret,
+        # Frontend Stripe Elements needs the publishable key to
+        # initialize. Echo it back so the client doesn't have to
+        # store it separately + risk a stale value when keys rotate.
+        'publishable_key': getattr(dj_settings, 'STRIPE_PUBLISHABLE_KEY', ''),
+        # Stripe Elements needs the connected account ID to mount
+        # against the right Stripe account.
+        'stripe_account_id': charge.merchant_account.stripe_account_id,
+    }, status=status.HTTP_201_CREATED)
+
+
+# ── Refund flow ────────────────────────────────────────────────────
+
+
+@api_view(['POST'])
+@permission_classes([IsAuthenticated])
+def refund_card_charge(request: Request, charge_id: int) -> Response:
+    """Issue a Stripe refund + persist a local Refund row.
+
+    Body: ``{amount_cents: int, reason: str}``. Amount must be > 0
+    and <= the charge's remaining refundable balance. Reason is
+    operator-typed (mostly for the audit log + Stripe metadata; not
+    surfaced to the customer).
+
+    Permission: ISSUE_REFUND (front-desk default within limit;
+    ISSUE_REFUND_UNLIMITED for manager+). We don't enforce the
+    front-desk dollar limit here at the API layer — that's a
+    follow-up. For v1, any holder of ISSUE_REFUND can issue any
+    amount within the charge's refundable balance.
+    """
+    from apps.payments.models import Charge
+
+    membership = getattr(request, 'tenant_membership', None)
+    if not membership or not membership.has(P.ISSUE_REFUND):
+        return Response(
+            {'detail': 'Issue Refund permission required.'},
+            status=status.HTTP_403_FORBIDDEN,
+        )
+
+    try:
+        charge = Charge.objects.select_related('merchant_account', 'tenant').get(
+            pk=charge_id, tenant=membership.tenant,
+        )
+    except Charge.DoesNotExist:
+        return Response(
+            {'detail': 'Charge not found.'},
+            status=status.HTTP_404_NOT_FOUND,
+        )
+
+    raw_amount = request.data.get('amount_cents')
+    try:
+        amount_cents = int(raw_amount)
+    except (TypeError, ValueError):
+        return Response(
+            {'detail': 'amount_cents must be an integer.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    reason = (request.data.get('reason') or '').strip()
+    if not reason:
+        return Response(
+            {'detail': 'A reason is required for every refund (audit trail).'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+    if len(reason) > 255:
+        return Response(
+            {'detail': 'Reason cannot exceed 255 characters.'},
+            status=status.HTTP_400_BAD_REQUEST,
+        )
+
+    if not is_configured():
+        return Response(
+            {
+                'detail': (
+                    'Stripe is not configured in this environment. '
+                    'Cannot issue card refunds.'
+                ),
+                'code': 'stripe_not_configured',
+            },
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+
+    try:
+        refund = refund_charge(
+            charge=charge,
+            amount_cents=amount_cents,
+            reason=reason,
+            operator=request.user,
+        )
+    except RefundRefusedError as e:
+        return Response(
+            {'detail': str(e), 'code': 'refund_refused'},
+            status=status.HTTP_409_CONFLICT,
+        )
+    except StripeNotConfigured as e:
+        return Response(
+            {'detail': str(e), 'code': 'stripe_not_configured'},
+            status=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    except StripeAPIError as e:
+        return Response(
+            {'detail': str(e), 'code': 'stripe_error'},
+            status=status.HTTP_502_BAD_GATEWAY,
+        )
+
+    return Response({
+        'refund_id': refund.pk,
+        'status': refund.status,
+        'amount_cents': refund.amount_cents,
+        'charge_refunded_cents': charge.refunded_cents,
+    }, status=status.HTTP_201_CREATED)

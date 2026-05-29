@@ -104,14 +104,18 @@ class Invoice(TenantedModel):
         VOID = 'void', 'Void'
 
     class PaymentMethod(models.TextChoices):
-        # v1 supports cash / check / external card terminal +
-        # gift_card (used when applied gift card credits cover the
-        # entire invoice — i.e. amount_due_cents == 0). Real
-        # processor integration lands in Phase 2A; we'll add a
-        # CARD_PROCESSED choice + transaction_id then.
+        # Original (pre-Stripe-Connect) methods. CARD_EXTERNAL is
+        # used when the spa runs a separate physical terminal and
+        # types the reference into Lumè manually.
         CASH = 'cash', 'Cash'
         CHECK = 'check', 'Check'
         CARD_EXTERNAL = 'card_external', 'Card (external terminal)'
+        # CARD_STRIPE = paid through Lumè's Stripe Connect integration
+        # (apps.payments). The Charge row carries the PI / Charge IDs
+        # + the PCI-safe last4 + brand for the receipt. Lands when
+        # the operator hits "Charge card" on the invoice page or the
+        # customer pays via the portal Pay-now button.
+        CARD_STRIPE = 'card_stripe', 'Card (Lumè / Stripe)'
         GIFT_CARD = 'gift_card', 'Gift card (full coverage)'
         OTHER = 'other', 'Other'
 

@@ -31,7 +31,9 @@ from django.views.decorators.http import require_POST
 from apps.payments.models import MerchantAccount
 from apps.payments.services import (
     StripeAPIError,
+    sync_charge_from_payment_intent,
     sync_from_stripe_account,
+    sync_refund_from_stripe,
 )
 
 logger = logging.getLogger(__name__)
@@ -95,6 +97,31 @@ def stripe_connect_webhook(request: HttpRequest) -> JsonResponse:
             sync_from_stripe_account(data_object)
         elif event_type == 'account.application.deauthorized':
             _handle_deauthorization(data_object)
+        # ── Payment flow events ──────────────────────────────────
+        # These arrive on the SAME Connect webhook endpoint because
+        # we use direct charges on the connected account; Stripe
+        # routes them to the platform's Connect endpoint by default.
+        elif event_type in {
+            'payment_intent.succeeded',
+            'payment_intent.payment_failed',
+            'payment_intent.canceled',
+        }:
+            sync_charge_from_payment_intent(data_object)
+        elif event_type in {
+            'charge.refunded',
+            # Modern Stripe also emits refund.* events for
+            # finer-grained status updates (esp. ACH refunds that
+            # settle days later). Both event shapes carry the refund
+            # object as data.object, so sync_refund_from_stripe
+            # handles them identically.
+            'refund.created',
+            'refund.updated',
+        }:
+            # charge.refunded's data.object is the Charge (with
+            # refunds.data inside); refund.* events have the Refund
+            # itself. Normalize to the Refund(s) before syncing.
+            for refund_obj in _refunds_from_event(event_type, data_object):
+                sync_refund_from_stripe(refund_obj)
         else:
             logger.info('Connect webhook unhandled: %s', event_type)
     except StripeAPIError as e:
@@ -112,6 +139,29 @@ def stripe_connect_webhook(request: HttpRequest) -> JsonResponse:
         )
 
     return JsonResponse({'received': True}, status=200)
+
+
+def _refunds_from_event(event_type: str, data_object):
+    """Normalize charge.refunded vs refund.* event shapes into an
+    iterable of Refund-shaped objects.
+
+    ``charge.refunded`` data.object is a Charge with a nested
+    ``refunds.data`` list (Stripe sends the latest snapshot of all
+    refunds against that charge). ``refund.*`` data.object IS the
+    Refund itself. We yield Refund objects in both cases so the
+    caller can sync uniformly.
+    """
+    if event_type in {'refund.created', 'refund.updated'}:
+        yield data_object
+        return
+    # charge.refunded path:
+    refunds = getattr(data_object, 'refunds', None)
+    if refunds is None and isinstance(data_object, dict):
+        refunds = data_object.get('refunds')
+    data = getattr(refunds, 'data', None) if refunds else None
+    if data is None and isinstance(refunds, dict):
+        data = refunds.get('data')
+    yield from (data or [])
 
 
 def _handle_deauthorization(data_object) -> None:
