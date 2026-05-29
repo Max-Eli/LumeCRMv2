@@ -77,6 +77,7 @@ INSTALLED_APPS = [
     'apps.messaging',
     'apps.portal',
     'apps.imports',
+    'apps.billing',
 ]
 
 AUTH_USER_MODEL = 'users.User'
@@ -333,6 +334,58 @@ META_OAUTH_REDIRECT_URI = env(
     default='http://localhost:8000/api/integrations/meta/oauth/callback/',
 )
 META_TEST_MODE = env.bool('META_TEST_MODE', default=False)
+
+# ── Stripe Billing (SaaS subscriptions) ────────────────────────────
+#
+# Self-serve pricing tiers + trial signup land in Phase 1. Two Stripe
+# integrations are intentionally separate environments (different keys,
+# different webhook secrets):
+#
+#   - Billing (this block) — how Lumè charges spas for the SaaS
+#     subscription. Account is registered to **Voxtro LLC** (the legal
+#     entity behind the Lumè product). Receipt + statement-descriptor
+#     branding identify Voxtro LLC.
+#
+#   - Connect (separate `STRIPE_CONNECT_*` block, lands in Phase 2) —
+#     how spas charge THEIR customers for treatments. Different account,
+#     different secret, different webhook.
+#
+# When `STRIPE_SECRET_KEY` is empty (dev without Stripe access),
+# `apps.billing.services.is_configured()` returns False and every
+# billing endpoint returns a clear 503 instead of crashing. Tests
+# mock the stripe SDK directly; they don't need real keys.
+#
+# Stripe Price IDs are created in the dashboard (one Product per tier,
+# two Prices per Product — monthly + annual). The IDs land in env vars
+# so different deploy targets (staging vs prod) can point at different
+# Stripe accounts without code changes.
+STRIPE_SECRET_KEY = env('STRIPE_SECRET_KEY', default='')
+STRIPE_PUBLISHABLE_KEY = env('STRIPE_PUBLISHABLE_KEY', default='')
+STRIPE_WEBHOOK_SECRET = env('STRIPE_WEBHOOK_SECRET', default='')
+
+# Per-tier Price IDs (see Stripe dashboard → Products). Format:
+# STRIPE_PRICE_<plan>_<cycle>. Starter + Pro have public prices;
+# Enterprise pricing is custom + manual so no STRIPE_PRICE_ENTERPRISE_*.
+STRIPE_PRICE_STARTER_MONTHLY = env('STRIPE_PRICE_STARTER_MONTHLY', default='')
+STRIPE_PRICE_STARTER_ANNUAL = env('STRIPE_PRICE_STARTER_ANNUAL', default='')
+STRIPE_PRICE_PRO_MONTHLY = env('STRIPE_PRICE_PRO_MONTHLY', default='')
+STRIPE_PRICE_PRO_ANNUAL = env('STRIPE_PRICE_PRO_ANNUAL', default='')
+
+# Add-on Price IDs (quantity-based SubscriptionItems). Each is keyed
+# by the canonical add-on identifier matching `Tenant.addon_quantities`.
+STRIPE_PRICE_ADDON_STAFF = env('STRIPE_PRICE_ADDON_STAFF', default='')
+STRIPE_PRICE_ADDON_LOCATION = env('STRIPE_PRICE_ADDON_LOCATION', default='')
+STRIPE_PRICE_ADDON_EMAIL_5K = env('STRIPE_PRICE_ADDON_EMAIL_5K', default='')
+STRIPE_PRICE_ADDON_EMAIL_10K = env('STRIPE_PRICE_ADDON_EMAIL_10K', default='')
+STRIPE_PRICE_SMS_OVERAGE = env('STRIPE_PRICE_SMS_OVERAGE', default='')
+
+# Legal / branding identity on Stripe Customer descriptions, BAA
+# templates, and receipt footers. Voxtro LLC is the merchant of record
+# for Lumè CRM; Lumè CRM is the product brand. Keep these distinct so
+# we can rebrand the product without re-incorporating, and so receipt
+# footers correctly identify the legal billing entity.
+BILLING_LEGAL_NAME = env('BILLING_LEGAL_NAME', default='Voxtro LLC')
+BILLING_PRODUCT_NAME = env('BILLING_PRODUCT_NAME', default='Lumè CRM')
 
 # ── Instagram Business Login ───────────────────────────────────────
 #
