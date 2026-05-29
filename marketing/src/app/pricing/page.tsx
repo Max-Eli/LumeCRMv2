@@ -64,7 +64,9 @@ const TIERS: Tier[] = [
     positioning: 'Annual billing. $99/mo billed monthly. Cancel anytime.',
     bestFor:
       'A solo injector, a two-chair shop, or any spa that just opened. The full medspa CRM at the lowest entry point.',
-    cta: { href: '/demo', label: 'Start 30-day trial' },
+    // Starter is the ONLY self-serve tier — direct to the signup
+    // form. Pro + Enterprise both route to /demo (sales conversation).
+    cta: { href: '/signup', label: 'Start 30-day trial' },
     features: [
       '1 location · 2 staff seats (add more for $20/mo each)',
       'Per-provider booking calendar with conflict detection',

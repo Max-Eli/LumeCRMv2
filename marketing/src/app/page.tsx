@@ -83,7 +83,7 @@ function Hero() {
               style={{ animationDelay: '380ms' }}
             >
               <Link
-                href="/demo"
+                href="/signup"
                 className="inline-flex h-12 items-center rounded-full bg-foreground px-7 text-sm font-medium uppercase tracking-[0.16em] text-background hover:bg-foreground/90 transition-colors"
               >
                 Start 30-day free trial
