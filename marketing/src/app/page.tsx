@@ -249,9 +249,9 @@ const CAPABILITIES: CapabilityRow[] = [
     label: 'Multi-location',
     title: 'Open a second location without re-onboarding.',
     body:
-      "Each site gets its own calendar, pricing, and staff schedule. An org-level dashboard shows every location alongside cross-location revenue. The location switcher only appears for staff who span more than one.",
+      "Each site gets its own calendar, staff schedule, and reporting filter. An org-level dashboard shows every location alongside cross-location revenue. The location switcher only appears for staff who span more than one.",
     bullets: [
-      'Per-location pricing + staff',
+      'Per-location calendars + staff schedules',
       'Org-level locations dashboard',
       'Per-location revenue + reporting filters',
       'Single sign-on across sites',
@@ -351,7 +351,7 @@ const REASONS = [
   {
     label: 'Pricing without the games.',
     body:
-      "Per location, not per seat. No annual contract. No paywall on data export. No setup fee. No “Pro” tier hiding what you assumed was standard.",
+      "Flat per workspace, not per seat. Clinical notes, packages, memberships, and consent forms ship in the $99 Starter — never gated to a higher tier. Add staff or locations one click + $20 at a time. No annual lock-in. No paywall on data export. No setup fee.",
   },
 ];
 
