@@ -24,10 +24,12 @@ from .views import (
     CancelAppointmentView,
     ConsumeMagicLinkView,
     FormsView,
+    InvoicesView,
     LogoutView,
     MeView,
     MembershipsView,
     PackagesView,
+    PayInvoiceView,
     RequestMagicLinkView,
     RescheduleAppointmentView,
 )
@@ -43,5 +45,7 @@ urlpatterns = [
     path('portal/memberships/', MembershipsView.as_view(), name='portal-memberships'),
     path('portal/packages/', PackagesView.as_view(), name='portal-packages'),
     path('portal/forms/', FormsView.as_view(), name='portal-forms'),
+    path('portal/invoices/', InvoicesView.as_view(), name='portal-invoices'),
+    path('portal/invoices/<int:pk>/pay/', PayInvoiceView.as_view(), name='portal-invoice-pay'),
     path('portal/booking/submit/', BookAppointmentView.as_view(), name='portal-booking-submit'),
 ]

@@ -34,6 +34,7 @@ import {
   LogOut,
   MoreHorizontal,
   Package,
+  Receipt,
   UserRound,
   X,
 } from 'lucide-react';
@@ -101,6 +102,7 @@ const TOP_LINKS = [
   { href: '/portal', label: 'Home' },
   { href: '/portal/book', label: 'Book' },
   { href: '/portal/appointments', label: 'Appointments' },
+  { href: '/portal/invoices', label: 'Invoices' },
   { href: '/portal/memberships', label: 'Memberships' },
   { href: '/portal/packages', label: 'Packages' },
   { href: '/portal/forms', label: 'Forms' },
@@ -186,6 +188,7 @@ const BOTTOM_TABS = [
 ] as const;
 
 const MORE_LINKS = [
+  { href: '/portal/invoices', label: 'Invoices', icon: Receipt },
   { href: '/portal/memberships', label: 'Memberships', icon: BadgeCheck },
   { href: '/portal/forms', label: 'Forms', icon: FileText },
   { href: '/portal/profile', label: 'Profile', icon: UserRound },

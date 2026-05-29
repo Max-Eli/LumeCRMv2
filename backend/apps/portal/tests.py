@@ -766,3 +766,212 @@ class PortalRescheduleTests(_PortalAuthenticatedTestCase):
             appt.pk, (djtz.now() + dt.timedelta(days=3)).isoformat(),
         )
         self.assertEqual(response.status_code, 400)
+
+
+# ── Portal invoices + pay-now (Phase 2 chunk 2.6) ──────────────────
+
+
+class PortalInvoicesListTests(_PortalAuthenticatedTestCase):
+    """GET /api/portal/invoices/ lists the portal customer's own
+    invoices: OPEN first, then PAID, then VOIDED. Cross-customer
+    isolation is critical — a portal session for customer A must
+    never surface customer B's invoices."""
+
+    def setUp(self):
+        super().setUp()
+        from apps.invoices.models import Invoice
+        # Two of the customer's invoices (one open, one paid).
+        self.open_invoice = Invoice.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            subtotal_cents=10_000, tax_cents=0, total_cents=10_000,
+            status=Invoice.Status.OPEN,
+        )
+        self.paid_invoice = Invoice.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            subtotal_cents=5_000, tax_cents=0, total_cents=5_000,
+            status=Invoice.Status.PAID,
+            closed_at=djtz.now(),
+        )
+        # A DIFFERENT customer's invoice — must NOT appear in self.customer's list.
+        self.other_customer = _make_customer(self.tenant, email='someone-else@test.local')
+        self.other_invoice = Invoice.objects.create(
+            tenant=self.tenant, customer=self.other_customer,
+            subtotal_cents=99_999, tax_cents=0, total_cents=99_999,
+            status=Invoice.Status.OPEN,
+        )
+
+    def test_unauth_returns_403(self):
+        response = APIClient().get(
+            reverse('portal-invoices'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_lists_customers_own_invoices_only(self):
+        response = self.client_with_session.get(
+            reverse('portal-invoices'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 200)
+        ids = {row['id'] for row in response.data}
+        self.assertEqual(ids, {self.open_invoice.pk, self.paid_invoice.pk})
+        self.assertNotIn(self.other_invoice.pk, ids)
+
+    def test_open_invoices_listed_first(self):
+        response = self.client_with_session.get(
+            reverse('portal-invoices'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        # OPEN sorts before PAID per the status-ordering map.
+        statuses = [row['status'] for row in response.data]
+        self.assertEqual(statuses, ['open', 'paid'])
+
+    def test_writes_audit_log_on_read(self):
+        from apps.audit.models import AuditLog
+        baseline = AuditLog.objects.filter(
+            resource_type='portal_invoices',
+        ).count()
+        self.client_with_session.get(
+            reverse('portal-invoices'),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(
+            AuditLog.objects.filter(resource_type='portal_invoices').count(),
+            baseline + 1,
+        )
+
+
+class PortalPayInvoiceTests(_PortalAuthenticatedTestCase):
+    """POST /api/portal/invoices/<id>/pay/ initiates a Stripe Connect
+    PaymentIntent on behalf of the portal customer. The local Charge
+    row carries created_by=None + initiated_via='customer_portal' so
+    the activity log + auto-close logic distinguish self-pay from
+    operator-initiated charges."""
+
+    def setUp(self):
+        super().setUp()
+        from apps.invoices.models import Invoice
+        from apps.payments.models import MerchantAccount
+        self.invoice = Invoice.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            subtotal_cents=10_000, tax_cents=0, total_cents=10_000,
+            status=Invoice.Status.OPEN,
+        )
+        # Stand up a ready merchant account so the charge service
+        # doesn't ChargeRefuse on is_ready_to_charge.
+        MerchantAccount.objects.create(
+            tenant=self.tenant,
+            stripe_account_id='acct_portal_pay',
+            charges_enabled=True, payouts_enabled=True,
+            details_submitted=True,
+        )
+        self.url = reverse('portal-invoice-pay', args=[self.invoice.pk])
+
+    def test_unauth_returns_403(self):
+        response = APIClient().post(
+            self.url, {'amount_cents': 10_000}, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 403)
+
+    def test_other_customers_invoice_returns_404_not_403(self):
+        # Tenant-isolation guard: a portal session for customer A
+        # trying to pay customer B's invoice must get a 404 (not
+        # 403) so we don't leak "this invoice exists, you just can't
+        # see it" — same shape as "no such invoice at all".
+        from apps.invoices.models import Invoice
+        other = _make_customer(self.tenant, email='other-pay@test.local')
+        their_invoice = Invoice.objects.create(
+            tenant=self.tenant, customer=other,
+            subtotal_cents=5_000, tax_cents=0, total_cents=5_000,
+            status=Invoice.Status.OPEN,
+        )
+        url = reverse('portal-invoice-pay', args=[their_invoice.pk])
+        response = self.client_with_session.post(
+            url, {'amount_cents': 5_000}, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 404)
+
+    def test_paid_invoice_returns_409(self):
+        from apps.invoices.models import Invoice
+        self.invoice.status = Invoice.Status.PAID
+        self.invoice.closed_at = djtz.now()
+        self.invoice.save()
+        response = self.client_with_session.post(
+            self.url, {'amount_cents': 10_000}, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 409)
+        self.assertEqual(response.data['code'], 'invoice_not_open')
+
+    def test_amount_not_int_returns_400(self):
+        response = self.client_with_session.post(
+            self.url, {'amount_cents': 'oops'}, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 400)
+
+    @override_settings(STRIPE_SECRET_KEY='')
+    def test_stripe_not_configured_returns_503(self):
+        response = self.client_with_session.post(
+            self.url, {'amount_cents': 10_000}, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.data['code'], 'stripe_not_configured')
+
+    @override_settings(STRIPE_SECRET_KEY='sk_test_fake')
+    def test_happy_path_creates_charge_with_self_pay_attribution(self):
+        from apps.payments.models import Charge
+        from unittest.mock import patch
+
+        # Mock the actual PaymentIntent create — we don't want to hit
+        # Stripe. The service's behavior (Charge row creation,
+        # initiated_via setting) is what we want to verify.
+        with patch('apps.payments.services._stripe') as mock_stripe:
+            mock_pi = type('PI', (), {})()
+            mock_pi.id = 'pi_portal_self_pay'
+            mock_pi.client_secret = 'pi_portal_self_pay_secret_abc'
+            mock_stripe.return_value.PaymentIntent.create.return_value = mock_pi
+
+            response = self.client_with_session.post(
+                self.url, {'amount_cents': 10_000}, format='json',
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+
+        self.assertEqual(response.status_code, 201, response.data)
+        self.assertEqual(response.data['client_secret'], 'pi_portal_self_pay_secret_abc')
+        self.assertEqual(response.data['stripe_account_id'], 'acct_portal_pay')
+
+        # The Charge row must reflect self-pay attribution.
+        charge = Charge.objects.get(pk=response.data['charge_id'])
+        self.assertIsNone(charge.created_by, 'self-pay must NOT be attributed to an operator')
+        self.assertEqual(charge.initiated_via, 'customer_portal')
+        self.assertEqual(charge.tenant_id, self.tenant.id)
+        self.assertEqual(charge.invoice_id, self.invoice.pk)
+
+    @override_settings(STRIPE_SECRET_KEY='sk_test_fake')
+    def test_writes_audit_log_on_pay(self):
+        from apps.audit.models import AuditLog
+        from unittest.mock import patch
+
+        baseline = AuditLog.objects.filter(
+            resource_type='portal_payment_intent',
+        ).count()
+
+        with patch('apps.payments.services._stripe') as mock_stripe:
+            mock_pi = type('PI', (), {})()
+            mock_pi.id = 'pi_audit_test'
+            mock_pi.client_secret = 'secret'
+            mock_stripe.return_value.PaymentIntent.create.return_value = mock_pi
+
+            self.client_with_session.post(
+                self.url, {'amount_cents': 10_000}, format='json',
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+
+        self.assertEqual(
+            AuditLog.objects.filter(resource_type='portal_payment_intent').count(),
+            baseline + 1,
+        )

@@ -57,10 +57,12 @@ import {
 } from '@/components/ui/dialog';
 import { Input } from '@/components/ui/input';
 import {
+  type ChargeCardInput,
   type ChargeCardResponse,
   paymentsErrorMessage,
   useChargeCard,
 } from '@/lib/payments';
+import type { UseMutationResult } from '@tanstack/react-query';
 import { cn } from '@/lib/utils';
 
 // loadStripe returns a Promise per (publishableKey, options) pair.
@@ -100,6 +102,12 @@ export interface ChargeCardDialogProps {
   /** Fired after the confirmPayment promise resolves successfully.
    *  Parent typically refetches the invoice + closes the dialog. */
   onSuccess?: () => void;
+  /** Which mutation creates the PaymentIntent. Defaults to
+   *  ``useChargeCard`` (operator endpoint). The portal Pay-now flow
+   *  passes ``usePayInvoiceFromPortal`` so the same dialog UI works
+   *  for both operator-initiated and customer self-pay flows. Must
+   *  be stable across renders (rules of hooks). */
+  useChargeIntent?: () => UseMutationResult<ChargeCardResponse, Error, ChargeCardInput>;
 }
 
 export function ChargeCardDialog(props: ChargeCardDialogProps) {
@@ -123,6 +131,7 @@ function ChargeCardDialogBody({
   invoiceNumber,
   customerName,
   onSuccess,
+  useChargeIntent,
 }: ChargeCardDialogProps) {
   // Step 1 state — the amount input + the result of the
   // create-PaymentIntent call. Once we have a client_secret we
@@ -133,7 +142,13 @@ function ChargeCardDialogBody({
   );
   const [amountError, setAmountError] = useState<string | null>(null);
 
-  const createIntent = useChargeCard();
+  // Default to the operator endpoint; portal callers pass
+  // usePayInvoiceFromPortal. The prop is read once per dialog open
+  // (the body unmounts when open=false), so the conditional hook
+  // call is safe — same hook is called on every render of THIS
+  // instance.
+  const useCreateIntent = useChargeIntent ?? useChargeCard;
+  const createIntent = useCreateIntent();
 
   const handleCreateIntent = () => {
     const dollars = Number(amountDollars);

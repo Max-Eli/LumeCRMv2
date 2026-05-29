@@ -538,21 +538,12 @@ def _maybe_auto_close_invoice(charge) -> None:
     if succeeded_sum < invoice.total_cents:
         return
 
-    # Customer-portal self-pay charges have created_by=None — the
-    # current Invoice.close() flow passes by_user through to several
-    # downstream operations that may not tolerate null. For v1, log +
-    # skip in that case; the operator can manually close the invoice
-    # on the next visit. Customer portal pay-now lands in chunk 2.6
-    # with a proper system-user pattern.
-    if charge.created_by is None:
-        logger.info(
-            'Skipping auto-close for invoice %s — charge %s was '
-            'customer-portal self-pay (no operator). Operator must '
-            'close manually until system-user pattern lands.',
-            invoice.pk, charge.pk,
-        )
-        return
-
+    # ``by_user`` is the operator who initiated the charge (operator
+    # path) OR None for customer-portal self-pay. ``Invoice.close()``
+    # accepts None — ``closed_by`` is a nullable FK and the audit-log
+    # record + downstream activations all handle a null user (the
+    # audit row simply has no user attribution, which is correct for
+    # self-service actions).
     try:
         invoice.close(
             payment_method=Invoice.PaymentMethod.CARD_STRIPE,

@@ -277,6 +277,36 @@ export function usePortalForms() {
   });
 }
 
+// ── Portal invoices (Phase 2 chunk 2.6) ──────────────────────────
+//
+// Customer-facing read + self-pay surface. The wire shape mirrors
+// the operator-side ``Invoice`` exactly — backend reuses
+// ``apps.invoices.serializers.InvoiceSerializer`` for the portal
+// endpoint so the operator + portal payment-history surfaces
+// render identically.
+
+import type { Invoice as OperatorInvoice } from './invoices';
+
+/** Re-exported under a portal-specific name so portal code paths
+ *  don't reach into the operator namespace. Same shape — backend
+ *  uses one serializer for both surfaces. */
+export type PortalInvoice = OperatorInvoice;
+
+const PORTAL_INVOICES_KEY = ['portal', 'invoices'] as const;
+
+/** ``GET /api/portal/invoices/`` — the customer's invoices, OPEN
+ *  first then PAID then VOIDED. Includes nested charges + refunds
+ *  so the Pay-now button + payment-history timeline render in one
+ *  query. */
+export function usePortalInvoices() {
+  return useQuery<PortalInvoice[]>({
+    queryKey: PORTAL_INVOICES_KEY,
+    queryFn: () => api.get<PortalInvoice[]>('/api/portal/invoices/'),
+    refetchOnWindowFocus: true,
+  });
+}
+
+
 // ── Booking (public read endpoints + portal-authed submit) ────────
 
 

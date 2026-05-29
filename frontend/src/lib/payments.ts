@@ -198,3 +198,33 @@ export function useRefundCharge() {
     },
   });
 }
+
+// ── Customer-portal self-pay variant ──────────────────────────────
+//
+// Same wire shape as ``useChargeCard`` (returns ``ChargeCardResponse``)
+// but hits ``POST /api/portal/invoices/<id>/pay/`` instead of the
+// operator endpoint. Used by the portal Pay-now flow — same Stripe
+// Elements UI on the frontend, different auth + backend attribution
+// (Charge row carries ``created_by=None`` + ``initiated_via='customer_portal'``).
+//
+// Exposed with the same input + return shape as ``useChargeCard`` so
+// a single ChargeCardDialog component can be reused across both
+// surfaces by passing this hook as the ``useChargeIntent`` prop.
+
+/** Customer-portal self-pay variant of {@link useChargeCard}. */
+export function usePayInvoiceFromPortal() {
+  const qc = useQueryClient();
+  return useMutation<ChargeCardResponse, Error, ChargeCardInput>({
+    mutationFn: ({ invoiceId, amount_cents }) =>
+      api.post<ChargeCardResponse>(
+        `/api/portal/invoices/${invoiceId}/pay/`,
+        { amount_cents },
+      ),
+    onSuccess: () => {
+      // Portal customer just kicked off a payment; their invoice list
+      // will need to refresh once the webhook lands. Invalidate the
+      // portal-invoices query so a returning user sees fresh state.
+      qc.invalidateQueries({ queryKey: ['portal', 'invoices'] });
+    },
+  });
+}

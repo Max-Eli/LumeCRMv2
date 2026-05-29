@@ -668,6 +668,178 @@ class FormsView(APIView):
         return Response(data)
 
 
+class InvoicesView(APIView):
+    """`GET /api/portal/invoices/` — customer's invoices.
+
+    Returns OPEN invoices first (these are the actionable list — the
+    customer might want to pay them via the portal Pay-now flow),
+    then PAID history, then VOIDED. Each row carries a minimum-
+    necessary shape: invoice number, totals, status, dates, line
+    items, charges (so the customer can see prior card attempts).
+
+    PHI consideration: invoice line items reference services by
+    name + price. The line names ARE the procedure performed — that's
+    arguably PHI under HIPAA, but the customer IS the data subject
+    here. Same posture as the operator surface — minimum necessary
+    is "everything they need to verify their own bill."
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def get(self, request):
+        from apps.invoices.models import Invoice
+        from apps.invoices.serializers import InvoiceSerializer
+
+        customer = request.customer
+        _guard_tenant_consistency(request)
+
+        STATUS_ORDER = {
+            Invoice.Status.OPEN: 0,
+            Invoice.Status.PAID: 1,
+            Invoice.Status.VOID: 2,
+        }
+        qs = (
+            Invoice.objects
+            .filter(tenant=customer.tenant, customer=customer)
+            .select_related('customer', 'appointment')
+            .prefetch_related('line_items', 'charges', 'charges__refunds')
+            .order_by('-created_at')
+        )
+        rows = sorted(qs, key=lambda i: (STATUS_ORDER.get(i.status, 99), -i.id))
+        data = InvoiceSerializer(rows, many=True).data
+
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='portal_invoices',
+            resource_id=customer.id,
+            request=request,
+            metadata={'count': len(data)},
+        )
+        return Response(data)
+
+
+class PayInvoiceView(APIView):
+    """`POST /api/portal/invoices/<id>/pay/` — customer self-pays an
+    invoice via Stripe Connect Elements.
+
+    Body: ``{amount_cents}``. Same shape + semantics as the operator
+    charge-card endpoint, but:
+      - Authenticated by the portal session (NOT a tenant operator
+        membership). Backend re-checks the invoice belongs to the
+        portal-session customer's tenant + customer (defense in
+        depth against a stale cookie carrying a customer onto the
+        wrong invoice).
+      - ``operator`` is None; ``initiated_via='customer_portal'`` so
+        the local Charge row + activity log clearly attribute the
+        payment to self-service.
+      - Auto-close (in ``apps.payments.services``) handles
+        invoices with ``charge.created_by=None`` correctly — the
+        invoice closes when the customer covers the balance.
+
+    Returns the same shape as the operator endpoint
+    (client_secret + publishable_key + stripe_account_id) so the
+    frontend ChargeCardDialog can be reused verbatim.
+    """
+
+    permission_classes = [IsPortalCustomer]
+
+    def post(self, request, pk: int):
+        from apps.invoices.models import Invoice
+        from apps.payments.services import (
+            ChargeRefusedError,
+            StripeAPIError,
+            StripeNotConfigured,
+            create_payment_intent_for_invoice,
+            is_configured,
+        )
+
+        customer = request.customer
+        _guard_tenant_consistency(request)
+
+        try:
+            invoice = Invoice.objects.get(
+                pk=pk, tenant=customer.tenant, customer=customer,
+            )
+        except Invoice.DoesNotExist:
+            # Same shape whether the invoice doesn't exist OR belongs
+            # to a different customer. Don't leak which.
+            return Response(
+                {'detail': 'Invoice not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+
+        if invoice.status != Invoice.Status.OPEN:
+            return Response(
+                {
+                    'detail': f'This invoice is {invoice.get_status_display().lower()}; nothing to pay.',
+                    'code': 'invoice_not_open',
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+
+        raw_amount = request.data.get('amount_cents')
+        try:
+            amount_cents = int(raw_amount)
+        except (TypeError, ValueError):
+            return Response(
+                {'detail': 'amount_cents must be an integer.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        if not is_configured():
+            return Response(
+                {
+                    'detail': (
+                        'Payment processing is not configured for this spa yet.'
+                    ),
+                    'code': 'stripe_not_configured',
+                },
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+
+        try:
+            charge, client_secret = create_payment_intent_for_invoice(
+                invoice=invoice,
+                amount_cents=amount_cents,
+                operator=None,
+                initiated_via='customer_portal',
+            )
+        except ChargeRefusedError as e:
+            return Response(
+                {'detail': str(e), 'code': 'charge_refused'},
+                status=status.HTTP_409_CONFLICT,
+            )
+        except StripeNotConfigured as e:
+            return Response(
+                {'detail': str(e), 'code': 'stripe_not_configured'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        except StripeAPIError as e:
+            return Response(
+                {'detail': str(e), 'code': 'stripe_error'},
+                status=status.HTTP_502_BAD_GATEWAY,
+            )
+
+        record(
+            action=AuditLog.Action.CREATE,
+            resource_type='portal_payment_intent',
+            resource_id=charge.pk,
+            request=request,
+            metadata={
+                'invoice_id': invoice.pk,
+                'amount_cents': amount_cents,
+            },
+        )
+
+        from django.conf import settings as dj_settings
+        return Response({
+            'charge_id': charge.pk,
+            'client_secret': client_secret,
+            'publishable_key': getattr(dj_settings, 'STRIPE_PUBLISHABLE_KEY', ''),
+            'stripe_account_id': charge.merchant_account.stripe_account_id,
+        }, status=status.HTTP_201_CREATED)
+
+
 class BookAppointmentView(APIView):
     """`POST /api/portal/booking/submit/` — portal customer books an
     appointment for themselves.
