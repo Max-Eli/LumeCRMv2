@@ -2443,3 +2443,141 @@ class AddonValidationTests(TestCase):
     def test_staff_addon_uncapped(self):
         ok, _ = is_addon_quantity_valid('starter', 'staff', 100)
         self.assertTrue(ok)
+
+
+# ── PlanFeatureRequired (DRF permission for tier gating) ───────────
+
+
+from rest_framework.test import APIRequestFactory  # noqa: E402
+
+from apps.tenants.plan_permissions import (  # noqa: E402
+    FeatureNotInPlan,
+    PlanFeatureRequired,
+)
+
+
+class PlanFeatureRequiredTests(TestCase):
+    """``PlanFeatureRequired`` returns 402 (not 403) when the tenant's
+    plan doesn't include the feature, so the frontend can route to a
+    tier-specific upsell. Grandfathered tenants always pass."""
+
+    def setUp(self):
+        self.factory = APIRequestFactory()
+        self.tenant_pro = Tenant.objects.create(
+            name='Pro Spa', slug='pro-spa', plan='pro', grandfathered=False,
+        )
+        self.tenant_starter = Tenant.objects.create(
+            name='Starter Spa', slug='starter-spa', plan='starter',
+            grandfathered=False,
+        )
+        self.tenant_grand = Tenant.objects.create(
+            name='Grandfathered Spa', slug='gf-spa', plan='starter',
+            grandfathered=True,  # plan deliberately starter to prove gf wins
+        )
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            email='owner@example.com', password='x',
+        )
+        TenantMembership.objects.create(
+            user=self.user, tenant=self.tenant_pro,
+            role=TenantMembership.Role.OWNER, is_active=True,
+        )
+        TenantMembership.objects.create(
+            user=self.user, tenant=self.tenant_starter,
+            role=TenantMembership.Role.OWNER, is_active=True,
+        )
+        TenantMembership.objects.create(
+            user=self.user, tenant=self.tenant_grand,
+            role=TenantMembership.Role.OWNER, is_active=True,
+        )
+
+    def _request_with_tenant(self, tenant: 'Tenant'):
+        """Build a DRF request shaped the way TenantMiddleware leaves it
+        (request.tenant_membership populated)."""
+        request = self.factory.get('/api/whatever/')
+        request.user = self.user
+        request.tenant_membership = TenantMembership.objects.get(
+            user=self.user, tenant=tenant,
+        )
+        return request
+
+    def test_pro_tenant_passes_for_pro_feature(self):
+        permission_class = PlanFeatureRequired(F_EMAIL_MARKETING)
+        permission = permission_class()
+        request = self._request_with_tenant(self.tenant_pro)
+        self.assertTrue(permission.has_permission(request, view=None))
+
+    def test_starter_tenant_raises_402_for_pro_feature(self):
+        permission_class = PlanFeatureRequired(F_EMAIL_MARKETING)
+        permission = permission_class()
+        request = self._request_with_tenant(self.tenant_starter)
+        with self.assertRaises(FeatureNotInPlan) as ctx:
+            permission.has_permission(request, view=None)
+        self.assertEqual(ctx.exception.status_code, 402)
+        body = ctx.exception.detail
+        self.assertEqual(body['code'], 'feature_not_in_plan')
+        self.assertEqual(body['feature'], F_EMAIL_MARKETING)
+        self.assertEqual(body['current_plan'], 'starter')
+        self.assertIn('upgrade_url', body)
+
+    def test_starter_tenant_passes_for_starter_feature(self):
+        # Clinical chart notes are in Starter — must pass with no 402.
+        permission_class = PlanFeatureRequired(F_CLINICAL_NOTES)
+        permission = permission_class()
+        request = self._request_with_tenant(self.tenant_starter)
+        self.assertTrue(permission.has_permission(request, view=None))
+
+    def test_grandfathered_passes_for_any_feature_even_hidden(self):
+        # Grandfathered tenants get every feature, including hidden ones
+        # like F_SOCIAL_INTEGRATIONS that aren't sold publicly.
+        for feature in (
+            F_EMAIL_MARKETING,
+            F_SOCIAL_INTEGRATIONS,
+            F_CLINICAL_NOTES,
+            F_CUSTOM_MERCHANT,
+        ):
+            permission = PlanFeatureRequired(feature)()
+            request = self._request_with_tenant(self.tenant_grand)
+            self.assertTrue(
+                permission.has_permission(request, view=None),
+                f'grandfathered tenant should have {feature}',
+            )
+
+    def test_anonymous_user_returns_false(self):
+        # PlanFeatureRequired is never the only gate — anonymous traffic
+        # gets 403 from the auth permission, not 402 from us.
+        from django.contrib.auth.models import AnonymousUser
+        permission = PlanFeatureRequired(F_EMAIL_MARKETING)()
+        request = self.factory.get('/api/whatever/')
+        request.user = AnonymousUser()
+        self.assertFalse(permission.has_permission(request, view=None))
+
+    def test_no_tenant_membership_on_request_returns_false(self):
+        # Defensive: if TenantMiddleware didn't attach a membership
+        # (shouldn't happen on a tenant-scoped endpoint), fail closed.
+        permission = PlanFeatureRequired(F_EMAIL_MARKETING)()
+        request = self.factory.get('/api/whatever/')
+        request.user = self.user
+        # No request.tenant_membership set.
+        self.assertFalse(permission.has_permission(request, view=None))
+
+    def test_starter_blocks_social_integrations(self):
+        # The hidden-until-Meta-approves feature is invisible to all
+        # public tiers. Starter must get 402 even though they paid for
+        # something.
+        permission = PlanFeatureRequired(F_SOCIAL_INTEGRATIONS)()
+        request = self._request_with_tenant(self.tenant_starter)
+        with self.assertRaises(FeatureNotInPlan):
+            permission.has_permission(request, view=None)
+
+    def test_pro_also_blocks_social_integrations(self):
+        # Pro should NOT have Meta DM either until it's approved + graduated.
+        permission = PlanFeatureRequired(F_SOCIAL_INTEGRATIONS)()
+        request = self._request_with_tenant(self.tenant_pro)
+        with self.assertRaises(FeatureNotInPlan):
+            permission.has_permission(request, view=None)
+
+    def test_class_name_is_stable_for_each_feature(self):
+        # Repr stability matters for DRF schema generation + debug logs.
+        cls = PlanFeatureRequired(F_EMAIL_MARKETING)
+        self.assertEqual(cls.__name__, 'PlanFeatureRequired_email_marketing')
