@@ -330,3 +330,73 @@ class VerifyCredentialsView(APIView):
             return generic
 
         return Response({'ok': True, 'email': user.email})
+
+
+# ── Email verification (Phase 3 — self-serve signup) ────────────
+
+
+class VerifyEmailView(APIView):
+    """``POST /api/auth/verify-email/<token>/`` — consume a verification
+    token. Marks the User as verified + invalidates the token.
+
+    Public (no auth required) because a brand-new owner hasn't
+    logged in yet when they click the link in the email. The token
+    itself is the security boundary — 256-bit + single-use + 7-day
+    expiry (see ``EmailVerificationToken``).
+
+    Returns 200 on success, 410 Gone on expired / already-used token,
+    404 if the token doesn't exist (we don't distinguish to avoid
+    leaking whether a token shape is valid).
+    """
+
+    permission_classes = [AllowAny]
+    authentication_classes: list = []
+
+    def post(self, request, token: str):
+        from django.db import transaction
+        from django.utils import timezone as djtz
+
+        from apps.users.models import EmailVerificationToken
+
+        # Same generic-404 shape for missing / expired / consumed so
+        # an attacker can't probe the token space.
+        not_found = Response(
+            {
+                'detail': 'This verification link is invalid or expired. '
+                          'Request a new one from your account settings.',
+                'code': 'token_not_valid',
+            },
+            status=status.HTTP_410_GONE,
+        )
+
+        with transaction.atomic():
+            try:
+                t = (
+                    EmailVerificationToken.objects
+                    .select_for_update(of=('self',))
+                    .select_related('user')
+                    .get(token=token)
+                )
+            except EmailVerificationToken.DoesNotExist:
+                return not_found
+
+            if t.used_at is not None or t.expires_at <= djtz.now():
+                return not_found
+
+            now = djtz.now()
+            t.used_at = now
+            t.save(update_fields=['used_at'])
+
+            user = t.user
+            if user.email_verified_at is None:
+                user.email_verified_at = now
+                user.save(update_fields=['email_verified_at'])
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='user_email_verification',
+            resource_id=user.id,
+            request=request,
+            metadata={'verified_at': user.email_verified_at.isoformat()},
+        )
+        return Response({'verified': True, 'email': user.email})

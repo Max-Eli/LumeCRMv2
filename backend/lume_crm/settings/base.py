@@ -138,6 +138,10 @@ REST_FRAMEWORK = {
     'DEFAULT_THROTTLE_RATES': {
         'booking_submit': '10/hour',
         'booking_reschedule': '20/hour',
+        # Self-serve signup is tight (5/hr per IP) because each
+        # attempt creates a User + Tenant + Stripe Customer. Real
+        # owners sign up once; attackers burn through dozens.
+        'signup': '5/hour',
     },
 }
 

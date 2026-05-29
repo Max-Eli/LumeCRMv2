@@ -19,6 +19,7 @@ from .views import (
     MeView,
     PlatformLoginView,
     VerifyCredentialsView,
+    VerifyEmailView,
 )
 
 urlpatterns = [
@@ -46,4 +47,7 @@ urlpatterns = [
     # as a token value.
     path('invitation/accept/', InvitationAcceptView.as_view(), name='auth-invitation-accept'),
     path('invitation/<str:token>/', InvitationLookupView.as_view(), name='auth-invitation-lookup'),
+    # Self-serve signup email-verification consume. Public (the new
+    # owner clicks the link in their inbox before they've logged in).
+    path('verify-email/<str:token>/', VerifyEmailView.as_view(), name='auth-verify-email'),
 ]

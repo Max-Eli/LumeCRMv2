@@ -6,8 +6,12 @@ so the same user record can hold memberships in multiple tenants and so platform
 superusers (Lumè staff) can exist without being tied to any tenant.
 """
 
+import datetime as dt
+import secrets
+
 from django.contrib.auth.models import AbstractUser, BaseUserManager
 from django.db import models
+from django.utils import timezone as djtz
 
 
 class UserManager(BaseUserManager):
@@ -102,7 +106,105 @@ class User(AbstractUser):
     USERNAME_FIELD = 'email'
     REQUIRED_FIELDS = []
 
+    # Email verification — set when the owner clicks the link in the
+    # post-signup verification email. The dashboard renders a "verify
+    # your email" banner until this is set; some surfaces (sending
+    # marketing campaigns, inviting staff) gate on it.
+    email_verified_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text=(
+            "When the user verified their email by clicking the link in "
+            "the verification email. Null = unverified. Pre-existing "
+            "users created before self-serve signup remain null but are "
+            "trusted (operator manually provisioned)."
+        ),
+    )
+
     objects = UserManager()
 
     def __str__(self):
         return self.email
+
+
+# ── Email verification token (Phase 3 — self-serve signup) ─────────
+
+
+def _generate_email_verification_token() -> str:
+    """256-bit URL-safe token. Same shape as
+    apps.portal.CustomerPortalToken — high entropy, path-safe,
+    not derivable from the user's email."""
+    return secrets.token_urlsafe(32)
+
+
+# Window in which the verification link is usable. 7 days is the
+# industry default — long enough that someone signing up on a Friday
+# can verify Monday morning, short enough that a leaked email loses
+# utility quickly.
+EMAIL_VERIFICATION_EXPIRY = dt.timedelta(days=7)
+
+
+class EmailVerificationToken(models.Model):
+    """Single-use token sent to a freshly-signed-up user's email.
+
+    Issued by ``apps.tenants.signup.create_signup_session`` immediately
+    after the User + Tenant are created. The customer's verification
+    email links to ``/verify-email/<token>``; the frontend POSTs to
+    the consume endpoint which marks the User as verified.
+
+    Security posture mirrors ``apps.portal.CustomerPortalToken``:
+      - 256-bit ``secrets.token_urlsafe`` entropy
+      - 7-day expiry — bounded blast radius if email leaks
+      - Single-use (``used_at`` set atomically on consume)
+      - Stored plaintext (token IS the credential; hashing prevents
+        lookup-by-token without a full table scan)
+
+    No FK to tenant — verification is a User-level concept that
+    applies across every membership the user holds (signup creates
+    one membership, but a user could later be invited into others).
+    """
+
+    user = models.ForeignKey(
+        'users.User',
+        on_delete=models.CASCADE,
+        related_name='verification_tokens',
+    )
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        default=_generate_email_verification_token,
+        db_index=True,
+    )
+    expires_at = models.DateTimeField()
+    used_at = models.DateTimeField(null=True, blank=True)
+    requested_ip = models.GenericIPAddressField(null=True, blank=True)
+    requested_user_agent = models.CharField(max_length=400, blank=True, default='')
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ('-created_at',)
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+        ]
+
+    def __str__(self) -> str:
+        state = 'used' if self.used_at else 'pending'
+        return f'EmailVerificationToken<user={self.user_id} {state}>'
+
+    @classmethod
+    def issue(
+        cls, *, user, requested_ip: str = '', requested_user_agent: str = '',
+    ) -> 'EmailVerificationToken':
+        """Create + persist a fresh token for ``user``. Caller dispatches
+        the email after this returns."""
+        return cls.objects.create(
+            user=user,
+            expires_at=djtz.now() + EMAIL_VERIFICATION_EXPIRY,
+            requested_ip=requested_ip or None,
+            requested_user_agent=(requested_user_agent or '')[:400],
+        )
+
+    @property
+    def is_valid(self) -> bool:
+        """True iff the token can still be consumed: not used + not expired.
+        Caller (consume view) re-checks inside an atomic block."""
+        return self.used_at is None and self.expires_at > djtz.now()

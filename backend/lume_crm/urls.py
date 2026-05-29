@@ -20,6 +20,7 @@ from django.contrib import admin
 from django.urls import include, path
 from drf_spectacular.views import SpectacularAPIView, SpectacularRedocView, SpectacularSwaggerView
 
+from apps.tenants.public_views import public_signup
 from lume_crm.health import liveness, readiness
 
 urlpatterns = [
@@ -53,6 +54,10 @@ urlpatterns = [
     path('api/', include('apps.portal.urls')),
     path('api/billing/', include('apps.billing.urls')),
     path('api/payments/', include('apps.payments.urls')),
+
+    # Public (unauthenticated) endpoints: self-serve signup, lead-
+    # capture, etc. Throttled aggressively per-IP — see SignupThrottle.
+    path('api/public/signup/', public_signup, name='public-signup'),
 
     # OpenAPI schema + Swagger UI
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),

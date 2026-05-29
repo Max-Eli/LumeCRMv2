@@ -2707,3 +2707,313 @@ class QuotaCheckTests(TestCase):
         self.assertIn('qstarter', str(err))
         self.assertIn('2000', str(err))
         self.assertIn('email pack', str(err))
+
+
+# ── Self-serve signup (Phase 3) ──────────────────────────────────
+
+
+from unittest.mock import patch  # noqa: E402
+
+from django.test import override_settings  # noqa: E402
+
+
+@override_settings(
+    STRIPE_SECRET_KEY='sk_test_fake',
+    EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend',
+    # The signup throttle (5/hour) trips inside a test class with
+    # multiple POSTs in a tight loop. Set to None here so the
+    # throttle's rate-parser disables it for the test run. Production
+    # keeps the 5/hour cap; this only loosens what the test client
+    # sees.
+    REST_FRAMEWORK={
+        'DEFAULT_AUTHENTICATION_CLASSES': [
+            'rest_framework.authentication.SessionAuthentication',
+        ],
+        'DEFAULT_THROTTLE_RATES': {
+            'signup': None,
+            'booking_submit': '10/hour',
+            'booking_reschedule': '20/hour',
+        },
+    },
+)
+class SignupEndpointTests(TestCase):
+    """``POST /api/public/signup/`` is the self-serve front door. The
+    happy path provisions User + Tenant + Stripe Customer + Stripe
+    Subscription + verification email atomically. Every failure mode
+    has a stable error ``code`` that the marketing-site form maps to
+    field-level error UX."""
+
+    URL = '/api/public/signup/'
+
+    def setUp(self):
+        # Clear the throttle cache between tests so the 5/hour signup
+        # cap doesn't trip when a test class makes many requests in
+        # a tight loop. Production behavior is unchanged.
+        from django.core.cache import cache
+        cache.clear()
+        self.client = APIClient()
+
+    def _valid_payload(self, **overrides) -> dict:
+        # Business-email domain because the production rule rejects
+        # gmail/yahoo/etc. Override per-test for the rejection cases.
+        body = {
+            'business_name': 'Acme Med Spa',
+            'owner_email': 'founder@acmemedspa-test.com',
+            'owner_password': 'sup3rs3cret!XYZ',
+            'owner_first_name': 'Pat',
+            'owner_last_name': 'Provider',
+            'timezone': 'America/New_York',
+            'plan': 'starter',
+            'billing_cycle': 'monthly',
+            'payment_method_id': 'pm_card_visa_test',
+            'baa_accepted': True,
+            'tos_accepted': True,
+        }
+        body.update(overrides)
+        return body
+
+    def _mock_stripe_success(self, mock_stripe):
+        """Wire up the Stripe SDK mock so create_customer + create_sub
+        succeed. Used by every happy-path test."""
+        customer = type('Cust', (), {})()
+        customer.id = 'cus_signup_test_123'
+        mock_stripe.return_value.Customer.create.return_value = customer
+        sub = type('Sub', (), {})()
+        sub.id = 'sub_signup_test_456'
+        sub.trial_end = 9_999_999_999  # future
+        sub.current_period_end = 9_999_999_999
+        mock_stripe.return_value.Subscription.create.return_value = sub
+
+    @patch('apps.billing.services._stripe')
+    def test_happy_path_creates_user_tenant_and_subscription(self, mock_stripe):
+        self._mock_stripe_success(mock_stripe)
+        # Stripe Price ID gets pulled from settings in the service.
+        with override_settings(STRIPE_PRICE_STARTER_MONTHLY='price_starter_monthly_test'):
+            resp = self.client.post(self.URL, self._valid_payload(), format='json')
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        self.assertIn('subdomain', resp.data)
+        self.assertIn('login_url', resp.data)
+        self.assertTrue(resp.data['verification_email_sent'])
+
+        # User + Tenant + Membership + Verification token created.
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        user = User.objects.get(email='founder@acmemedspa-test.com')
+        self.assertIsNone(user.email_verified_at)  # not yet verified
+
+        tenant = Tenant.objects.get(slug=resp.data['subdomain'])
+        self.assertEqual(tenant.name, 'Acme Med Spa')
+        self.assertEqual(tenant.plan, 'trial')
+        self.assertEqual(tenant.status, 'trial')
+        self.assertEqual(tenant.billing_cycle, 'monthly')
+        self.assertIsNotNone(tenant.trial_ends_at)
+        self.assertEqual(tenant.stripe_customer_id, 'cus_signup_test_123')
+        self.assertEqual(tenant.stripe_subscription_id, 'sub_signup_test_456')
+        # BAA + ToS acceptance stamped — load-bearing for HIPAA audit.
+        self.assertIsNotNone(tenant.baa_accepted_at)
+        self.assertEqual(tenant.baa_version, '2026-05')
+        self.assertIsNotNone(tenant.tos_accepted_at)
+        self.assertEqual(tenant.tos_version, '2026-05')
+
+    @patch('apps.billing.services._stripe')
+    def test_happy_path_sends_verification_email(self, mock_stripe):
+        from django.core import mail
+        self._mock_stripe_success(mock_stripe)
+        with override_settings(STRIPE_PRICE_STARTER_MONTHLY='price_test'):
+            resp = self.client.post(self.URL, self._valid_payload(), format='json')
+        self.assertEqual(resp.status_code, 201)
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertIn('Verify your email', msg.subject)
+        self.assertIn('founder@acmemedspa-test.com', msg.to)
+
+    def test_free_email_rejected(self):
+        resp = self.client.post(
+            self.URL,
+            self._valid_payload(owner_email='founder@gmail.com'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data['code'], 'free_email_blocked')
+
+    def test_baa_not_accepted_rejected(self):
+        resp = self.client.post(
+            self.URL,
+            self._valid_payload(baa_accepted=False),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data['code'], 'baa_not_accepted')
+
+    def test_tos_not_accepted_rejected(self):
+        resp = self.client.post(
+            self.URL,
+            self._valid_payload(tos_accepted=False),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data['code'], 'tos_not_accepted')
+
+    def test_non_starter_plan_rejected_with_demo_message(self):
+        resp = self.client.post(
+            self.URL,
+            self._valid_payload(plan='pro'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data['code'], 'plan_not_self_serve')
+        self.assertIn('demo', resp.data['detail'].lower())
+
+    def test_invalid_billing_cycle_rejected(self):
+        resp = self.client.post(
+            self.URL,
+            self._valid_payload(billing_cycle='biennial'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_weak_password_rejected(self):
+        resp = self.client.post(
+            self.URL,
+            self._valid_payload(owner_password='short'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data['code'], 'weak_password')
+
+    def test_unknown_timezone_rejected(self):
+        resp = self.client.post(
+            self.URL,
+            self._valid_payload(timezone='Atlantis/Sea'),
+            format='json',
+        )
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data['code'], 'invalid_timezone')
+
+    @patch('apps.billing.services._stripe')
+    def test_duplicate_email_returns_409(self, mock_stripe):
+        from django.contrib.auth import get_user_model
+        get_user_model().objects.create_user(
+            email='founder@acmemedspa-test.com', password='x',
+        )
+        resp = self.client.post(self.URL, self._valid_payload(), format='json')
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data['code'], 'email_already_in_use')
+        # Stripe must NOT have been called when email already exists.
+        mock_stripe.return_value.Customer.create.assert_not_called()
+
+    @patch('apps.billing.services._stripe')
+    def test_slug_collision_appends_number(self, mock_stripe):
+        """Second signup with the same business name gets `-2`
+        appended to the slug rather than failing."""
+        self._mock_stripe_success(mock_stripe)
+        with override_settings(STRIPE_PRICE_STARTER_MONTHLY='price_test'):
+            r1 = self.client.post(
+                self.URL,
+                self._valid_payload(
+                    owner_email='one@acmemed-1.com',
+                    business_name='Identical Spa',
+                ),
+                format='json',
+            )
+            self.assertEqual(r1.status_code, 201, r1.data)
+            r2 = self.client.post(
+                self.URL,
+                self._valid_payload(
+                    owner_email='two@acmemed-2.com',
+                    business_name='Identical Spa',
+                ),
+                format='json',
+            )
+        self.assertEqual(r2.status_code, 201, r2.data)
+        self.assertNotEqual(r1.data['subdomain'], r2.data['subdomain'])
+        self.assertTrue(r2.data['subdomain'].endswith('-2'))
+
+    @patch('apps.billing.services._stripe')
+    def test_stripe_failure_rolls_back_user_and_tenant(self, mock_stripe):
+        """If Stripe rejects the card, the User + Tenant are rolled
+        back — no orphaned local rows."""
+        mock_stripe.return_value.Customer.create.side_effect = Exception(
+            'card_declined',
+        )
+        resp = self.client.post(self.URL, self._valid_payload(), format='json')
+        self.assertEqual(resp.status_code, 502)
+        self.assertEqual(resp.data['code'], 'stripe_error')
+
+        # Neither User nor Tenant should exist locally.
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        self.assertFalse(
+            User.objects.filter(email='founder@acmemedspa-test.com').exists(),
+        )
+        self.assertFalse(
+            Tenant.objects.filter(name='Acme Med Spa').exists(),
+        )
+
+    @override_settings(STRIPE_SECRET_KEY='')
+    def test_stripe_not_configured_returns_503(self):
+        resp = self.client.post(self.URL, self._valid_payload(), format='json')
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.data['code'], 'stripe_not_configured')
+
+    def test_reserved_slug_skipped(self):
+        # Use a business name that slugifies to a reserved word.
+        # The signup should still succeed — slug becomes
+        # 'admin-2' or similar instead of failing.
+        with patch('apps.billing.services._stripe') as mock_stripe:
+            self._mock_stripe_success(mock_stripe)
+            with override_settings(STRIPE_PRICE_STARTER_MONTHLY='price_test'):
+                resp = self.client.post(
+                    self.URL,
+                    self._valid_payload(business_name='admin'),
+                    format='json',
+                )
+        self.assertEqual(resp.status_code, 201, resp.data)
+        self.assertNotEqual(resp.data['subdomain'], 'admin')
+
+
+class VerifyEmailEndpointTests(TestCase):
+    """``POST /api/auth/verify-email/<token>/`` consumes a verification
+    token issued at signup time."""
+
+    URL = '/api/auth/verify-email/{token}/'
+
+    def setUp(self):
+        from apps.users.models import EmailVerificationToken
+        from django.contrib.auth import get_user_model
+        User = get_user_model()
+        self.user = User.objects.create_user(
+            email='verify-me@example.com', password='x',
+        )
+        self.token = EmailVerificationToken.issue(user=self.user)
+        self.client = APIClient()
+
+    def test_valid_token_marks_user_verified(self):
+        resp = self.client.post(self.URL.format(token=self.token.token))
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertTrue(resp.data['verified'])
+        self.user.refresh_from_db()
+        self.assertIsNotNone(self.user.email_verified_at)
+        # Token must be marked used.
+        self.token.refresh_from_db()
+        self.assertIsNotNone(self.token.used_at)
+
+    def test_unknown_token_returns_410(self):
+        resp = self.client.post(self.URL.format(token='nonexistent'))
+        self.assertEqual(resp.status_code, 410)
+        self.assertEqual(resp.data['code'], 'token_not_valid')
+
+    def test_consumed_token_returns_410(self):
+        # First consume → 200; second consume → 410.
+        first = self.client.post(self.URL.format(token=self.token.token))
+        self.assertEqual(first.status_code, 200)
+        second = self.client.post(self.URL.format(token=self.token.token))
+        self.assertEqual(second.status_code, 410)
+
+    def test_expired_token_returns_410(self):
+        from django.utils import timezone as djtz
+        from datetime import timedelta
+        self.token.expires_at = djtz.now() - timedelta(minutes=1)
+        self.token.save()
+        resp = self.client.post(self.URL.format(token=self.token.token))
+        self.assertEqual(resp.status_code, 410)
