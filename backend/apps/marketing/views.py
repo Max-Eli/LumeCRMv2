@@ -58,6 +58,20 @@ from .models import (
     MarketingTemplate,
 )
 from .permissions import MarketingWritePermission
+
+from apps.tenants.plan_permissions import PlanFeatureRequired
+from apps.tenants.plans import F_EMAIL_MARKETING
+
+# Plan gate: the entire marketing surface is a Pro+ feature. Compose
+# the standard role gate (MarketingWritePermission, which checks
+# VIEW_AUDIENCE_SEGMENTS for read + SEND_MARKETING_CAMPAIGN for write)
+# with the plan gate via this shared pair. A Starter tenant gets a
+# 402 with feature='email_marketing'; an upgraded Pro/Enterprise
+# tenant gets the normal role check.
+_MARKETING_PERMISSIONS = [
+    MarketingWritePermission,
+    PlanFeatureRequired(F_EMAIL_MARKETING),
+]
 from .serializers import (
     AudienceCountSerializer,
     AudienceSerializer,
@@ -79,7 +93,7 @@ class AudienceViewSet(viewsets.ModelViewSet):
     """CRUD + preview for `Audience` rows, scoped per tenant."""
 
     serializer_class = AudienceSerializer
-    permission_classes = [MarketingWritePermission]
+    permission_classes = _MARKETING_PERMISSIONS
     http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
 
     def get_queryset(self):
@@ -260,7 +274,7 @@ class MarketingTemplateViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = MarketingTemplateSerializer
-    permission_classes = [MarketingWritePermission]
+    permission_classes = _MARKETING_PERMISSIONS
     http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
 
     def get_queryset(self):
@@ -405,7 +419,7 @@ class CampaignViewSet(viewsets.ModelViewSet):
     (snapshot, email-send, etc.) all run.
     """
 
-    permission_classes = [MarketingWritePermission]
+    permission_classes = _MARKETING_PERMISSIONS
     http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
 
     def get_queryset(self):
@@ -837,7 +851,7 @@ class AutomationViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = AutomationSerializer
-    permission_classes = [MarketingWritePermission]
+    permission_classes = _MARKETING_PERMISSIONS
     http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
 
     def get_queryset(self):
@@ -1004,7 +1018,7 @@ class CustomerMarketingHistoryView(viewsets.ViewSet):
     users with VIEW_AUDIENCE_SEGMENTS.
     """
 
-    permission_classes = [MarketingWritePermission]
+    permission_classes = _MARKETING_PERMISSIONS
 
     def list(self, request):
         membership = getattr(request, 'tenant_membership', None)

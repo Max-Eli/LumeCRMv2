@@ -24,12 +24,44 @@ function setActiveTenantCookie(slug: string | undefined) {
   }
 }
 
+/** Subscription tier a tenant is on. Mirrors backend Tenant.Plan. */
+export type TenantPlan = 'trial' | 'starter' | 'pro' | 'enterprise';
+
+/** Tenant info nested in a Membership. Includes the resolved feature
+ *  set so the frontend can gate nav items + render upsell badges
+ *  without a second roundtrip. Backend ``PlanFeatureRequired`` is
+ *  still the source of truth at the endpoint layer. */
+export interface MembershipTenant {
+  id: number;
+  name: string;
+  slug: string;
+  plan: TenantPlan;
+  /** True for the original launch spas — exempt from plan capacity
+   *  gates + always sees every feature regardless of nominal plan. */
+  grandfathered: boolean;
+  /** Sorted list of feature keys this tenant has access to right now.
+   *  Use ``tenantHasFeature(membership, key)`` from this file rather
+   *  than indexing the array directly — it handles the Set conversion. */
+  features: string[];
+}
+
 /** A user's membership in a single tenant — role, job title, bookable flag. */
 export interface Membership {
-  tenant: { id: number; name: string; slug: string };
+  tenant: MembershipTenant;
   role: 'owner' | 'manager' | 'front_desk' | 'provider' | 'bookkeeper' | 'marketing';
   role_display: string;
   is_bookable: boolean;
+}
+
+/** Convenience predicate for "does this membership's tenant include
+ *  feature X?" Wraps the array → Set conversion + handles the
+ *  null-membership case gracefully (returns false). */
+export function tenantHasFeature(
+  membership: Membership | null | undefined,
+  feature: string,
+): boolean {
+  if (!membership) return false;
+  return membership.tenant.features.includes(feature);
 }
 
 /** Authenticated user record returned by `/api/auth/me/` and `/api/auth/login/`. */

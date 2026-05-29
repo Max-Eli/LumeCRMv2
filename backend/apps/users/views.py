@@ -43,20 +43,35 @@ def _serialize_user(user):
     Includes `is_platform_admin` so the frontend can route appropriately
     (platform admin → /platform; tenant user → /dashboard). Memberships
     are listed only when present; platform admins have none.
+
+    Each membership carries the tenant's ``plan`` + ``grandfathered``
+    flag + the resolved ``features`` set so the frontend can gate UI
+    surfaces (sidebar nav hides, "this feature is Pro" upsell badges)
+    without a second round-trip. The backend remains the source of
+    truth — every gated endpoint re-checks via ``PlanFeatureRequired``
+    — this is purely about UX correctness.
     """
-    memberships = [
-        {
+    from apps.tenants.plans import features_for
+
+    memberships = []
+    for m in user.memberships.filter(is_active=True).select_related('tenant'):
+        feats = features_for(m.tenant)
+        memberships.append({
             'tenant': {
                 'id': m.tenant_id,
                 'name': m.tenant.name,
                 'slug': m.tenant.slug,
+                'plan': m.tenant.plan,
+                'grandfathered': m.tenant.grandfathered,
+                # Serialize as a sorted list (deterministic + JSON-safe;
+                # frozenset isn't natively serializable). Frontend
+                # builds a Set client-side for membership checks.
+                'features': sorted(feats),
             },
             'role': m.role,
             'role_display': m.get_role_display(),
             'is_bookable': m.is_bookable,
-        }
-        for m in user.memberships.filter(is_active=True).select_related('tenant')
-    ]
+        })
     return {
         'id': user.id,
         'email': user.email,

@@ -2581,3 +2581,129 @@ class PlanFeatureRequiredTests(TestCase):
         # Repr stability matters for DRF schema generation + debug logs.
         cls = PlanFeatureRequired(F_EMAIL_MARKETING)
         self.assertEqual(cls.__name__, 'PlanFeatureRequired_email_marketing')
+
+
+# ── Usage counters (Phase 1f) ────────────────────────────────────
+
+
+from apps.tenants.usage import (  # noqa: E402
+    EmailQuotaExceeded,
+    check_email_quota,
+    check_sms_quota,
+    increment_email_count,
+    increment_sms_count,
+)
+
+
+class UsageCounterTests(TestCase):
+    """Per-tenant SMS + email counters are mutated through atomic
+    F() expressions to avoid races on concurrent sends. The helpers
+    are best-effort: a bad input should never raise + take down a
+    user-facing send path."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(
+            name='Counter Spa', slug='counter-spa', plan='starter',
+            status=Tenant.Status.ACTIVE,
+        )
+
+    def test_increment_sms_bumps_counter_by_one(self):
+        self.assertEqual(self.tenant.current_period_sms_count, 0)
+        increment_sms_count(self.tenant)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.current_period_sms_count, 1)
+
+    def test_increment_sms_accepts_n_for_batched(self):
+        increment_sms_count(self.tenant, n=5)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.current_period_sms_count, 5)
+
+    def test_increment_email_bumps_counter_by_one(self):
+        self.assertEqual(self.tenant.current_period_email_count, 0)
+        increment_email_count(self.tenant)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.current_period_email_count, 1)
+
+    def test_increment_uses_atomic_F_expression(self):
+        # Two concurrent-ish increments without refresh_from_db in
+        # between must both land. If we were assigning instead of
+        # F()-updating, the second one would overwrite with the
+        # in-memory stale value.
+        increment_sms_count(self.tenant)
+        increment_sms_count(self.tenant)
+        increment_sms_count(self.tenant)
+        self.tenant.refresh_from_db()
+        self.assertEqual(self.tenant.current_period_sms_count, 3)
+
+    def test_increment_silently_ignores_unsaved_tenant(self):
+        unsaved = Tenant(slug='nope', name='nope')
+        # No pk yet → no-op, no error.
+        increment_sms_count(unsaved)
+        increment_email_count(unsaved)
+
+
+class QuotaCheckTests(TestCase):
+    """``check_sms_quota`` + ``check_email_quota`` return a tuple
+    (allowed_or_within, quota, used) the send wrappers consult to
+    decide policy. SMS is pay-as-you-go (always allowed past quota,
+    metered); email is hard-block past quota."""
+
+    def setUp(self):
+        self.starter = Tenant.objects.create(
+            name='QStarter', slug='qstarter', plan='starter',
+            status=Tenant.Status.ACTIVE,
+        )
+        self.grandfathered = Tenant.objects.create(
+            name='QGF', slug='qgf', plan='starter', grandfathered=True,
+            status=Tenant.Status.ACTIVE,
+        )
+
+    def test_email_quota_allowed_under_cap(self):
+        self.starter.current_period_email_count = 100
+        self.starter.save()
+        allowed, quota, used = check_email_quota(self.starter)
+        self.assertTrue(allowed)
+        self.assertEqual(quota, 2_000)
+        self.assertEqual(used, 100)
+
+    def test_email_quota_blocked_at_cap(self):
+        # Inclusive cap: at quota = blocked.
+        self.starter.current_period_email_count = 2_000
+        self.starter.save()
+        allowed, quota, used = check_email_quota(self.starter)
+        self.assertFalse(allowed)
+        self.assertEqual(quota, 2_000)
+        self.assertEqual(used, 2_000)
+
+    def test_email_quota_unlimited_for_grandfathered(self):
+        self.grandfathered.current_period_email_count = 1_000_000
+        self.grandfathered.save()
+        allowed, quota, used = check_email_quota(self.grandfathered)
+        self.assertTrue(allowed)
+        self.assertIsNone(quota)
+
+    def test_sms_quota_within_below_cap(self):
+        self.starter.current_period_sms_count = 100
+        self.starter.save()
+        within, quota, used = check_sms_quota(self.starter)
+        self.assertTrue(within)
+        self.assertEqual(quota, 500)
+
+    def test_sms_quota_overage_signaled_past_cap(self):
+        # SMS past quota returns False — caller knows the send is
+        # OVERAGE (metered to Stripe at period roll) but still goes.
+        self.starter.current_period_sms_count = 500
+        self.starter.save()
+        within, quota, used = check_sms_quota(self.starter)
+        self.assertFalse(within)
+        self.assertEqual(quota, 500)
+        self.assertEqual(used, 500)
+
+    def test_email_quota_exceeded_carries_context(self):
+        # The exception isn't raised by the helpers themselves (they
+        # return tuples) but it is the typed object send-blockers
+        # raise. Verify the message format.
+        err = EmailQuotaExceeded('qstarter', 2_000, 2_000)
+        self.assertIn('qstarter', str(err))
+        self.assertIn('2000', str(err))
+        self.assertIn('email pack', str(err))

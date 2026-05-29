@@ -34,6 +34,14 @@ from .models import CommissionEntry, CommissionRule
 from .permissions import CommissionEntryPermission, CommissionRulePermission
 from .serializers import CommissionEntrySerializer, CommissionRuleSerializer
 
+from apps.tenants.plan_permissions import PlanFeatureRequired
+from apps.tenants.plans import F_COMMISSIONS
+
+# Plan gate: commission tracking is Pro+. Starter tenants get a 402
+# with feature='commissions' so the frontend renders the right
+# upsell instead of a generic permission-denied.
+_COMMISSIONS_GATE = PlanFeatureRequired(F_COMMISSIONS)
+
 
 class CommissionRuleViewSet(viewsets.ModelViewSet):
     """CRUD on per-staff commission rules.
@@ -46,7 +54,7 @@ class CommissionRuleViewSet(viewsets.ModelViewSet):
     """
 
     serializer_class = CommissionRuleSerializer
-    permission_classes = [CommissionRulePermission]
+    permission_classes = [CommissionRulePermission, _COMMISSIONS_GATE]
     http_method_names = ['get', 'post', 'patch', 'delete', 'head', 'options']
 
     def get_queryset(self):
@@ -159,7 +167,7 @@ class CommissionEntryViewSet(viewsets.ReadOnlyModelViewSet):
     """
 
     serializer_class = CommissionEntrySerializer
-    permission_classes = [CommissionEntryPermission]
+    permission_classes = [CommissionEntryPermission, _COMMISSIONS_GATE]
 
     def get_queryset(self):
         membership = getattr(self.request, 'tenant_membership', None)

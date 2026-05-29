@@ -209,6 +209,23 @@ def _dispatch_one(
             reason='quiet_hours',
         )
 
+    # Per-tenant email quota gate (Phase 1g). Marketing email is
+    # hard-blocked past the included quota — operators see clear
+    # "buy an email pack" messaging on /org/billing rather than a
+    # surprise SES bill from runaway sends. Transactional emails
+    # (booking confirmations, invoice receipts, etc.) are NOT
+    # blocked at this layer — those are operational and continue
+    # past quota; they count toward usage so the operator can see
+    # what they're consuming.
+    if channel == Channel.EMAIL:
+        from apps.tenants.usage import check_email_quota
+        allowed, _quota, _used = check_email_quota(tenant)
+        if not allowed:
+            return _suppressed_log(
+                campaign=campaign, customer=customer, channel=channel,
+                reason='quota_exceeded',
+            )
+
     # Generate / reuse the unsubscribe token + render the body.
     token_row = _ensure_unsubscribe_token(
         customer=customer, channel=channel,
@@ -300,6 +317,11 @@ def _dispatch_one(
                     msg.attach_alternative(rendered_body, 'text/html')
                 msg.send(fail_silently=False)
                 provider_message_id = f'stub-email-{secrets.token_hex(8)}'
+                # Increment the tenant's current-period email counter so
+                # /org/billing usage + Stripe-side overage reporting reflect
+                # this send. Best-effort; never raises.
+                from apps.tenants.usage import increment_email_count
+                increment_email_count(tenant)
             except Exception as e:
                 status = MarketingSendLog.Status.FAILED
                 failure_reason = str(e)[:500]
@@ -350,6 +372,12 @@ def _dispatch_one(
                 # the status callback can correlate updates back to
                 # this row.
                 provider_message_id = tw_msg.sid
+                # Bump the per-tenant SMS counter. Marketing-campaign
+                # SMS counts the same as transactional SMS in
+                # /org/billing usage — operators care about total
+                # outbound, not which subsystem sent it.
+                from apps.tenants.usage import increment_sms_count
+                increment_sms_count(tenant)
             except TwilioRestException as e:
                 status = MarketingSendLog.Status.FAILED
                 failure_reason = f'twilio:{e.code} {str(e)[:400]}'

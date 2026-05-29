@@ -33,6 +33,16 @@ from django.db.models import Max, OuterRef, Q, Subquery
 from django.utils import timezone as djtz
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
+
+from apps.tenants.plan_permissions import PlanFeatureRequired
+from apps.tenants.plans import F_SMS_INBOX
+
+# Plan gate: the 2-way SMS inbox is a Pro+ feature. The Twilio webhook
+# (AllowAny) is NOT gated — Twilio doesn't know about plans + we need
+# to accept inbound replies for compliance regardless of tier; sends
+# are what's blocked. The MessagingViewSet covers the sends, and
+# SavedReplyViewSet drives the templates. Both gated below.
+_SMS_INBOX_GATE = PlanFeatureRequired(F_SMS_INBOX)
 from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.permissions import AllowAny
 
@@ -100,7 +110,7 @@ class MessagingViewSet(viewsets.ViewSet):
     consumer of an individual-message URL.
     """
 
-    permission_classes = [IsTenantStaff]
+    permission_classes = [IsTenantStaff, _SMS_INBOX_GATE]
     http_method_names = ['get', 'post', 'head', 'options']
 
     # `list` → /threads/ : inbox view, one row per customer.
@@ -513,7 +523,7 @@ class SavedReplyViewSet(viewsets.ModelViewSet):
     changed the address reply?"
     """
 
-    permission_classes = [IsTenantStaff]
+    permission_classes = [IsTenantStaff, _SMS_INBOX_GATE]
     serializer_class = SavedReplySerializer
     http_method_names = ['get', 'post', 'put', 'patch', 'delete', 'head', 'options']
 
@@ -574,7 +584,7 @@ class AutomatedTemplatesView(APIView):
     default" affordance.
     """
 
-    permission_classes = [IsTenantStaff]
+    permission_classes = [IsTenantStaff, _SMS_INBOX_GATE]
 
     def get(self, request):
         tenant = get_current_tenant()

@@ -67,6 +67,12 @@ export interface NavLink {
    *  NOT in this list. Mirrors the backend permission gate so the
    *  user doesn't click through to a 403. */
   roles?: ReadonlyArray<'owner' | 'manager' | 'front_desk' | 'provider' | 'bookkeeper' | 'marketing'>;
+  /** When set, hide the link from tenants whose plan doesn't include
+   *  one of these feature keys. Mirrors the backend
+   *  ``PlanFeatureRequired`` gate so the operator doesn't click
+   *  through to a 402. Grandfathered tenants pass through (they
+   *  inherit every feature). */
+  features?: ReadonlyArray<string>;
   /** Optional sub-links shown when the parent is active (i.e. the
    *  current path starts with `href`). Each sub-link can be role-
    *  gated; if `roles` is set, only members whose role is in the
@@ -81,6 +87,9 @@ export interface SubNavLink {
    *  Mirrors the backend permission gate so the user doesn't click
    *  through to a 403. */
   roles?: ReadonlyArray<'owner' | 'manager' | 'front_desk' | 'provider' | 'bookkeeper' | 'marketing'>;
+  /** Same semantics as the parent's ``features`` — used for sub-link
+   *  granularity when a parent group has mixed feature requirements. */
+  features?: ReadonlyArray<string>;
 }
 
 export const NAV_LINKS: NavLink[] = [
@@ -137,8 +146,11 @@ export const NAV_LINKS: NavLink[] = [
       { href: '/staff/employees', label: 'Employees', roles: ['owner', 'manager'] },
       { href: '/staff/schedule', label: 'Schedule', roles: ['owner', 'manager'] },
       { href: '/staff/check-in', label: 'Check-in', roles: ['owner', 'manager'] },
-      { href: '/staff/commissions', label: 'Commissions' },
-      { href: '/staff/payroll', label: 'Payroll', roles: ['owner', 'manager'] },
+      // Commissions + Payroll are Pro+ — Starter spas don't see the
+      // links. Backend gates the endpoints with PlanFeatureRequired,
+      // so this is UX (avoid 402 round-trip), not security.
+      { href: '/staff/commissions', label: 'Commissions', features: ['commissions'] },
+      { href: '/staff/payroll', label: 'Payroll', roles: ['owner', 'manager'], features: ['payroll_export'] },
     ],
   },
   // Forms surface — customer-facing client forms (intake + consent)
@@ -157,14 +169,15 @@ export const NAV_LINKS: NavLink[] = [
     ],
   },
   { href: '/reports', label: 'Reports', icon: BarChart3, group: 'location' },
-  // Marketing — audiences, templates, campaigns. Owner + manager +
-  // marketing roles by default (front-desk gets read-only audience
-  // segment access via VIEW_AUDIENCE_SEGMENTS).
+  // Marketing — audiences, templates, campaigns. Pro+ feature; Starter
+  // spas don't see the entry. Backend gates with PlanFeatureRequired
+  // on the email_marketing key.
   {
     href: '/marketing',
     label: 'Marketing',
     icon: Megaphone,
     group: 'location',
+    features: ['email_marketing'],
     children: [
       { href: '/marketing', label: 'Overview', roles: ['owner', 'manager', 'marketing', 'front_desk'] },
       { href: '/marketing/audiences', label: 'Audiences', roles: ['owner', 'manager', 'marketing', 'front_desk'] },
@@ -175,13 +188,16 @@ export const NAV_LINKS: NavLink[] = [
   // Social inbox — Instagram Business DMs (FB + WhatsApp later).
   // Distinct from /inbox (SMS popout) because social DMs are batched
   // triage, not real-time front-desk work alongside the calendar.
-  // Owner + manager only (mirrors backend MANAGE_INTEGRATIONS gate).
+  // Owner + manager role gate AND social_integrations feature gate —
+  // the latter is currently in_flight (Meta App Review pending), so
+  // only grandfathered tenants see this link until Meta approves.
   {
     href: '/social',
     label: 'Social inbox',
     icon: Inbox,
     group: 'location',
     roles: ['owner', 'manager'],
+    features: ['social_integrations'],
   },
   // Organization-level surface — the business as a whole, not any one
   // location. Houses business profile + locations management +
@@ -331,6 +347,7 @@ export function AppSidebar({ user }: AppSidebarProps) {
           links={NAV_LINKS}
           collapsed={collapsed}
           userRole={primaryMembership?.role}
+          tenantFeatures={primaryMembership?.tenant.features ?? []}
           showIASplit={showIASplit}
           activeLocationName={activeLocationName}
         />
@@ -418,21 +435,37 @@ function NavGroups({
   links,
   collapsed,
   userRole,
+  tenantFeatures,
   showIASplit,
   activeLocationName,
 }: {
   links: NavLink[];
   collapsed: boolean;
   userRole?: string;
+  /** Sorted list of feature keys the tenant's plan includes (or
+   *  union-of-everything for grandfathered tenants). Drives
+   *  ``features``-based filtering on nav items so Pro-only links
+   *  hide on Starter tenants. */
+  tenantFeatures: ReadonlyArray<string>;
   showIASplit: boolean;
   activeLocationName: string | null;
 }) {
-  // Filter out role-gated top-level links the user can't see (mirrors
-  // backend permission gates — prevents the link from rendering at
-  // all rather than a 403 on click).
-  const visibleLinks = links.filter(
-    (l) => !l.roles || (userRole && l.roles.includes(userRole as never)),
-  );
+  // Build a Set for O(1) feature lookups during filtering. Stable
+  // reference per render since tenantFeatures is server-sorted.
+  const featureSet = new Set<string>(tenantFeatures);
+
+  // Filter out role-gated AND feature-gated top-level links the user
+  // can't see (mirrors backend permission + plan gates — prevents
+  // the link from rendering at all rather than a 403/402 on click).
+  const visibleLinks = links.filter((l) => {
+    if (l.roles && !(userRole && l.roles.includes(userRole as never))) {
+      return false;
+    }
+    if (l.features && !l.features.some((f) => featureSet.has(f))) {
+      return false;
+    }
+    return true;
+  });
 
   if (!showIASplit) {
     return (
@@ -443,6 +476,7 @@ function NavGroups({
             link={link}
             collapsed={collapsed}
             userRole={userRole}
+            featureSet={featureSet}
           />
         ))}
       </>
@@ -463,7 +497,7 @@ function NavGroups({
         </NavGroupHeader>
       ) : null}
       {locationLinks.map((link) => (
-        <SidebarLink key={link.href} link={link} collapsed={collapsed} userRole={userRole} />
+        <SidebarLink key={link.href} link={link} collapsed={collapsed} userRole={userRole} featureSet={featureSet} />
       ))}
 
       {orgLinks.length > 0 ? (
@@ -476,7 +510,7 @@ function NavGroups({
             <div className="my-2 mx-2 border-t border-sidebar-border" aria-hidden />
           )}
           {orgLinks.map((link) => (
-            <SidebarLink key={link.href} link={link} collapsed={collapsed} userRole={userRole} />
+            <SidebarLink key={link.href} link={link} collapsed={collapsed} userRole={userRole} featureSet={featureSet} />
           ))}
         </>
       ) : null}
@@ -507,12 +541,18 @@ function SidebarLink({
   link,
   collapsed,
   userRole,
+  featureSet,
 }: {
   link: NavLink;
   collapsed: boolean;
   /** The user's role in their primary membership — used to filter
    *  role-gated sub-links. Undefined for users with no membership. */
   userRole?: string;
+  /** Set of feature keys the tenant has access to — used to filter
+   *  feature-gated sub-links. Defaults to empty (no features) when
+   *  not supplied, which is the safe direction (hide everything
+   *  feature-gated rather than expose a Pro-only link to Starter). */
+  featureSet?: Set<string>;
 }) {
   const pathname = usePathname();
   const isActive = pathname === link.href || pathname.startsWith(`${link.href}/`);
@@ -543,13 +583,23 @@ function SidebarLink({
     );
   }
 
-  // Sub-links visible to this user — filter by role gates. If nothing
-  // is visible we treat the parent as if it had no children (common
-  // case for non-owner / non-manager roles on /settings).
+  // Sub-links visible to this user — filter by role gates AND plan
+  // feature gates. If nothing is visible we treat the parent as if
+  // it had no children (common case for non-owner / non-manager
+  // roles on /settings).
   const visibleChildren =
-    link.children?.filter(
-      (child) => !child.roles || (userRole && child.roles.includes(userRole as never)),
-    ) ?? [];
+    link.children?.filter((child) => {
+      if (child.roles && !(userRole && child.roles.includes(userRole as never))) {
+        return false;
+      }
+      if (
+        child.features
+        && !child.features.some((f) => (featureSet ?? new Set<string>()).has(f))
+      ) {
+        return false;
+      }
+      return true;
+    }) ?? [];
 
   return (
     <>

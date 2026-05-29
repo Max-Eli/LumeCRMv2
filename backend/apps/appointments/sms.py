@@ -121,6 +121,14 @@ def send_sms(*, tenant, to: str, body: str) -> str:
     except TwilioRestException as e:
         raise SMSDispatchError(f'twilio:{e.code} {e.msg}') from e
 
+    # Bump the tenant's current-period SMS counter so /org/billing's
+    # usage display + the Stripe metered-overage report at period
+    # roll reflect this send. Best-effort: never raises (a counter
+    # miss is preferred to a Twilio call that succeeded but recorded
+    # as a failed send). See apps.tenants.usage.
+    from apps.tenants.usage import increment_sms_count
+    increment_sms_count(tenant)
+
     return tw_msg.sid
 
 
