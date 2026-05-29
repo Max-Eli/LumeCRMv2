@@ -141,11 +141,11 @@ def create_trial_subscription(
     *,
     plan: str,
     billing_cycle: str,
-    trial_days: int = 14,
+    trial_days: int = 30,
 ) -> str:
     """Create a Stripe Subscription with a built-in trial period.
 
-    The trial period is Stripe-native (no charge until day 15). When
+    The trial period is Stripe-native (no charge until day 31). When
     the trial ends, Stripe automatically attempts the first charge —
     we don't need a separate cron. ``customer.subscription.updated``
     webhook fires on both the trial-end transition and the charge
@@ -155,11 +155,11 @@ def create_trial_subscription(
         tenant: must already have ``stripe_customer_id`` set.
         plan: one of ``starter`` / ``pro``. Trial signups pick a
             target tier at checkout; the subscription is created
-            against that tier's price, with a 14-day trial.
+            against that tier's price, with a 30-day trial.
         billing_cycle: ``monthly`` or ``annual``. Determines which
             Stripe Price ID we pull from settings.
-        trial_days: defaults to 14; tests pass 0 for immediate-charge
-            scenarios.
+        trial_days: defaults to 30 (the public marketing promise);
+            tests pass 0 for immediate-charge scenarios.
     """
     if not tenant.stripe_customer_id:
         raise StripeBillingError(

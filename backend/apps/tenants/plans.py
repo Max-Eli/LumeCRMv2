@@ -121,7 +121,7 @@ TRIAL_FEATURES = PRO_FEATURES
 _PLAN_CAPACITY: dict[str, dict] = {
     'trial': {
         # Trial inherits Pro capacity so the operator can populate a
-        # realistic working spa during the 14-day window.
+        # realistic working spa during the 30-day window.
         'max_staff': 10,
         'max_locations': 3,
         'sms_included': 1_500,

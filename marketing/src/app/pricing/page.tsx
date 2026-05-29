@@ -37,7 +37,7 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Pricing',
   description:
-    'Three tiers from $99/mo. BAA included. Clinical chart notes, packages, memberships, and gift cards at every level. Stripe card processing for Starter, custom merchant integration for Pro and Enterprise.',
+    'Three tiers from $99/mo. 30-day free trial on every plan. BAA included. Clinical chart notes, packages, memberships, and gift cards at every level. Stripe card processing for Starter, custom merchant integration for Pro and Enterprise.',
 };
 
 interface Tier {
@@ -64,7 +64,7 @@ const TIERS: Tier[] = [
     positioning: 'Annual billing. $99/mo billed monthly. Cancel anytime.',
     bestFor:
       'A solo injector, a two-chair shop, or any spa that just opened. The full medspa CRM at the lowest entry point.',
-    cta: { href: '/demo', label: 'Get a demo' },
+    cta: { href: '/demo', label: 'Start 30-day trial' },
     features: [
       '1 location · 2 staff seats (add more for $20/mo each)',
       'Per-provider booking calendar with conflict detection',
@@ -91,7 +91,7 @@ const TIERS: Tier[] = [
     positioning: 'Annual billing. $249/mo billed monthly. Migration included.',
     bestFor:
       'An established medspa with a full clinical team and a marketing motion. The tier most spas land on.',
-    cta: { href: '/demo', label: 'Get a demo' },
+    cta: { href: '/demo', label: 'Start 30-day trial' },
     featured: true,
     features: [
       'Everything in Starter, plus:',
@@ -194,10 +194,10 @@ export default function PricingPage() {
         headline={
           <>
             From $79/mo, billed annually.{' '}
-            <span className="accent-italic">Nothing hidden underneath.</span>
+            <span className="accent-italic">30 days free on every tier.</span>
           </>
         }
-        standfirst="Three tiers, flat per workspace — never per seat. BAA included at every level. Clinical chart notes, packages, memberships, and gift cards ship at $99. Stripe card processing for Starter; bring your own merchant for Pro and above."
+        standfirst="Three tiers, flat per workspace — never per seat. Run a full appointment cycle before your card is charged. BAA included at every level. Clinical chart notes, packages, memberships, and gift cards ship at $99. Stripe card processing for Starter; bring your own merchant for Pro and above."
       />
 
       <PricingGrid />
@@ -226,8 +226,10 @@ function PricingGrid() {
 
         <p className="mt-12 text-center text-sm text-foreground/60">
           All prices in USD. Annual billing is a 20% discount on monthly.
-          Self-serve signup launching soon — for now every tier starts
-          with a 30-minute demo on your real service menu.
+          30-day free trial on every tier — your card isn&apos;t charged
+          until day 31, and you can cancel anytime during the trial.
+          For now every trial starts with a 30-minute demo on your real
+          service menu; one-click self-serve signup launching soon.
         </p>
       </div>
     </section>
@@ -413,7 +415,7 @@ function IncludedEverywhere() {
 const FAQS = [
   {
     q: 'Is there a free trial?',
-    a: "Self-serve trial signup is launching soon. For now every tier starts with a 30-minute demo on your real service menu and provider list, so you see the product configured for your spa before signing. When self-serve goes live, Starter will offer a 14-day trial with a credit card on file and the full Pro feature set during the trial period.",
+    a: "Yes — 30 days free on every tier, with the full Pro feature set during the trial. Your card is captured at signup but isn't charged until day 31, and you can cancel anytime during the trial with no charge. Thirty days is enough to set up your service catalog, train your team, and run a real cohort of appointments — so you're evaluating the system on your actual operations, not a stripped-down sandbox. One-click self-serve signup is launching soon; today every trial starts with a 30-minute demo and we provision your workspace on the same call.",
   },
   {
     q: 'Can I add or remove staff mid-month?',

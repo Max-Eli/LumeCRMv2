@@ -65,7 +65,7 @@ class Tenant(models.Model):
         CANCELLED = 'cancelled', 'Cancelled'
 
     class Plan(models.TextChoices):
-        # Trial = the 14-day full-feature window before the first charge.
+        # Trial = the 30-day full-feature window before the first charge.
         # Distinct from STARTER so we can tell "card on file, not yet
         # charged" apart from "card charged, on Starter for real".
         TRIAL = 'trial', 'Trial'
@@ -97,7 +97,7 @@ class Tenant(models.Model):
     )
     trial_ends_at = models.DateTimeField(
         null=True, blank=True,
-        help_text='When the 14-day trial expires. Null for tenants that never went through trial (grandfathered + sales-onboarded Enterprise).',
+        help_text='When the 30-day trial expires. Null for tenants that never went through trial (grandfathered + sales-onboarded Enterprise).',
     )
     current_period_end = models.DateTimeField(
         null=True, blank=True,

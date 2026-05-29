@@ -86,9 +86,23 @@ function Hero() {
                 href="/demo"
                 className="inline-flex h-12 items-center rounded-full bg-foreground px-7 text-sm font-medium uppercase tracking-[0.16em] text-background hover:bg-foreground/90 transition-colors"
               >
-                Get a demo
+                Start 30-day free trial
+              </Link>
+              <Link
+                href="/pricing"
+                className="text-sm font-medium uppercase tracking-[0.16em] text-foreground/75 hover:text-foreground transition-colors"
+              >
+                See pricing →
               </Link>
             </div>
+            {/* Single short line under the CTA so prospects know
+                what the trial actually means before they click. */}
+            <p
+              className="hero-rise mt-5 text-sm text-foreground/60"
+              style={{ animationDelay: '440ms' }}
+            >
+              Full Pro features for 30 days. No charge until day 31. Cancel anytime.
+            </p>
 
             {/* Three differentiators a medspa owner will scan in
                 a single second. Each is a fact, not a turn of phrase. */}
