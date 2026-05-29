@@ -93,7 +93,11 @@ const TIERS: Tier[] = [
     positioning: 'Annual billing. $249/mo billed monthly. Migration included.',
     bestFor:
       'An established medspa with a full clinical team and a marketing motion. The tier most spas land on.',
-    cta: { href: '/demo', label: 'Start 30-day trial' },
+    // Pro tier requires a demo (not self-serve) — label has to make
+    // that clear so the click doesn't surprise the visitor. "Book a
+    // demo" is the honest CTA; the 30-day trial copy is in the body
+    // of the row so we don't lose the messaging.
+    cta: { href: '/demo', label: 'Book a demo' },
     featured: true,
     features: [
       'Everything in Starter, plus:',
