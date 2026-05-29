@@ -54,6 +54,8 @@ import { useSearchParams } from 'next/navigation';
 import { use, useState } from 'react';
 import { toast } from 'sonner';
 
+import { useQueryClient } from '@tanstack/react-query';
+
 import { PageHeader } from '@/components/page-header';
 import { StatusBadge } from '@/components/status-badge';
 import { Button } from '@/components/ui/button';
@@ -117,6 +119,7 @@ import {
 } from '@/lib/subscriptions';
 
 import { ChargeCardDialog } from '@/components/payments/charge-card-dialog';
+import { PaymentHistory } from '@/components/payments/payment-history';
 
 import { CustomPackageBuilder } from './_components/custom-package-builder';
 import { cn } from '@/lib/utils';
@@ -371,10 +374,20 @@ function InvoiceBody({
   // the same affordances, but the edit panel surfaces a manager-
   // authorization sub-form whose creds are submitted with the PATCH.
   const canDirectEditPrice = EDIT_PRICE_ROLES.has(role);
+  // Refunds are gated on ISSUE_REFUND in the backend. Defaults
+  // (per the permission catalog): owner / manager / front_desk all
+  // have it. Only role classes that lack it (provider / bookkeeper
+  // / marketing) hide the Refund affordance.
+  const canRefund =
+    role === 'owner' || role === 'manager' || role === 'front_desk';
   // Stripe-Connect charge dialog. Distinct from `mode='pay'` (which
   // is the manual-record flow for cash/check/etc.) — the dialog
   // mounts Stripe Elements + calls the connected account directly.
   const [chargeCardOpen, setChargeCardOpen] = useState(false);
+  // Scoped invalidation when a refund lands — the useRefundCharge
+  // hook broadly invalidates ['invoices'] but we also want the
+  // detail query (which uses an id-keyed cache entry) to refresh.
+  const qc = useQueryClient();
 
   const tz = DEFAULT_TIMEZONE;
 
@@ -425,6 +438,25 @@ function InvoiceBody({
             canEdit={canEditLines}
             canDirectEditPrice={canDirectEditPrice}
           />
+          {invoice.charges && invoice.charges.length > 0 ? (
+            <>
+              <Divider />
+              <PaymentHistory
+                charges={invoice.charges}
+                canRefund={canRefund}
+                onRefundIssued={() => {
+                  // Pull a fresh invoice so refunded_cents + the new
+                  // Refund row land in the UI immediately. The
+                  // useRefundCharge hook also broadly invalidates
+                  // ['invoices'], but this scoped invalidate ensures
+                  // the detail query (which uses a different cache
+                  // key shape) refreshes too.
+                  qc.invalidateQueries({ queryKey: ['invoice', invoice.id] });
+                  qc.invalidateQueries({ queryKey: ['invoices'] });
+                }}
+              />
+            </>
+          ) : null}
           {invoice.status === 'paid' || invoice.status === 'void' ? (
             <>
               <Divider />

@@ -204,8 +204,50 @@ export interface Invoice {
   updated_at: string;
   created_by_email: string | null;
   line_items: InvoiceLineItem[];
+  /** Stripe Connect charges against this invoice (newest first).
+   *  Empty array when the spa hasn't taken card payments yet. PCI-
+   *  safe: last4 + brand are the only card descriptors exposed; full
+   *  PAN stays at Stripe. */
+  charges: InvoiceCharge[];
   is_reopen_window_open: boolean;
   reopen_deadline: string | null;
+}
+
+/** One refund event against a Charge. */
+export interface InvoiceChargeRefund {
+  id: number;
+  amount_cents: number;
+  reason: string;
+  status: 'pending' | 'succeeded' | 'failed';
+  created_at: string;
+  created_by_email: string | null;
+}
+
+/** One Stripe Connect charge against an invoice. Mirrors the
+ *  ``_ChargeOnInvoiceSerializer`` shape on the backend. */
+export interface InvoiceCharge {
+  id: number;
+  amount_cents: number;
+  /** Stripe processing fee (2.9% + 30¢ for cards). Filled in once
+   *  the balance_transaction lands via webhook; may be 0 briefly. */
+  fee_cents: number;
+  /** What lands in the spa's Stripe balance. amount − fee. */
+  net_cents: number;
+  /** Sum of every refund row's amount_cents for this charge. */
+  refunded_cents: number;
+  /** What's still refundable: amount − refunded, or 0 if not succeeded. */
+  refundable_cents: number;
+  is_fully_refunded: boolean;
+  status: 'pending' | 'succeeded' | 'failed';
+  failure_code: string;
+  failure_message: string;
+  /** Last 4 digits of the card (PCI SAQ-A safe). */
+  last4: string;
+  brand: string;
+  initiated_via: 'operator' | 'customer_portal';
+  created_at: string;
+  created_by_email: string | null;
+  refunds: InvoiceChargeRefund[];
 }
 
 export interface CloseInvoiceInput {

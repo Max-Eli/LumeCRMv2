@@ -82,10 +82,73 @@ class InvoiceLineItemSerializer(serializers.ModelSerializer):
         read_only_fields = fields
 
 
+class _RefundOnChargeSerializer(serializers.Serializer):
+    """Compact refund row nested inside a charge.
+
+    Inline-defined to keep the wire shape close to the consumer
+    (the invoice page). If a stand-alone Refund endpoint ever
+    ships, lift this into ``apps.payments.serializers``.
+    """
+
+    id = serializers.IntegerField()
+    amount_cents = serializers.IntegerField()
+    reason = serializers.CharField()
+    status = serializers.CharField()
+    created_at = serializers.DateTimeField()
+    created_by_email = serializers.SerializerMethodField()
+
+    def get_created_by_email(self, obj):
+        return obj.created_by.email if obj.created_by_id else None
+
+
+class _ChargeOnInvoiceSerializer(serializers.Serializer):
+    """Compact charge row nested inside an invoice.
+
+    Surfaces what the operator needs to render the payment-history
+    timeline + decide whether to enable a Refund button: amounts,
+    PCI-safe card descriptors (last4 + brand), terminal status,
+    failure metadata on declines, and the nested Refund ledger.
+
+    Never exposes the Stripe PaymentIntent / Charge IDs — those
+    are ops-only fields surfaced through the platform admin.
+    """
+
+    id = serializers.IntegerField()
+    amount_cents = serializers.IntegerField()
+    fee_cents = serializers.IntegerField()
+    net_cents = serializers.IntegerField()
+    refunded_cents = serializers.IntegerField()
+    refundable_cents = serializers.SerializerMethodField()
+    is_fully_refunded = serializers.SerializerMethodField()
+    status = serializers.CharField()
+    failure_code = serializers.CharField()
+    failure_message = serializers.CharField()
+    last4 = serializers.CharField()
+    brand = serializers.CharField()
+    initiated_via = serializers.CharField()
+    created_at = serializers.DateTimeField()
+    created_by_email = serializers.SerializerMethodField()
+    refunds = _RefundOnChargeSerializer(many=True, read_only=True)
+
+    def get_refundable_cents(self, obj):
+        return obj.refundable_cents
+
+    def get_is_fully_refunded(self, obj):
+        return obj.is_fully_refunded
+
+    def get_created_by_email(self, obj):
+        return obj.created_by.email if obj.created_by_id else None
+
+
 class InvoiceSerializer(serializers.ModelSerializer):
     customer = _CustomerSummary(read_only=True)
     appointment = _AppointmentSummary(read_only=True)
     line_items = InvoiceLineItemSerializer(many=True, read_only=True)
+    # Charges (Stripe Connect) — empty list on invoices with no card
+    # attempts yet. Ordered newest-first to match the invoice page's
+    # activity timeline. PCI-safe: only last4 + brand are exposed,
+    # never the full PAN (Stripe holds that).
+    charges = _ChargeOnInvoiceSerializer(many=True, read_only=True)
 
     is_reopen_window_open = serializers.BooleanField(read_only=True)
     reopen_deadline = serializers.DateTimeField(read_only=True, allow_null=True)
@@ -127,6 +190,7 @@ class InvoiceSerializer(serializers.ModelSerializer):
             'voided_at', 'voided_by_email', 'void_reason',
             'created_at', 'updated_at', 'created_by_email',
             'line_items',
+            'charges',
             'is_reopen_window_open', 'reopen_deadline',
         ]
         read_only_fields = fields  # mutations go through action endpoints

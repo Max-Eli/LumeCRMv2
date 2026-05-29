@@ -67,6 +67,12 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [InvoicePermission]
 
     def get_queryset(self):
+        from django.db.models import Prefetch
+
+        # Local import to avoid a hard module-load coupling between
+        # invoices and payments — the apps install in either order.
+        from apps.payments.models import Charge, Refund
+
         return (
             Invoice.objects
             .for_current_tenant()
@@ -75,7 +81,31 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
                 'appointment', 'appointment__service', 'appointment__provider', 'appointment__provider__user',
                 'closed_by', 'reopened_by', 'voided_by', 'created_by',
             )
-            .prefetch_related('line_items')
+            .prefetch_related(
+                'line_items',
+                # Order charges newest-first to match the
+                # serializer's payment-history rendering. Nested
+                # prefetch on refunds + created_by so the serializer
+                # never falls back to a per-row query.
+                Prefetch(
+                    'charges',
+                    queryset=(
+                        Charge.objects
+                        .order_by('-created_at')
+                        .select_related('created_by')
+                        .prefetch_related(
+                            Prefetch(
+                                'refunds',
+                                queryset=(
+                                    Refund.objects
+                                    .order_by('-created_at')
+                                    .select_related('created_by')
+                                ),
+                            ),
+                        )
+                    ),
+                ),
+            )
         )
 
     def filter_queryset(self, queryset):

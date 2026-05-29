@@ -43,7 +43,7 @@ import {
   useStripe,
 } from '@stripe/react-stripe-js';
 import { AlertCircle, CreditCard, Loader2 } from 'lucide-react';
-import { useEffect, useMemo, useState } from 'react';
+import { useMemo, useState } from 'react';
 
 import { Button } from '@/components/ui/button';
 import {
@@ -102,8 +102,21 @@ export interface ChargeCardDialogProps {
   onSuccess?: () => void;
 }
 
-export function ChargeCardDialog({
-  open,
+export function ChargeCardDialog(props: ChargeCardDialogProps) {
+  // Outer component is a thin shell — the meaningful state lives in
+  // the body, which only mounts when open=true. That way every
+  // open() gets fresh useState defaults without an effect-driven
+  // reset (which would lint-warn for setState-in-effect).
+  return (
+    <Dialog open={props.open} onOpenChange={props.onOpenChange}>
+      <DialogContent className="sm:max-w-md">
+        {props.open ? <ChargeCardDialogBody {...props} /> : null}
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+function ChargeCardDialogBody({
   onOpenChange,
   invoiceId,
   amountDueCents,
@@ -121,16 +134,6 @@ export function ChargeCardDialog({
   const [amountError, setAmountError] = useState<string | null>(null);
 
   const createIntent = useChargeCard();
-
-  // Reset internal state every time the dialog opens — different
-  // invoice, different amount, fresh intent.
-  useEffect(() => {
-    if (open) {
-      setIntent(null);
-      setAmountError(null);
-      setAmountDollars((amountDueCents / 100).toFixed(2));
-    }
-  }, [open, amountDueCents]);
 
   const handleCreateIntent = () => {
     const dollars = Number(amountDollars);
@@ -161,38 +164,36 @@ export function ChargeCardDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-md">
-        <DialogHeader>
-          <DialogTitle>Charge card</DialogTitle>
-          <DialogDescription>
-            {customerName ? `${customerName} · ` : ''}
-            {invoiceNumber ? `Invoice ${invoiceNumber}` : `Invoice #${invoiceId}`}
-          </DialogDescription>
-        </DialogHeader>
+    <>
+      <DialogHeader>
+        <DialogTitle>Charge card</DialogTitle>
+        <DialogDescription>
+          {customerName ? `${customerName} · ` : ''}
+          {invoiceNumber ? `Invoice ${invoiceNumber}` : `Invoice #${invoiceId}`}
+        </DialogDescription>
+      </DialogHeader>
 
-        {intent === null ? (
-          <AmountStep
-            amountDollars={amountDollars}
-            onAmountChange={setAmountDollars}
-            amountDueCents={amountDueCents}
-            onSubmit={handleCreateIntent}
-            onCancel={() => onOpenChange(false)}
-            isSubmitting={createIntent.isPending}
-            error={amountError}
-          />
-        ) : (
-          <CardStep
-            intent={intent}
-            onSuccess={() => {
-              onSuccess?.();
-              onOpenChange(false);
-            }}
-            onCancel={() => onOpenChange(false)}
-          />
-        )}
-      </DialogContent>
-    </Dialog>
+      {intent === null ? (
+        <AmountStep
+          amountDollars={amountDollars}
+          onAmountChange={setAmountDollars}
+          amountDueCents={amountDueCents}
+          onSubmit={handleCreateIntent}
+          onCancel={() => onOpenChange(false)}
+          isSubmitting={createIntent.isPending}
+          error={amountError}
+        />
+      ) : (
+        <CardStep
+          intent={intent}
+          onSuccess={() => {
+            onSuccess?.();
+            onOpenChange(false);
+          }}
+          onCancel={() => onOpenChange(false)}
+        />
+      )}
+    </>
   );
 }
 

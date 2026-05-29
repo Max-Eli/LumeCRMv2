@@ -3025,3 +3025,159 @@ class InvoicePriceAndDiscountTests(TestCase):
             format='json', HTTP_X_TENANT_SLUG=self.tenant.slug,
         )
         self.assertEqual(disc.status_code, 409)
+
+
+# ── Charges + Refunds nested on invoice detail (Phase 2 chunk 2.5) ─
+
+
+class InvoiceChargesSerializationTests(TestCase):
+    """The invoice-detail endpoint exposes Stripe Connect Charge rows
+    + their nested Refund ledger so the operator UI can render a full
+    payment-history timeline without a second endpoint.
+
+    PCI safety: only last4 + brand are emitted, never the full PAN.
+    Ops-only Stripe identifiers (PI / Charge ID) stay out of the
+    operator-facing wire shape.
+    """
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('charges-ser')
+        self.customer = _make_customer(self.tenant)
+        # Build a $100 invoice directly (no appointment) so the
+        # serializer fields we care about are populated without a
+        # full booking fixture.
+        self.invoice = Invoice.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            subtotal_cents=10_000, tax_cents=0, total_cents=10_000,
+            status=Invoice.Status.OPEN,
+            created_by=self.owner,
+        )
+
+        # Stand up a MerchantAccount + two Charges (one succeeded
+        # with a refund, one failed) to exercise the full surface.
+        from apps.payments.models import Charge, MerchantAccount, Refund
+        merchant = MerchantAccount.objects.create(
+            tenant=self.tenant,
+            stripe_account_id='acct_charges_ser',
+            charges_enabled=True, payouts_enabled=True,
+            details_submitted=True,
+        )
+        self.succeeded_charge = Charge.objects.create(
+            tenant=self.tenant, invoice=self.invoice,
+            merchant_account=merchant,
+            amount_cents=10_000,
+            fee_cents=320, net_cents=9_680,
+            stripe_payment_intent_id='pi_ser_ok',
+            stripe_charge_id='ch_ser_ok',
+            status=Charge.Status.SUCCEEDED,
+            last4='4242', brand='visa',
+            refunded_cents=2_000,
+            created_by=self.owner,
+            initiated_via='operator',
+        )
+        Refund.objects.create(
+            tenant=self.tenant, charge=self.succeeded_charge,
+            amount_cents=2_000,
+            reason='Partial refund for promo adjustment',
+            stripe_refund_id='re_ser_partial',
+            status=Refund.Status.SUCCEEDED,
+            created_by=self.owner,
+        )
+        self.failed_charge = Charge.objects.create(
+            tenant=self.tenant, invoice=self.invoice,
+            merchant_account=merchant,
+            amount_cents=10_000,
+            stripe_payment_intent_id='pi_ser_fail',
+            status=Charge.Status.FAILED,
+            failure_code='card_declined',
+            failure_message='Your card was declined.',
+            last4='', brand='',
+            created_by=self.owner,
+            initiated_via='operator',
+        )
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def _detail_url(self):
+        return reverse('invoice-detail', args=[self.invoice.pk])
+
+    def test_invoice_detail_includes_charges_array(self):
+        resp = self.client.get(
+            self._detail_url(), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200, resp.data)
+        self.assertIn('charges', resp.data)
+        self.assertEqual(len(resp.data['charges']), 2)
+
+    def test_charges_ordered_newest_first(self):
+        resp = self.client.get(
+            self._detail_url(), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        # failed_charge was created after succeeded_charge → newer →
+        # first in the ordered list.
+        ids = [c['id'] for c in resp.data['charges']]
+        self.assertEqual(ids, [self.failed_charge.pk, self.succeeded_charge.pk])
+
+    def test_succeeded_charge_exposes_safe_card_descriptors(self):
+        resp = self.client.get(
+            self._detail_url(), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        succ = next(c for c in resp.data['charges'] if c['id'] == self.succeeded_charge.pk)
+        self.assertEqual(succ['last4'], '4242')
+        self.assertEqual(succ['brand'], 'visa')
+        self.assertEqual(succ['status'], 'succeeded')
+        self.assertEqual(succ['amount_cents'], 10_000)
+        self.assertEqual(succ['fee_cents'], 320)
+        self.assertEqual(succ['net_cents'], 9_680)
+        self.assertEqual(succ['refunded_cents'], 2_000)
+        self.assertEqual(succ['refundable_cents'], 8_000)
+        self.assertFalse(succ['is_fully_refunded'])
+
+    def test_succeeded_charge_nests_refund_ledger(self):
+        resp = self.client.get(
+            self._detail_url(), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        succ = next(c for c in resp.data['charges'] if c['id'] == self.succeeded_charge.pk)
+        self.assertEqual(len(succ['refunds']), 1)
+        refund = succ['refunds'][0]
+        self.assertEqual(refund['amount_cents'], 2_000)
+        self.assertEqual(refund['reason'], 'Partial refund for promo adjustment')
+        self.assertEqual(refund['status'], 'succeeded')
+        self.assertEqual(refund['created_by_email'], self.owner.email)
+
+    def test_failed_charge_exposes_failure_metadata(self):
+        resp = self.client.get(
+            self._detail_url(), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        failed = next(c for c in resp.data['charges'] if c['id'] == self.failed_charge.pk)
+        self.assertEqual(failed['status'], 'failed')
+        self.assertEqual(failed['failure_code'], 'card_declined')
+        self.assertEqual(failed['failure_message'], 'Your card was declined.')
+        self.assertEqual(failed['refundable_cents'], 0)
+        self.assertEqual(failed['refunds'], [])
+
+    def test_invoice_with_no_charges_returns_empty_array(self):
+        # Different invoice with no charges. The empty-list shape is
+        # what the frontend renders the "no payment history yet" state
+        # against; a missing key would crash JSX naively.
+        empty = Invoice.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            subtotal_cents=5_000, tax_cents=0, total_cents=5_000,
+            status=Invoice.Status.OPEN,
+        )
+        resp = self.client.get(
+            reverse('invoice-detail', args=[empty.pk]),
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['charges'], [])
+
+    def test_stripe_internal_ids_NOT_exposed_to_operator(self):
+        # PI / Charge IDs are ops-only — surfaced in /platform/tenants
+        # detail for reconciliation, never on the operator surface.
+        resp = self.client.get(
+            self._detail_url(), HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+        for charge in resp.data['charges']:
+            self.assertNotIn('stripe_payment_intent_id', charge)
+            self.assertNotIn('stripe_charge_id', charge)
