@@ -375,3 +375,170 @@ class IsConfiguredTests(TestCase):
     @override_settings(STRIPE_SECRET_KEY='sk_test_anything')
     def test_set_key_is_configured(self):
         self.assertTrue(is_configured())
+
+
+# ── Billing summary endpoint ─────────────────────────────────────
+
+
+class BillingSummaryTests(TestCase):
+    """The summary endpoint is what /settings/billing reads to render
+    the dashboard. It must work for grandfathered tenants (who never
+    enrolled in Stripe) AND for new Stripe-billed tenants, without
+    requiring Stripe to be configured at all."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(
+            name='Sum Spa', slug='sum-spa', plan='pro',
+            status=Tenant.Status.ACTIVE,
+            billing_cycle=Tenant.BillingCycle.MONTHLY,
+            current_period_sms_count=42,
+            current_period_email_count=1234,
+            addon_quantities={'staff': 3, 'location': 1},
+        )
+        self.owner = User.objects.create_user(
+            email='owner@sum.test', password='x',
+        )
+        TenantMembership.objects.create(
+            user=self.owner, tenant=self.tenant,
+            role=TenantMembership.Role.OWNER, is_active=True,
+        )
+        self.client = APIClient()
+        self.url = reverse('billing-summary')
+
+    def test_owner_can_read_summary(self):
+        self.client.force_login(self.owner)
+        resp = self.client.get(self.url, HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['plan'], 'pro')
+        self.assertEqual(resp.data['addons'], {'staff': 3, 'location': 1})
+        self.assertEqual(resp.data['usage']['sms_used'], 42)
+        self.assertEqual(resp.data['usage']['email_used'], 1234)
+        # 10 baseline + 3 staff add-on
+        self.assertEqual(resp.data['capacity']['max_staff'], 13)
+        # 3 baseline + 1 location add-on
+        self.assertEqual(resp.data['capacity']['max_locations'], 4)
+        # Frontend toggles "Manage payment" CTA off when Stripe isn't ready
+        self.assertIn('stripe_configured', resp.data)
+
+    def test_front_desk_cannot_read_summary(self):
+        front_desk = User.objects.create_user(
+            email='fd@sum.test', password='x',
+        )
+        TenantMembership.objects.create(
+            user=front_desk, tenant=self.tenant,
+            role=TenantMembership.Role.FRONT_DESK, is_active=True,
+        )
+        self.client.force_login(front_desk)
+        resp = self.client.get(self.url, HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.assertEqual(resp.status_code, 403)
+
+    def test_grandfathered_gets_unlimited_caps_and_no_allowed_addons(self):
+        gf = Tenant.objects.create(
+            name='Grandfathered', slug='sum-gf-spa', plan='pro',
+            status=Tenant.Status.ACTIVE, grandfathered=True,
+        )
+        gf_owner = User.objects.create_user(
+            email='gf-sum@sum.test', password='x',
+        )
+        TenantMembership.objects.create(
+            user=gf_owner, tenant=gf,
+            role=TenantMembership.Role.OWNER, is_active=True,
+        )
+        self.client.force_login(gf_owner)
+        resp = self.client.get(self.url, HTTP_X_TENANT_SLUG=gf.slug)
+        self.assertEqual(resp.status_code, 200)
+        self.assertTrue(resp.data['grandfathered'])
+        # null = unlimited; frontend renders ∞
+        self.assertIsNone(resp.data['capacity']['max_staff'])
+        self.assertIsNone(resp.data['capacity']['max_locations'])
+        # No self-serve add-ons for legacy tenants
+        self.assertEqual(resp.data['allowed_addons'], {})
+
+
+# ── Update add-on quantity endpoint ──────────────────────────────
+
+
+class UpdateAddonQuantityTests(TestCase):
+    """The endpoint that the /settings/billing buttons hit. Validates
+    against the plan's allowed add-ons + ranges before talking to
+    Stripe, so a bad client can't waste a Stripe round-trip."""
+
+    def setUp(self):
+        self.tenant = Tenant.objects.create(
+            name='Addon Spa', slug='addon-spa', plan='pro',
+            status=Tenant.Status.ACTIVE,
+            stripe_subscription_id='sub_test_addon',
+        )
+        self.owner = User.objects.create_user(
+            email='addon-owner@addon.test', password='x',
+        )
+        TenantMembership.objects.create(
+            user=self.owner, tenant=self.tenant,
+            role=TenantMembership.Role.OWNER, is_active=True,
+        )
+        self.client = APIClient()
+        self.url = reverse('billing-addon-quantity')
+        self.client.force_login(self.owner)
+
+    def _post(self, body):
+        return self.client.post(
+            self.url, body, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+
+    def test_missing_addon_key_is_400(self):
+        resp = self._post({'quantity': 1})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_non_int_quantity_is_400(self):
+        resp = self._post({'addon_key': 'staff', 'quantity': 'lots'})
+        self.assertEqual(resp.status_code, 400)
+
+    def test_unknown_addon_is_400(self):
+        resp = self._post({'addon_key': 'spaceship', 'quantity': 1})
+        self.assertEqual(resp.status_code, 400)
+        self.assertEqual(resp.data['code'], 'invalid_addon_request')
+
+    def test_location_addon_capped_at_two(self):
+        resp = self._post({'addon_key': 'location', 'quantity': 3})
+        self.assertEqual(resp.status_code, 400)
+
+    @override_settings(STRIPE_SECRET_KEY='')
+    def test_stripe_not_configured_returns_503(self):
+        resp = self._post({'addon_key': 'staff', 'quantity': 3})
+        self.assertEqual(resp.status_code, 503)
+        self.assertEqual(resp.data['code'], 'stripe_not_configured')
+
+    @override_settings(STRIPE_SECRET_KEY='sk_test_fake')
+    @patch('apps.billing.views.set_addon_quantity')
+    def test_happy_path_updates(self, mock_set):
+        # Simulate the service updating the local row.
+        def _fake(tenant, *, addon_key, quantity):
+            tenant.addon_quantities = {addon_key: quantity}
+            tenant.save(update_fields=['addon_quantities'])
+        mock_set.side_effect = _fake
+        resp = self._post({'addon_key': 'staff', 'quantity': 5})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.data['quantity'], 5)
+        self.assertEqual(resp.data['addons'], {'staff': 5})
+
+    def test_grandfathered_returns_409(self):
+        gf = Tenant.objects.create(
+            name='AddonGF', slug='addon-gf', plan='pro',
+            status=Tenant.Status.ACTIVE, grandfathered=True,
+        )
+        gf_owner = User.objects.create_user(
+            email='gf-addon@addon.test', password='x',
+        )
+        TenantMembership.objects.create(
+            user=gf_owner, tenant=gf,
+            role=TenantMembership.Role.OWNER, is_active=True,
+        )
+        self.client.logout()
+        self.client.force_login(gf_owner)
+        resp = self.client.post(
+            self.url, {'addon_key': 'staff', 'quantity': 3},
+            format='json', HTTP_X_TENANT_SLUG=gf.slug,
+        )
+        self.assertEqual(resp.status_code, 409)
+        self.assertEqual(resp.data['code'], 'grandfathered_no_self_serve_billing')

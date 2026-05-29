@@ -405,6 +405,106 @@ def create_portal_session(tenant: 'Tenant', return_url: str) -> str:
     return session.url
 
 
+def set_addon_quantity(
+    tenant: 'Tenant',
+    *,
+    addon_key: str,
+    quantity: int,
+) -> None:
+    """Set the quantity of an add-on on the tenant's Stripe Subscription.
+
+    Three cases handled symmetrically:
+
+      - Quantity > 0 and the subscription already has an item for this
+        addon's Price → modify the item's quantity.
+      - Quantity > 0 and there's no item yet → create one against the
+        addon's configured Price ID. Stripe stamps the new item with
+        ``metadata.lume_addon_key`` so the next webhook sync picks it
+        up cleanly.
+      - Quantity == 0 → delete the existing item if any. Stripe
+        prorates the credit back to the customer.
+
+    The local ``Tenant.addon_quantities`` row is updated optimistically
+    so the UI reflects the new state immediately. The webhook reconciles
+    on the next ``customer.subscription.updated`` event — if a discrepancy
+    sneaks in we self-heal on the next webhook.
+    """
+    if not tenant.stripe_subscription_id:
+        raise StripeBillingError(
+            'Tenant has no active Stripe Subscription. Sign up + complete '
+            'first charge before adding add-ons.',
+        )
+    price_id = _price_id_for_addon(addon_key)
+    stripe = _stripe()
+    try:
+        subscription = stripe.Subscription.retrieve(
+            tenant.stripe_subscription_id,
+            expand=['items'],
+        )
+        existing_item = None
+        for item in (subscription.get('items', {}).get('data', []) or []):
+            item_price_id = (item.get('price') or {}).get('id')
+            if item_price_id == price_id:
+                existing_item = item
+                break
+
+        if quantity > 0 and existing_item is None:
+            stripe.SubscriptionItem.create(
+                subscription=tenant.stripe_subscription_id,
+                price=price_id,
+                quantity=quantity,
+                metadata={'lume_addon_key': addon_key},
+                proration_behavior='create_prorations',
+            )
+        elif quantity > 0 and existing_item is not None:
+            stripe.SubscriptionItem.modify(
+                existing_item['id'],
+                quantity=quantity,
+                proration_behavior='create_prorations',
+            )
+        elif quantity == 0 and existing_item is not None:
+            stripe.SubscriptionItem.delete(
+                existing_item['id'],
+                proration_behavior='create_prorations',
+            )
+        # else: quantity 0 + no existing item = no-op
+    except Exception as e:
+        logger.exception(
+            'Stripe set_addon_quantity failed: tenant=%s addon=%s qty=%s',
+            tenant.id, addon_key, quantity,
+        )
+        raise StripeBillingError(f'Could not update add-on: {e}') from e
+
+    # Local mirror — optimistic. Webhook reconciles authoritative state.
+    new_quantities = dict(tenant.addon_quantities or {})
+    if quantity > 0:
+        new_quantities[addon_key] = quantity
+    else:
+        new_quantities.pop(addon_key, None)
+    tenant.addon_quantities = new_quantities
+    tenant.save(update_fields=['addon_quantities'])
+
+
+def _price_id_for_addon(addon_key: str) -> str:
+    """Resolve the Stripe Price ID for an add-on key from settings."""
+    mapping = {
+        'staff': 'STRIPE_PRICE_ADDON_STAFF',
+        'location': 'STRIPE_PRICE_ADDON_LOCATION',
+        'email_5k': 'STRIPE_PRICE_ADDON_EMAIL_5K',
+        'email_10k': 'STRIPE_PRICE_ADDON_EMAIL_10K',
+    }
+    setting_name = mapping.get(addon_key)
+    if not setting_name:
+        raise StripeBillingError(f'Unknown add-on key: {addon_key!r}')
+    price_id = getattr(settings, setting_name, '') or ''
+    if not price_id:
+        raise StripeBillingError(
+            f'No Stripe Price configured for add-on "{addon_key}". '
+            f'Set {setting_name} in environment variables.'
+        )
+    return price_id
+
+
 def cancel_subscription(tenant: 'Tenant', *, reason: str = '') -> None:
     """Cancel the tenant's subscription at the end of the current
     period (NOT immediately — they paid for the time, they keep it).

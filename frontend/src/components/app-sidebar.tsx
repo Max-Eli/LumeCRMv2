@@ -198,6 +198,10 @@ export const NAV_LINKS: NavLink[] = [
       { href: '/org/locations', label: 'Locations', roles: ['owner'] },
       { href: '/org/online-booking', label: 'Online booking', roles: ['owner'] },
       { href: '/org/integrations', label: 'Integrations', roles: ['owner', 'manager'] },
+      // Billing is owner-only by permission catalog (locked
+      // MANAGE_BILLING), so the link is gated to owners here too —
+      // a manager-only sidebar entry would 403 immediately on click.
+      { href: '/org/billing', label: 'Billing', roles: ['owner'] },
     ],
   },
 ];
