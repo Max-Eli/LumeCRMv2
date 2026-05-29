@@ -2242,3 +2242,204 @@ class ContractorSelfScheduleTests(TestCase):
         )
         self.assertEqual(resp.status_code, status.HTTP_200_OK)
         self.assertFalse(resp.data['can_edit'])
+
+
+# ── Plan + feature catalog ─────────────────────────────────────────
+
+
+from apps.tenants.plans import (  # noqa: E402  — co-located with the tests
+    F_CLINICAL_NOTES,
+    F_CORE_CRM,
+    F_CUSTOM_MERCHANT,
+    F_EMAIL_MARKETING,
+    F_PACKAGES,
+    F_SOCIAL_INTEGRATIONS,
+    PRO_FEATURES,
+    STARTER_FEATURES,
+    effective_max_locations,
+    effective_max_staff,
+    effective_monthly_email_quota,
+    effective_monthly_sms_quota,
+    features_for,
+    is_addon_quantity_valid,
+    tenant_has_feature,
+)
+
+
+class PlanCatalogTests(TestCase):
+    """The plan catalog is the source of truth for tier → feature/capacity
+    mapping. These tests pin the contract so a tier rename or capacity
+    tweak can't silently affect the wrong customer set.
+
+    See ``apps.tenants.plans`` + the plan file at
+    ``~/.claude/plans/abstract-bouncing-trinket.md``."""
+
+    def test_starter_includes_clinical_notes_packages_and_memberships(self):
+        # Non-negotiable for medspa positioning: every tier ships the
+        # clinical + revenue features. Don't gate the engine.
+        self.assertIn(F_CLINICAL_NOTES, STARTER_FEATURES)
+        self.assertIn(F_PACKAGES, STARTER_FEATURES)
+        self.assertIn(F_CORE_CRM, STARTER_FEATURES)
+
+    def test_starter_excludes_email_marketing_and_custom_merchant(self):
+        # Email marketing + custom merchant integration are explicit
+        # Pro-tier value props. Including them in Starter would erase
+        # the upgrade reason.
+        self.assertNotIn(F_EMAIL_MARKETING, STARTER_FEATURES)
+        self.assertNotIn(F_CUSTOM_MERCHANT, STARTER_FEATURES)
+
+    def test_pro_is_a_strict_superset_of_starter(self):
+        # No regressions: anything a Starter spa relied on must still
+        # work after upgrading to Pro.
+        self.assertTrue(STARTER_FEATURES.issubset(PRO_FEATURES))
+
+    def test_social_integrations_hidden_from_every_public_tier(self):
+        # Meta integrations are HIDDEN until Meta App Review approves
+        # the application. Until then no public tier sells it.
+        # Grandfathered tenants still get it via the union in
+        # features_for() — separate test.
+        self.assertNotIn(F_SOCIAL_INTEGRATIONS, STARTER_FEATURES)
+        self.assertNotIn(F_SOCIAL_INTEGRATIONS, PRO_FEATURES)
+
+
+class FeaturesForTests(TestCase):
+    """``features_for(tenant)`` resolution per plan + grandfathered flag."""
+
+    def test_grandfathered_gets_every_feature_including_in_flight(self):
+        # The 2 launch spas predate the tier system. They were promised
+        # the full surface they were using, INCLUDING in-flight features
+        # that aren't sellable on a public tier yet (Meta DM).
+        t = Tenant(plan='pro', grandfathered=True)
+        feats = features_for(t)
+        self.assertIn(F_SOCIAL_INTEGRATIONS, feats)
+        self.assertIn(F_EMAIL_MARKETING, feats)
+        self.assertIn(F_CLINICAL_NOTES, feats)
+
+    def test_new_starter_does_not_get_social_or_email_marketing(self):
+        t = Tenant(plan='starter', grandfathered=False)
+        feats = features_for(t)
+        self.assertNotIn(F_SOCIAL_INTEGRATIONS, feats)
+        self.assertNotIn(F_EMAIL_MARKETING, feats)
+        # But still has the engine features the medspa actually needs.
+        self.assertIn(F_CLINICAL_NOTES, feats)
+        self.assertIn(F_PACKAGES, feats)
+
+    def test_new_pro_gets_email_marketing_but_not_social(self):
+        t = Tenant(plan='pro', grandfathered=False)
+        self.assertTrue(tenant_has_feature(t, F_EMAIL_MARKETING))
+        self.assertFalse(tenant_has_feature(t, F_SOCIAL_INTEGRATIONS))
+
+
+class EffectiveCapacityTests(TestCase):
+    """Add-on quantities stack on top of plan baselines. Capacity
+    helpers are what the membership / location / send-wrapper code
+    consults at write time — these tests pin the math."""
+
+    def test_starter_baseline_caps(self):
+        t = Tenant(plan='starter', grandfathered=False, addon_quantities={})
+        self.assertEqual(effective_max_staff(t), 2)
+        self.assertEqual(effective_max_locations(t), 1)
+        self.assertEqual(effective_monthly_email_quota(t), 2_000)
+        self.assertEqual(effective_monthly_sms_quota(t), 500)
+
+    def test_pro_baseline_caps(self):
+        t = Tenant(plan='pro', grandfathered=False, addon_quantities={})
+        self.assertEqual(effective_max_staff(t), 10)
+        self.assertEqual(effective_max_locations(t), 3)
+        self.assertEqual(effective_monthly_email_quota(t), 20_000)
+        self.assertEqual(effective_monthly_sms_quota(t), 1_500)
+
+    def test_starter_with_staff_and_email_addons_stack(self):
+        t = Tenant(
+            plan='starter', grandfathered=False,
+            addon_quantities={'staff': 3, 'email_5k': 2},
+        )
+        self.assertEqual(effective_max_staff(t), 5)   # 2 + 3
+        self.assertEqual(effective_monthly_email_quota(t), 12_000)  # 2k + 2*5k
+
+    def test_pro_with_location_addon_stacks(self):
+        t = Tenant(
+            plan='pro', grandfathered=False,
+            addon_quantities={'location': 2},
+        )
+        self.assertEqual(effective_max_locations(t), 5)  # 3 + 2
+
+    def test_pro_location_addon_respects_max_quantity(self):
+        # The catalog caps location add-ons at +2. If someone has
+        # stale data with quantity=5 (e.g. plan downgrade artifact),
+        # the helper still tops out at +2 for safety.
+        t = Tenant(
+            plan='pro', grandfathered=False,
+            addon_quantities={'location': 5},
+        )
+        self.assertEqual(effective_max_locations(t), 5)  # 3 + min(5, 2)
+
+    def test_starter_cannot_use_location_addon(self):
+        # Starter doesn't allow location add-ons (must upgrade to Pro).
+        # Even if the JSON has one, the helper ignores it.
+        t = Tenant(
+            plan='starter', grandfathered=False,
+            addon_quantities={'location': 5},
+        )
+        self.assertEqual(effective_max_locations(t), 1)  # baseline, addon ignored
+
+    def test_grandfathered_returns_none_for_all_caps(self):
+        # Grandfathered = unlimited. Helpers return None and the
+        # caller treats None as "no cap, allow anything."
+        t = Tenant(plan='pro', grandfathered=True)
+        self.assertIsNone(effective_max_staff(t))
+        self.assertIsNone(effective_max_locations(t))
+        self.assertIsNone(effective_monthly_email_quota(t))
+        self.assertIsNone(effective_monthly_sms_quota(t))
+
+    def test_enterprise_has_no_staff_or_location_cap(self):
+        t = Tenant(plan='enterprise', grandfathered=False)
+        self.assertIsNone(effective_max_staff(t))
+        self.assertIsNone(effective_max_locations(t))
+
+    def test_corrupted_addon_quantity_falls_back_to_zero(self):
+        # Defensive: if the JSON has a bad value (string, negative,
+        # whatever) the helper treats it as zero rather than blowing up.
+        t = Tenant(
+            plan='starter', grandfathered=False,
+            addon_quantities={'staff': 'oops', 'email_5k': -3},
+        )
+        self.assertEqual(effective_max_staff(t), 2)
+        self.assertEqual(effective_monthly_email_quota(t), 2_000)
+
+
+class AddonValidationTests(TestCase):
+    """``is_addon_quantity_valid`` gates /settings/billing requests
+    before they reach Stripe. Tests cover allowed plans + max-quantity
+    enforcement."""
+
+    def test_unknown_addon_rejected(self):
+        ok, err = is_addon_quantity_valid('starter', 'spaceship', 1)
+        self.assertFalse(ok)
+        self.assertIn('Unknown add-on', err)
+
+    def test_location_addon_rejected_on_starter(self):
+        ok, err = is_addon_quantity_valid('starter', 'location', 1)
+        self.assertFalse(ok)
+        self.assertIn('not available on the starter plan', err)
+
+    def test_email_10k_pack_rejected_on_starter(self):
+        # email_10k is a Pro-only bulk-pack — Starter gets email_5k.
+        ok, err = is_addon_quantity_valid('starter', 'email_10k', 1)
+        self.assertFalse(ok)
+
+    def test_pro_location_capped_at_two(self):
+        ok, _ = is_addon_quantity_valid('pro', 'location', 2)
+        self.assertTrue(ok)
+        ok_over, err = is_addon_quantity_valid('pro', 'location', 3)
+        self.assertFalse(ok_over)
+        self.assertIn('capped at 2', err)
+
+    def test_negative_quantity_rejected(self):
+        ok, err = is_addon_quantity_valid('pro', 'staff', -1)
+        self.assertFalse(ok)
+        self.assertIn('negative', err)
+
+    def test_staff_addon_uncapped(self):
+        ok, _ = is_addon_quantity_valid('starter', 'staff', 100)
+        self.assertTrue(ok)

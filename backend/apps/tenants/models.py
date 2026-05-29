@@ -57,12 +57,117 @@ class Tenant(models.Model):
     class Status(models.TextChoices):
         TRIAL = 'trial', 'Trial'
         ACTIVE = 'active', 'Active'
+        # PAST_DUE = a billing charge failed; workspace goes read-only with
+        # an upgrade banner until the customer updates payment. After the
+        # configured grace window we move them to SUSPENDED.
+        PAST_DUE = 'past_due', 'Past due'
         SUSPENDED = 'suspended', 'Suspended'
         CANCELLED = 'cancelled', 'Cancelled'
+
+    class Plan(models.TextChoices):
+        # Trial = the 14-day full-feature window before the first charge.
+        # Distinct from STARTER so we can tell "card on file, not yet
+        # charged" apart from "card charged, on Starter for real".
+        TRIAL = 'trial', 'Trial'
+        STARTER = 'starter', 'Starter'
+        PRO = 'pro', 'Pro'
+        ENTERPRISE = 'enterprise', 'Enterprise'
+
+    class BillingCycle(models.TextChoices):
+        MONTHLY = 'monthly', 'Monthly'
+        ANNUAL = 'annual', 'Annual'
 
     name = models.CharField(max_length=200)
     slug = models.SlugField(max_length=63, unique=True, help_text='Subdomain, e.g. "acmespa" → acmespa.lume-crm.com')
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.TRIAL)
+
+    # ── Plan + billing ────────────────────────────────────────────────
+    # `plan` drives feature gating via apps.tenants.plans.tenant_has_feature
+    # and capacity gates via effective_max_staff / effective_max_locations.
+    # Existing tenants created before this field landed get TRIAL by
+    # default; the 0013 data migration stamps the 2 live spas to PRO +
+    # grandfathered so they keep working unchanged.
+    plan = models.CharField(
+        max_length=20, choices=Plan.choices, default=Plan.TRIAL,
+        help_text='Active subscription tier. Drives feature gating + capacity caps.',
+    )
+    billing_cycle = models.CharField(
+        max_length=10, choices=BillingCycle.choices, default=BillingCycle.MONTHLY,
+        help_text='Stripe subscription billing cadence.',
+    )
+    trial_ends_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='When the 14-day trial expires. Null for tenants that never went through trial (grandfathered + sales-onboarded Enterprise).',
+    )
+    current_period_end = models.DateTimeField(
+        null=True, blank=True,
+        help_text='Mirrored from Stripe subscription. End of the current paid period — used to reset monthly usage counters.',
+    )
+    billing_email = models.EmailField(
+        blank=True, default='',
+        help_text='Where Stripe sends receipts + dunning. Often differs from the owner email.',
+    )
+    stripe_customer_id = models.CharField(
+        max_length=64, blank=True, default='',
+        help_text='Stripe Customer ID for SaaS subscription billing. Empty for grandfathered tenants who never went through Stripe.',
+    )
+    stripe_subscription_id = models.CharField(
+        max_length=64, blank=True, default='',
+        help_text='Stripe Subscription ID. Empty for grandfathered tenants.',
+    )
+    grandfathered = models.BooleanField(
+        default=False,
+        help_text=(
+            'Set True for the original launch spas onboarded before self-serve '
+            'pricing existed. Grandfathered tenants are exempt from plan capacity '
+            'gates, never get the upgrade banner, and aren\'t enrolled in Stripe '
+            'Billing. Plan stays PRO for them as a feature-flag convenience.'
+        ),
+    )
+
+    # ── Add-on quantities ─────────────────────────────────────────────
+    # Mirrors the quantity-based SubscriptionItem entries on the tenant's
+    # Stripe Subscription. Keys are stable add-on identifiers
+    # ('staff', 'location', 'email_5k', 'email_10k'); values are integer
+    # quantities. Synced from Stripe via the customer.subscription.updated
+    # webhook so this row is always the local source of truth for
+    # capacity checks.
+    addon_quantities = models.JSONField(
+        default=dict, blank=True,
+        help_text='Per-tenant add-on counts: {"staff": 3, "location": 1, "email_5k": 2}. Mirrors Stripe SubscriptionItem quantities.',
+    )
+
+    # ── Compliance acknowledgements (click-through audit) ─────────────
+    baa_accepted_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='When the owner accepted the Business Associate Agreement during self-serve signup.',
+    )
+    baa_version = models.CharField(
+        max_length=32, blank=True, default='',
+        help_text='Version identifier (e.g. "2026-05") of the BAA accepted. Bumped when BAA text changes; old acceptances stay valid for the version they signed.',
+    )
+    tos_accepted_at = models.DateTimeField(
+        null=True, blank=True,
+        help_text='When the owner accepted the Terms of Service during self-serve signup.',
+    )
+    tos_version = models.CharField(
+        max_length=32, blank=True, default='',
+        help_text='Version identifier of the ToS accepted.',
+    )
+
+    # ── Usage counters (rolling current period) ───────────────────────
+    # Incremented atomically by the SMS / email send wrappers. Reset to 0
+    # by the billing webhook handler on each customer.subscription.updated
+    # event when current_period_end rolls forward. Used to enforce
+    # included quotas + report metered overage to Stripe.
+    current_period_sms_count = models.PositiveIntegerField(
+        default=0,
+        help_text='Outbound SMS sent in the current billing period. Reset on period roll.',
+    )
+    current_period_email_count = models.PositiveIntegerField(
+        default=0,
+        help_text='Outbound emails sent in the current billing period. Reset on period roll.',
+    )
 
     # Per-site fields (timezone, address, hours, phone, email) USED to
     # live here. They moved to `Location` during the Phase 4E multi-
