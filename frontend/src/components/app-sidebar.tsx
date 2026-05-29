@@ -202,6 +202,10 @@ export const NAV_LINKS: NavLink[] = [
       // MANAGE_BILLING), so the link is gated to owners here too —
       // a manager-only sidebar entry would 403 immediately on click.
       { href: '/org/billing', label: 'Billing', roles: ['owner'] },
+      // Payments = how the spa charges THEIR customers via Stripe
+      // Connect (distinct from Billing = how Lumè charges the spa).
+      // Same MANAGE_BILLING gate.
+      { href: '/org/payments', label: 'Payment processing', roles: ['owner'] },
     ],
   },
 ];

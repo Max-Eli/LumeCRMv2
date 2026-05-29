@@ -78,6 +78,7 @@ INSTALLED_APPS = [
     'apps.portal',
     'apps.imports',
     'apps.billing',
+    'apps.payments',
 ]
 
 AUTH_USER_MODEL = 'users.User'
@@ -386,6 +387,44 @@ STRIPE_PRICE_SMS_OVERAGE = env('STRIPE_PRICE_SMS_OVERAGE', default='')
 # footers correctly identify the legal billing entity.
 BILLING_LEGAL_NAME = env('BILLING_LEGAL_NAME', default='Voxtro LLC')
 BILLING_PRODUCT_NAME = env('BILLING_PRODUCT_NAME', default='Lumè CRM')
+
+# ── Stripe Connect (spa-customer card processing) ──────────────────
+#
+# Phase 2 — distinct integration from Stripe Billing above. Connect is
+# how spas charge THEIR customers (treatments, products); Billing is
+# how Lumè charges spas for the SaaS subscription. Same Stripe account
+# (Voxtro LLC), different products, different webhook secrets.
+#
+# Architecture: Stripe Connect Platform with Express account type
+# (see ADR queued at docs/decisions/). Each spa gets their own Express
+# account on Lumè's platform. Onboarding is Stripe-hosted (KYC + bank
+# verification); spas get an Express Dashboard for refunds + payouts.
+#
+# When STRIPE_SECRET_KEY is set, Connect calls reuse it — Connect uses
+# the SAME platform secret key as Billing. The only Connect-specific
+# secret is the WEBHOOK signing secret (different webhook endpoint,
+# different signing secret). Same env-var hygiene as Billing: empty
+# defaults so the system stays gracefully disabled until configured.
+#
+# STRIPE_CONNECT_RETURN_URL is where Stripe sends the spa after they
+# complete (or skip) the hosted onboarding flow. Use a tenant-aware
+# URL so each tenant lands back on their own /org/payments page.
+STRIPE_CONNECT_WEBHOOK_SECRET = env(
+    'STRIPE_CONNECT_WEBHOOK_SECRET', default='',
+)
+# Two URLs Stripe needs for the Express AccountLink flow:
+#   - return_url: where to send the spa after they finish onboarding
+#   - refresh_url: where to send them if the time-limited link expires
+# We format them per-tenant at link-create time using these templates;
+# `{tenant_slug}` gets substituted by `services.create_onboarding_link`.
+STRIPE_CONNECT_RETURN_URL_TEMPLATE = env(
+    'STRIPE_CONNECT_RETURN_URL_TEMPLATE',
+    default='https://{tenant_slug}.xn--lumcrm-5ua.com/org/payments?onboarded=1',
+)
+STRIPE_CONNECT_REFRESH_URL_TEMPLATE = env(
+    'STRIPE_CONNECT_REFRESH_URL_TEMPLATE',
+    default='https://{tenant_slug}.xn--lumcrm-5ua.com/org/payments?refresh=1',
+)
 
 # ── Instagram Business Login ───────────────────────────────────────
 #

@@ -52,6 +52,7 @@ urlpatterns = [
     path('api/', include('apps.messaging.urls')),
     path('api/', include('apps.portal.urls')),
     path('api/billing/', include('apps.billing.urls')),
+    path('api/payments/', include('apps.payments.urls')),
 
     # OpenAPI schema + Swagger UI
     path('api/schema/', SpectacularAPIView.as_view(), name='schema'),
