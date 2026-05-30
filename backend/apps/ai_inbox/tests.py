@@ -435,6 +435,8 @@ class DirectAnthropicClientTests(TestCase):
                 DirectAnthropicClient()
 
     def test_chat_wraps_sdk_exceptions(self):
+        from unittest.mock import MagicMock
+
         from django.test import override_settings
 
         from apps.ai_inbox.llm.base import LLMTransportError
