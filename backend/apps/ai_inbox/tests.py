@@ -462,13 +462,14 @@ class AIConversationEndpointTests(TestCase):
         self.tenant, self.owner = _make_tenant(slug='ep-test')
         self.customer = _make_customer(self.tenant)
         from rest_framework.test import APIClient
-        self.client = APIClient()
+        # X-Tenant-Slug header is the dev/test path the TenantMiddleware
+        # uses to resolve request.tenant (subdomain lookup is the prod
+        # path). Without it, IsTenantStaff 403s because the middleware
+        # never populates request.tenant_membership.
+        self.client = APIClient(HTTP_X_TENANT_SLUG=self.tenant.slug)
         self.client.force_authenticate(user=self.owner)
 
     def _url(self, customer_id: int, suffix: str = '') -> str:
-        # Tenant-scoped URL because the test middleware resolves tenant
-        # from the request host header; force-authenticate skips that
-        # and we just need to hit the right path.
         return f'/api/ai-inbox/conversations/{customer_id}/{suffix}'
 
     def _assert_status(self, response, expected_code):
@@ -533,7 +534,9 @@ class AIConversationEndpointTests(TestCase):
     def test_other_tenant_customer_returns_404(self):
         other_tenant, other_owner = _make_tenant(slug='ep-other')
         other_customer = _make_customer(other_tenant)
-        # Auth as the first tenant's owner; hit the other tenant's customer.
+        # Auth as the first tenant's owner (with their tenant in the
+        # X-Tenant-Slug header) but hit a customer from the OTHER tenant.
+        # The tenant-scoped queryset filter must return 404.
         r = self.client.get(self._url(other_customer.id))
         self._assert_status(r, 404)
 
@@ -542,7 +545,7 @@ class AIConfigEndpointTests(TestCase):
     def setUp(self):
         self.tenant, self.owner = _make_tenant(slug='cfg-test')
         from rest_framework.test import APIClient
-        self.client = APIClient()
+        self.client = APIClient(HTTP_X_TENANT_SLUG=self.tenant.slug)
         self.client.force_authenticate(user=self.owner)
 
     def test_get_creates_lazily(self):
