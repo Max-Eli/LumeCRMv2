@@ -79,6 +79,7 @@ INSTALLED_APPS = [
     'apps.imports',
     'apps.billing',
     'apps.payments',
+    'apps.ai_inbox',
 ]
 
 AUTH_USER_MODEL = 'users.User'

@@ -457,7 +457,7 @@ class TwilioInboundView(APIView):
         ).exists():
             return Response({'ok': True, 'duplicate': True})
 
-        Message.objects.create(
+        msg = Message.objects.create(
             tenant=tenant,
             customer=customer,
             direction=Direction.INBOUND,
@@ -468,6 +468,13 @@ class TwilioInboundView(APIView):
             to_number=to_number,
             media_urls='\n'.join(media_urls) if media_urls else '',
         )
+
+        # AI inbox dispatch — guardrail-gated, never raises. For tenants
+        # without F_AI_INBOX or without AIConfig.enabled this is a cheap
+        # no-op that returns before any meaningful work. See
+        # apps/ai_inbox/services/dispatch.py for the full guardrail chain.
+        from apps.ai_inbox.services.dispatch import maybe_dispatch_to_ai
+        maybe_dispatch_to_ai(message=msg, request=request)
 
         # No audit log on inbound creates — `_dispatch` is async; the
         # operator's UI is what triggers the audit-loggable read.
