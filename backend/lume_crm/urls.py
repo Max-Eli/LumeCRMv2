@@ -54,6 +54,7 @@ urlpatterns = [
     path('api/', include('apps.portal.urls')),
     path('api/billing/', include('apps.billing.urls')),
     path('api/payments/', include('apps.payments.urls')),
+    path('api/', include('apps.ai_inbox.urls')),
 
     # Public (unauthenticated) endpoints: self-serve signup, lead-
     # capture, etc. Throttled aggressively per-IP — see SignupThrottle.

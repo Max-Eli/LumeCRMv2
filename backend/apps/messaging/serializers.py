@@ -62,6 +62,8 @@ class MessageSerializer(serializers.ModelSerializer):
             'read_at',
             'failure_reason',
             'sent_at', 'delivered_at', 'failed_at',
+            'generated_by_ai',
+            'ai_conversation_id',
             'created_at', 'updated_at',
         ]
         read_only_fields = fields

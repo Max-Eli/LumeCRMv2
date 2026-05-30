@@ -452,6 +452,133 @@ class DirectAnthropicClientTests(TestCase):
                 client.chat(system='S', messages=[{'role': 'user', 'content': 'hi'}])
 
 
+# ── HTTP endpoints (operator pause/resume + config + escalations) ──
+
+
+class AIConversationEndpointTests(TestCase):
+    """Inbox operator controls — pause / resume / status."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant(slug='ep-test')
+        self.customer = _make_customer(self.tenant)
+        from rest_framework.test import APIClient
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
+
+    def _url(self, customer_id: int, suffix: str = '') -> str:
+        # Tenant-scoped URL because the test middleware resolves tenant
+        # from the request host header; force-authenticate skips that
+        # and we just need to hit the right path.
+        return f'/api/ai-inbox/conversations/{customer_id}/{suffix}'
+
+    def _assert_status(self, response, expected_code):
+        self.assertEqual(
+            response.status_code, expected_code,
+            msg=f'unexpected {response.status_code}: {getattr(response, "data", response.content)!r}',
+        )
+
+    def test_get_creates_conversation_lazily(self):
+        r = self.client.get(self._url(self.customer.id))
+        self._assert_status(r, 200)
+        self.assertEqual(r.data['status'], 'active')
+        self.assertEqual(r.data['customer_id'], self.customer.id)
+        self.assertEqual(AIConversation.objects.count(), 1)
+
+    def test_pause_flips_status_and_audits(self):
+        r = self.client.post(self._url(self.customer.id, 'pause/'))
+        self._assert_status(r, 200)
+        self.assertEqual(r.data['status'], 'paused')
+        conv = AIConversation.objects.get(tenant=self.tenant, customer=self.customer)
+        self.assertEqual(conv.paused_by, self.owner)
+        self.assertIsNotNone(conv.paused_at)
+        # Audit row exists.
+        self.assertTrue(
+            AuditLog.objects.filter(
+                tenant=self.tenant, resource_type='ai_conversation',
+                metadata__event='paused',
+            ).exists()
+        )
+
+    def test_pause_is_idempotent(self):
+        self.client.post(self._url(self.customer.id, 'pause/'))
+        r = self.client.post(self._url(self.customer.id, 'pause/'))
+        self._assert_status(r, 200)
+        self.assertEqual(r.data['status'], 'paused')
+
+    def test_resume_clears_pause_state(self):
+        self.client.post(self._url(self.customer.id, 'pause/'))
+        r = self.client.post(self._url(self.customer.id, 'resume/'))
+        self._assert_status(r, 200)
+        self.assertEqual(r.data['status'], 'active')
+        conv = AIConversation.objects.get(tenant=self.tenant, customer=self.customer)
+        self.assertIsNone(conv.paused_by)
+        self.assertIsNone(conv.paused_at)
+
+    def test_resume_resolves_open_escalations(self):
+        conv = AIConversation.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            status=AIConversation.Status.ESCALATED,
+            escalated_at=djtz.now(), escalation_reason='requested_human',
+        )
+        EscalationAlert.objects.create(
+            tenant=self.tenant, conversation=conv, customer=self.customer,
+            reason='requested_human',
+        )
+        r = self.client.post(self._url(self.customer.id, 'resume/'))
+        self._assert_status(r, 200)
+        alert = EscalationAlert.objects.get(conversation=conv)
+        self.assertIsNotNone(alert.resolved_at)
+        self.assertIsNotNone(alert.acknowledged_at)
+
+    def test_other_tenant_customer_returns_404(self):
+        other_tenant, other_owner = _make_tenant(slug='ep-other')
+        other_customer = _make_customer(other_tenant)
+        # Auth as the first tenant's owner; hit the other tenant's customer.
+        r = self.client.get(self._url(other_customer.id))
+        self._assert_status(r, 404)
+
+
+class AIConfigEndpointTests(TestCase):
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant(slug='cfg-test')
+        from rest_framework.test import APIClient
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
+
+    def test_get_creates_lazily(self):
+        r = self.client.get('/api/ai-inbox/config/')
+        self.assertEqual(r.status_code, 200)
+        self.assertFalse(r.data['enabled'])
+        self.assertTrue(r.data['test_mode'])
+
+    def test_patch_persona_succeeds(self):
+        r = self.client.patch(
+            '/api/ai-inbox/config/',
+            data={'persona': 'You are Avery.'}, format='json',
+        )
+        self.assertEqual(r.status_code, 200)
+        config = AIConfig.objects.get(tenant=self.tenant)
+        self.assertEqual(config.persona, 'You are Avery.')
+
+    def test_enable_without_tfn_rejected(self):
+        self.tenant.twilio_from_number = ''
+        self.tenant.save(update_fields=['twilio_from_number'])
+        r = self.client.patch(
+            '/api/ai-inbox/config/',
+            data={'enabled': True}, format='json',
+        )
+        self.assertEqual(r.status_code, 400)
+        self.assertIn('enabled', r.data)
+
+    def test_enable_test_mode_requires_test_number(self):
+        r = self.client.patch(
+            '/api/ai-inbox/config/',
+            data={'enabled': True, 'test_mode': True, 'test_mode_number': ''},
+            format='json',
+        )
+        self.assertEqual(r.status_code, 400)
+
+
 class LLMClientFactoryTests(TestCase):
     """get_llm_client() routes by AI_LLM_PROVIDER setting."""
 

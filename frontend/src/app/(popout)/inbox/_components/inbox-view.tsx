@@ -28,6 +28,11 @@ import Link from 'next/link';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+import {
+  usePauseAI,
+  useResumeAI,
+  useAIConversationStatus,
+} from '@/lib/ai-inbox';
 import { ApiError } from '@/lib/api';
 import { useCustomers, type CustomerListItem } from '@/lib/customers';
 import {
@@ -362,12 +367,86 @@ function ConversationPane({
           data.messages.map((m) => <MessageBubble key={m.id} message={m} />)
         )}
       </div>
+      <AIStatusBanner customerId={customerId} />
       <Composer
         customerId={customerId}
         smsOptIn={data.customer.sms_opt_in}
         hasPhone={!!data.customer.phone}
         onManageReplies={onManageReplies}
       />
+    </div>
+  );
+}
+
+/**
+ * Renders nothing until the AI feature responds (tenant might be on
+ * a tier without F_AI_INBOX, in which case the endpoint 402s and the
+ * banner stays hidden). When the tenant DOES have the feature, shows
+ * one of three states:
+ *
+ *   - active     — green strip, "AI is replying" + Pause button
+ *   - paused     — amber strip, "AI paused — you're driving" + Resume
+ *   - escalated  — red strip, reason text + "Mark resolved" (which
+ *                  also flips status back to active)
+ *
+ * Status is polled every 10s by useAIConversationStatus so the
+ * operator sees the agent reply or escalate within a turn.
+ */
+function AIStatusBanner({ customerId }: { customerId: number }) {
+  const { data, isError } = useAIConversationStatus(customerId);
+  const pause = usePauseAI(customerId);
+  const resume = useResumeAI(customerId);
+
+  // 402 (PlanFeatureRequired) or any other error → hide the banner
+  // completely. Don't broadcast "AI is off" — that's not the user's
+  // job to think about on a thread.
+  if (isError || !data) return null;
+
+  if (data.status === 'closed') return null;
+
+  const isPaused = data.status === 'paused';
+  const isEscalated = data.status === 'escalated';
+
+  const tone = isEscalated
+    ? 'bg-rose-50 border-rose-200 text-rose-900'
+    : isPaused
+      ? 'bg-amber-50 border-amber-200 text-amber-900'
+      : 'bg-violet-50 border-violet-200 text-violet-900';
+
+  const label = isEscalated
+    ? `AI escalated — ${data.escalation_reason || 'needs attention'}.`
+    : isPaused
+      ? `AI paused${data.paused_by_email ? ' by ' + data.paused_by_email : ''}. You’re driving this thread.`
+      : 'AI is replying to this thread. Click Pause to take over.';
+
+  const buttonLabel = isEscalated
+    ? 'Resume AI'
+    : isPaused
+      ? 'Resume AI'
+      : 'Pause AI';
+  const onClick = () => (isPaused || isEscalated ? resume.mutate() : pause.mutate());
+  const busy = pause.isPending || resume.isPending;
+
+  return (
+    <div
+      className={cn(
+        'flex items-center justify-between gap-3 border-t px-5 py-2 text-xs',
+        tone,
+      )}
+    >
+      <span className="truncate">{label}</span>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={busy}
+        className={cn(
+          'rounded-md border px-2.5 py-1 text-[11px] font-medium transition-colors',
+          'bg-card hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed',
+          isEscalated || isPaused ? 'border-current' : 'border-violet-300',
+        )}
+      >
+        {busy ? '...' : buttonLabel}
+      </button>
     </div>
   );
 }
@@ -410,17 +489,20 @@ function ConversationHeader({ conversation }: { conversation: ConversationRespon
 function MessageBubble({ message }: { message: Message }) {
   const isOutbound = message.direction === 'outbound';
   const failed = message.status === 'failed';
+  const isAI = message.generated_by_ai === true;
   const isAutomated =
-    message.kind === 'confirmation' ||
-    message.kind === 'reminder' ||
-    message.kind === 'review_request';
+    !isAI && (
+      message.kind === 'confirmation' ||
+      message.kind === 'reminder' ||
+      message.kind === 'review_request'
+    );
 
   return (
     <div className={cn('flex', isOutbound ? 'justify-end' : 'justify-start')}>
       <div className="max-w-[70%]">
-        {isAutomated ? (
+        {(isAutomated || isAI) ? (
           <div className={cn('mb-1 flex', isOutbound ? 'justify-end' : 'justify-start')}>
-            <KindBadge kind={message.kind} />
+            <KindBadge kind={isAI ? 'ai' : message.kind} />
           </div>
         ) : null}
         <div
@@ -429,9 +511,11 @@ function MessageBubble({ message }: { message: Message }) {
             isOutbound
               ? failed
                 ? 'bg-destructive/10 text-destructive border border-destructive/30'
-                : isAutomated
-                  ? 'bg-card border rounded-br-md'
-                  : 'bg-accent text-accent-foreground rounded-br-md'
+                : isAI
+                  ? 'bg-violet-50 text-violet-900 border border-violet-200 rounded-br-md'
+                  : isAutomated
+                    ? 'bg-card border rounded-br-md'
+                    : 'bg-accent text-accent-foreground rounded-br-md'
               : 'bg-card border rounded-bl-md',
           )}
         >
@@ -460,7 +544,7 @@ function MessageBubble({ message }: { message: Message }) {
               <span className={cn(failed ? 'text-destructive' : '')}>
                 {labelForStatus(message.status)}
               </span>
-              {message.sent_by_name ? <> · {message.sent_by_name}</> : null}
+              {isAI ? <> · AI agent</> : message.sent_by_name ? <> · {message.sent_by_name}</> : null}
             </>
           ) : null}
         </p>
@@ -472,16 +556,19 @@ function MessageBubble({ message }: { message: Message }) {
 function KindBadge({ kind }: { kind: Message['kind'] }) {
   // Visual hierarchy: automated messages get a subtle, system-toned
   // chip so the operator instantly recognises them as platform-sent
-  // rather than typed by staff. Keep it small so it doesn't fight the
-  // bubble for attention.
+  // rather than typed by staff. AI gets a distinct violet tone so
+  // the operator can tell at a glance whether the agent or a
+  // template wrote a given outbound.
   const meta =
     kind === 'confirmation'
-      ? { label: 'Confirmation', tone: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
+      ? { label: 'Confirmation', prefix: 'Auto', tone: 'bg-emerald-50 text-emerald-700 border-emerald-200' }
       : kind === 'reminder'
-        ? { label: 'Reminder', tone: 'bg-sky-50 text-sky-700 border-sky-200' }
+        ? { label: 'Reminder', prefix: 'Auto', tone: 'bg-sky-50 text-sky-700 border-sky-200' }
         : kind === 'review_request'
-          ? { label: 'Review request', tone: 'bg-amber-50 text-amber-800 border-amber-200' }
-          : null;
+          ? { label: 'Review request', prefix: 'Auto', tone: 'bg-amber-50 text-amber-800 border-amber-200' }
+          : kind === 'ai'
+            ? { label: 'agent reply', prefix: 'AI', tone: 'bg-violet-50 text-violet-700 border-violet-200' }
+            : null;
   if (!meta) return null;
   return (
     <span
@@ -490,7 +577,7 @@ function KindBadge({ kind }: { kind: Message['kind'] }) {
         meta.tone,
       )}
     >
-      Auto · {meta.label}
+      {meta.prefix} · {meta.label}
     </span>
   );
 }

@@ -38,7 +38,8 @@ export type MessageKind =
   | 'manual'
   | 'confirmation'
   | 'reminder'
-  | 'review_request';
+  | 'review_request'
+  | 'ai';
 
 export interface ThreadSummary {
   customer_id: number;
@@ -69,6 +70,18 @@ export interface Message {
   sent_at: string | null;
   delivered_at: string | null;
   failed_at: string | null;
+  /**
+   * True when this message was authored by the AI agent
+   * (apps/ai_inbox). Drives the purple bubble + AI pill in the
+   * inbox. Always false on inbound rows.
+   */
+  generated_by_ai: boolean;
+  /**
+   * Links the row to its AIConversation. Set on both AI-driven
+   * inbound (when the dispatch path engaged) and AI-authored
+   * outbound. Null for rows the AI inbox never touched.
+   */
+  ai_conversation_id: number | null;
   created_at: string;
   updated_at: string;
 }
