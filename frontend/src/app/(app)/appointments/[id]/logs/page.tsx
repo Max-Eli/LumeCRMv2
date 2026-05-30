@@ -139,7 +139,18 @@ function EmptyState() {
 // ── Helpers ──────────────────────────────────────────────────────────────
 
 function describeEntry(entry: ActivityEntry, timezone: string): string {
-  if (entry.action === 'create') return 'Appointment created';
+  if (entry.action === 'create') {
+    const m = entry.metadata ?? {};
+    const source = typeof m.source === 'string' ? m.source : '';
+    const service = typeof m.service_name === 'string' ? m.service_name : '';
+    if (source === 'sms_ai') {
+      return service
+        ? `Appointment booked by AI agent · ${service}`
+        : 'Appointment booked by AI agent';
+    }
+    if (source === 'online') return 'Appointment booked via online booking form';
+    return 'Appointment created';
+  }
   if (entry.action === 'delete') return 'Appointment deleted';
   if (entry.action === 'read') return 'Viewed';
 
@@ -194,6 +205,11 @@ function actorName(entry: ActivityEntry): string {
     return `by ${`${entry.user_first_name} ${entry.user_last_name ?? ''}`.trim()}`;
   }
   if (entry.user_email) return `by ${entry.user_email}`;
+  // No authenticated user — check metadata for a system actor
+  // (e.g. AI-driven bookings record created_by='AI agent').
+  const m = entry.metadata ?? {};
+  const createdBy = typeof m.created_by === 'string' ? m.created_by : '';
+  if (createdBy) return `by ${createdBy}`;
   return '';
 }
 

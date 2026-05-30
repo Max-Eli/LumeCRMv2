@@ -30,7 +30,6 @@ import {
   X,
 } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
-import Link from 'next/link';
 import { useEffect, useState } from 'react';
 import { toast } from 'sonner';
 
@@ -886,19 +885,29 @@ function RescheduleButton({
  * on "what's happening with this appointment right now."
  */
 function LogsLinkRow({ appointmentId }: { appointmentId: number }) {
+  // Opens a dedicated popup WINDOW (not a tab) so the operator can
+  // park the audit trail beside the calendar without juggling tabs.
+  // Mirrors the popout pattern used by the messaging inbox in
+  // right-tool-rail.tsx — same window features, same UX shape.
+  const openLogsWindow = () => {
+    window.open(
+      `/appointments/${appointmentId}/logs`,
+      `appointment-logs-${appointmentId}`,
+      'popup,width=900,height=720,noopener=no,noreferrer=no',
+    );
+  };
   return (
     <div className="px-4 py-2.5">
-      <Link
-        href={`/appointments/${appointmentId}/logs`}
-        target="_blank"
-        rel="noopener noreferrer"
+      <button
+        type="button"
+        onClick={openLogsWindow}
         className="inline-flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
       >
         <Activity className="size-3.5" />
         Logs
         <ExternalLink className="size-3 shrink-0" aria-hidden />
-        <span className="sr-only">(opens in new tab)</span>
-      </Link>
+        <span className="sr-only">(opens in a new window)</span>
+      </button>
     </div>
   );
 }

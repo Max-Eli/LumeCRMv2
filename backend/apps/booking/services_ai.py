@@ -21,6 +21,8 @@ import logging
 from typing import TYPE_CHECKING
 
 from apps.appointments.models import Appointment
+from apps.audit.models import AuditLog
+from apps.audit.services import record
 from apps.booking.services import generate_booking_token
 
 if TYPE_CHECKING:
@@ -56,7 +58,8 @@ def book_appointment_for_ai(
     Source string is 'sms_ai' so reporting can split AI-driven
     bookings from operator-typed ones and from public-form
     bookings. `created_by` is null (no authenticated User in this
-    flow).
+    flow) — the actor is the AI agent, surfaced via the audit log
+    metadata below.
     """
     appointment = Appointment.objects.create(
         tenant=tenant,
@@ -71,6 +74,31 @@ def book_appointment_for_ai(
         booking_token=generate_booking_token(),
         quoted_price_cents=service.price_cents,
     )
+
+    # Audit-log the creation so it shows up on the appointment's
+    # /logs page. user is None (no authenticated operator); the
+    # AI-agent attribution lives in the metadata so the logs page
+    # can render "Booked via AI agent" instead of an empty actor.
+    record(
+        action=AuditLog.Action.CREATE,
+        resource_type='appointment',
+        resource_id=appointment.id,
+        tenant=tenant,
+        user=None,
+        metadata={
+            'created_by': 'AI agent',
+            'source': 'sms_ai',
+            'customer_id': customer.id,
+            'service_id': service.id,
+            'service_name': service.name,
+            'provider_id': provider.id,
+            'location_id': location.id,
+            'start_time': start_time.isoformat(),
+            'end_time': end_time.isoformat(),
+            'customer_phone_last4': (customer.phone or '')[-4:],
+        },
+    )
+
     logger.info(
         'ai_inbox.booked tenant=%s appointment_id=%s customer_id=%s service_id=%s',
         tenant.slug, appointment.id, customer.id, service.id,

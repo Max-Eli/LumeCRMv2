@@ -60,19 +60,78 @@ def send_confirmation_sms_on_create(sender, instance: Appointment, created: bool
     if (instance.source or '').endswith('_import'):
         return
 
-    from .sms import SMSDispatchError, send_confirmation_sms
+    # AI-driven bookings: send the formal confirmation with a 60-second
+    # delay so the customer perceives the AI's instant "got it" ack
+    # and the platform's official confirmation as two clean touches
+    # rather than one duplicate. See apps/ai_inbox/agents/sms_agent.py
+    # for the in-flow ack.
+    #
+    # Implementation: threading.Timer fires after transaction commits
+    # so we don't send before the DB row is visible to other readers.
+    # Failure mode: if the gunicorn worker is recycled within the 60s
+    # window (deploy, scale-down), the timer dies and the customer
+    # doesn't get the formal confirmation. Acceptable for v1 —
+    # operators can resend manually from the appointment detail page.
+    # v2 fix: persist to a delayed-jobs table + reap via an
+    # EventBridge cron.
+    if instance.source == 'sms_ai':
+        import threading
+        from django.db import transaction
 
+        appt_id = instance.pk
+
+        def _send_delayed():
+            _safe_send_by_id(appt_id)
+
+        def _arm_timer():
+            timer = threading.Timer(60.0, _send_delayed)
+            timer.daemon = True   # don't block worker shutdown
+            timer.start()
+
+        transaction.on_commit(_arm_timer)
+        return
+
+    _safe_send(instance)
+
+
+def _safe_send(appointment: Appointment) -> None:
+    """Send the confirmation, swallowing transport + unexpected errors."""
+    from .sms import SMSDispatchError, send_confirmation_sms
     try:
-        send_confirmation_sms(instance)
+        send_confirmation_sms(appointment)
     except SMSDispatchError as e:
         logger.exception(
             'appointment_sms.confirmation.failed',
-            extra={'appointment_id': instance.pk, 'twilio_error': str(e)},
+            extra={'appointment_id': appointment.pk, 'twilio_error': str(e)},
         )
     except Exception:
         # Belt + suspenders — anything we didn't anticipate also
         # gets swallowed so the appointment commit isn't reverted.
         logger.exception(
             'appointment_sms.confirmation.unexpected',
-            extra={'appointment_id': instance.pk},
+            extra={'appointment_id': appointment.pk},
         )
+
+
+def _safe_send_by_id(appointment_id: int) -> None:
+    """Re-fetch + send. Used by the 60-second delayed branch — by the
+    time the Timer fires, the in-memory `instance` may be stale
+    (someone could have cancelled the appointment), so re-fetch from
+    the DB to guarantee we don't send confirmations for already-cancelled
+    rows.
+    """
+    try:
+        appt = Appointment.objects.get(pk=appointment_id)
+    except Appointment.DoesNotExist:
+        logger.warning(
+            'appointment_sms.delayed_send.appointment_gone',
+            extra={'appointment_id': appointment_id},
+        )
+        return
+    if appt.status in _TERMINAL_STATUSES:
+        logger.info(
+            'appointment_sms.delayed_send.skipped_terminal',
+            extra={'appointment_id': appointment_id, 'status': appt.status},
+        )
+        return
+    _safe_send(appt)
