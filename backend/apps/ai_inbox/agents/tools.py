@@ -18,6 +18,8 @@ from __future__ import annotations
 import datetime as dt
 import logging
 import time
+
+from django.db import models
 from typing import TYPE_CHECKING, Any, Callable
 
 from django.utils import timezone as djtz
@@ -81,18 +83,47 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
         },
     },
     {
+        'name': 'find_service',
+        'description': (
+            "Search the spa's service catalog for services matching the "
+            "customer's request. Returns up to 10 matching services with "
+            'id, name, category, duration, and price. ALWAYS call this '
+            'BEFORE check_availability to discover the real service_id '
+            '— NEVER guess a service_id. If the customer says "injectables" '
+            'or "consultation" or "facial", call find_service with that '
+            'query first.\n\n'
+            'Returned shape: {matches: [{id, name, category, duration_minutes, price_cents}, ...]}\n\n'
+            'If 0 matches → ask the customer to clarify what they want.\n'
+            'If multiple matches → list 2-4 options to the customer and ask which.\n'
+            'If 1 match → proceed to check_availability with that service_id.'
+        ),
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'query': {
+                    'type': 'string',
+                    'description': 'Free-text search term, e.g. "injectable", "facial", "consultation".',
+                },
+            },
+            'required': ['query'],
+        },
+    },
+    {
         'name': 'check_availability',
         'description': (
             'Return open appointment slots for a service in a date window. '
-            'If provider_id is omitted, returns slots from any eligible '
-            'bookable provider. Date strings are ISO 8601 (YYYY-MM-DD). '
-            'Returns at most 6 slots, each with a 1-based index. '
+            'Only returns slots for providers who are ELIGIBLE for the service '
+            "(based on the spa's service-category job-title eligibility rules) "
+            "— a massage therapist won't be returned for an injectable. "
+            'Date strings are ISO 8601 (YYYY-MM-DD). Returns at most 6 slots, '
+            'each with a 1-based index. '
             'IMPORTANT: this call AUTOMATICALLY stages the returned slots '
             "as a pending booking proposal. The customer's digit reply "
             '(1-9) will auto-book the slot at that index. You do NOT need '
             'to call any other tool to make this work — just send a single '
             'SMS listing the slots using the EXACT indices and times '
-            'returned, and end with "Reply 1, 2, or 3 to confirm."'
+            'returned, and end with "Reply 1, 2, or 3 to confirm." '
+            'service_id MUST come from a find_service result — never guess.'
         ),
         'input_schema': {
             'type': 'object',
@@ -362,6 +393,52 @@ def _tool_get_customer_context(
     return out
 
 
+def _tool_find_service(
+    *,
+    tool_input: dict, tenant: 'Tenant', customer: 'Customer',
+    conversation: AIConversation,
+) -> dict:
+    """Fuzzy match a query against the tenant's bookable service catalog.
+
+    Strategy:
+        - Case-insensitive substring match on Service.name OR
+          ServiceCategory.name. Both because the customer might say
+          "injectable" (category) or "Juvederm" (service).
+        - Filter by is_bookable_online=True so we don't surface services
+          the spa hasn't made public.
+        - Return top 10 (sort by name) so Claude can ask the customer
+          to pick if multiple match.
+    """
+    from apps.services.models import Service
+
+    query = (tool_input.get('query') or '').strip()
+    if not query:
+        return {'error': 'empty_query', 'matches': []}
+
+    matches = (
+        Service.objects
+        .filter(tenant=tenant, is_bookable_online=True)
+        .filter(
+            models.Q(name__icontains=query) |
+            models.Q(category__name__icontains=query)
+        )
+        .select_related('category')
+        .order_by('name')[:10]
+    )
+
+    rows = [
+        {
+            'id': s.id,
+            'name': s.name,
+            'category': s.category.name if s.category else None,
+            'duration_minutes': s.duration_minutes,
+            'price_cents': s.price_cents,
+        }
+        for s in matches
+    ]
+    return {'matches': rows, 'query': query}
+
+
 def _tool_check_availability(
     *,
     tool_input: dict, tenant: 'Tenant', customer: 'Customer',
@@ -371,13 +448,14 @@ def _tool_check_availability(
         compute_any_provider_slots,
         compute_provider_slots,
     )
+    from apps.booking.views import _eligible_providers
     from apps.services.models import Service
     from apps.tenants.models import Location, TenantMembership
 
     service_id = tool_input.get('service_id')
     service = Service.objects.filter(
         tenant=tenant, id=service_id, is_bookable_online=True,
-    ).first()
+    ).select_related('category').first()
     if service is None:
         return {'error': 'service_not_found_or_not_bookable_online'}
 
@@ -401,20 +479,24 @@ def _tool_check_availability(
 
     provider_id = tool_input.get('provider_id')
     if provider_id:
-        provider = TenantMembership.objects.filter(
-            tenant=tenant, id=provider_id, is_bookable=True, is_active=True,
-        ).first()
+        # Caller asked for a specific provider — verify the provider is
+        # actually eligible for THIS service (not just generally bookable).
+        eligible = _eligible_providers(
+            tenant=tenant, service=service, location=location,
+        )
+        provider = next((p for p in eligible if p.id == int(provider_id)), None)
         if provider is None:
-            return {'error': 'provider_not_found_or_not_bookable'}
+            return {'error': 'provider_not_eligible_for_service'}
         providers = [provider]
     else:
-        providers = list(
-            TenantMembership.objects.filter(
-                tenant=tenant, is_bookable=True, is_active=True,
-            )
+        # Reuse the existing public-booking eligibility logic — only
+        # surface providers whose job-title category matches the
+        # service. A massage therapist won't appear for an injectable.
+        providers = _eligible_providers(
+            tenant=tenant, service=service, location=location,
         )
         if not providers:
-            return {'error': 'no_bookable_providers'}
+            return {'error': 'no_eligible_providers_for_service'}
 
     collected: list[dict] = []
     cur = date_from
@@ -673,6 +755,7 @@ def _tool_escalate_to_human(
 
 TOOL_FUNCS: dict[str, Callable[..., dict]] = {
     'get_customer_context': _tool_get_customer_context,
+    'find_service': _tool_find_service,
     'check_availability': _tool_check_availability,
     'propose_slots': _tool_propose_slots,
     'confirm_booking': _tool_confirm_booking,
