@@ -280,15 +280,19 @@ def _try_digit_fast_path(
         # Let Claude handle the recovery rather than send a canned error.
         return None
 
-    body = (
-        f"You're booked for {result['service']} on "
-        f"{result['human_label']}. See you then!"
-    )
-    _send_outbound(
-        tenant=message.tenant, customer=message.customer,
-        conversation=conversation, inbound_message=message,
-        body=body, model_used='fast_path_digit',
-    )
+    # NO outbound from the fast path — the appointments app's post_save
+    # signal (apps.appointments.signals.send_confirmation_sms_on_create)
+    # already sends the canonical confirmation SMS with the
+    # date/time/STOP language. If we ALSO sent "you're booked" here,
+    # the customer would get two messages for one booking.
+    #
+    # We still need to refresh the conversation counters so subsequent
+    # inbound respects rate limits + idempotency.
+    conversation.last_ai_at = djtz.now()
+    conversation.exchange_count = (conversation.exchange_count or 0) + 1
+    conversation.save(update_fields=[
+        'last_ai_at', 'exchange_count', 'updated_at',
+    ])
     return result
 
 
