@@ -169,6 +169,20 @@ class Tenant(models.Model):
         help_text='Outbound emails sent in the current billing period. Reset on period roll.',
     )
 
+    # ── Notification idempotency tracker (Phase 5 dunning) ────────────
+    # Keyed by notification kind ('trial_7d', 'trial_3d', 'trial_1d',
+    # 'payment_failed', 'suspended_warning') → ISO timestamp string
+    # of when we sent it. The send_trial_reminders + process_dunning
+    # management commands check this before sending so daily cron
+    # invocations don't duplicate emails. Cleared by the billing
+    # webhook handler when payment succeeds (so a tenant who
+    # past_due → recovers → past_due again still gets a fresh
+    # payment_failed email).
+    notifications_sent = models.JSONField(
+        default=dict, blank=True,
+        help_text='{notification_kind: iso_sent_at}. Used by trial-reminder + dunning crons for idempotency.',
+    )
+
     # Per-site fields (timezone, address, hours, phone, email) USED to
     # live here. They moved to `Location` during the Phase 4E multi-
     # location rollout — every appointment, calendar query, and booking

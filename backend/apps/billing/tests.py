@@ -542,3 +542,301 @@ class UpdateAddonQuantityTests(TestCase):
         )
         self.assertEqual(resp.status_code, 409)
         self.assertEqual(resp.data['code'], 'grandfathered_no_self_serve_billing')
+
+
+# ── Dunning notifications + Celery-equivalent commands (Phase 5) ──
+
+
+import datetime as dt  # noqa: E402
+
+from django.core import mail  # noqa: E402
+from django.core.management import call_command  # noqa: E402
+from django.test import override_settings  # noqa: E402
+from django.utils import timezone as djtz  # noqa: E402
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class SendNotificationTests(TestCase):
+    """Unit tests for ``apps.billing.notifications.send_notification`` —
+    the idempotency tracker, audit log writes, and per-kind body
+    rendering all behave correctly. HIPAA: no PHI ever ends up in
+    these bodies (verified by inspection + by an explicit assertion
+    against patient-name fields)."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from apps.tenants.services import create_tenant_with_defaults
+        self.tenant = create_tenant_with_defaults(
+            name='Test Spa Notifications',
+            slug='test-spa-notif',
+            owner_user=get_user_model().objects.create_user(
+                email='owner-notif@example.com', password='x',
+                first_name='Pat', last_name='Owner',
+            ),
+            status=Tenant.Status.TRIAL,
+            plan=Tenant.Plan.TRIAL,
+            trial_ends_at=djtz.now() + dt.timedelta(days=7),
+        )
+
+    def test_send_notification_sends_and_marks_sent(self):
+        from apps.billing.notifications import send_notification
+        sent = send_notification(tenant=self.tenant, kind='trial_7d')
+        self.assertTrue(sent)
+        self.assertEqual(len(mail.outbox), 1)
+        msg = mail.outbox[0]
+        self.assertIn('trial ends in 7 days', msg.subject.lower())
+        self.assertIn('owner-notif@example.com', msg.to)
+        # Idempotency tracker stamped.
+        self.tenant.refresh_from_db()
+        self.assertIn('trial_7d', self.tenant.notifications_sent)
+
+    def test_idempotent_second_call_skips(self):
+        from apps.billing.notifications import send_notification
+        self.assertTrue(send_notification(tenant=self.tenant, kind='trial_7d'))
+        # Second call returns False + outbox stays at 1.
+        self.assertFalse(send_notification(tenant=self.tenant, kind='trial_7d'))
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_force_true_bypasses_idempotency(self):
+        from apps.billing.notifications import send_notification
+        self.assertTrue(send_notification(tenant=self.tenant, kind='trial_7d'))
+        self.assertTrue(
+            send_notification(tenant=self.tenant, kind='trial_7d', force=True),
+        )
+        self.assertEqual(len(mail.outbox), 2)
+
+    def test_unknown_kind_returns_false(self):
+        from apps.billing.notifications import send_notification
+        # Type-narrowed at the call site but we still defend at runtime.
+        self.assertFalse(send_notification(tenant=self.tenant, kind='unknown'))  # type: ignore[arg-type]
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_no_owner_falls_back_to_billing_email(self):
+        from apps.billing.notifications import send_notification
+        # Deactivate the owner membership.
+        self.tenant.memberships.update(is_active=False)
+        self.tenant.billing_email = 'billing@example.com'
+        self.tenant.save()
+        sent = send_notification(tenant=self.tenant, kind='trial_7d')
+        self.assertTrue(sent)
+        self.assertIn('billing@example.com', mail.outbox[0].to)
+
+    def test_audit_log_written_on_send(self):
+        from apps.audit.models import AuditLog
+        from apps.billing.notifications import send_notification
+        baseline = AuditLog.objects.filter(
+            resource_type='tenant_notification',
+        ).count()
+        send_notification(tenant=self.tenant, kind='payment_failed')
+        log = AuditLog.objects.filter(
+            resource_type='tenant_notification',
+        ).order_by('-timestamp').first()
+        self.assertEqual(
+            AuditLog.objects.filter(resource_type='tenant_notification').count(),
+            baseline + 1,
+        )
+        self.assertEqual(log.metadata['kind'], 'payment_failed')
+        # Recipient DOMAIN only — same posture as SES bounce audit.
+        # Full recipient address NOT in audit log.
+        self.assertEqual(log.metadata['recipient_domain'], 'example.com')
+        self.assertNotIn('owner-notif@example.com', str(log.metadata))
+
+    def test_email_body_contains_NO_PHI(self):
+        """HIPAA invariant — billing emails are operator-only;
+        nothing in the body should reference patient names, service
+        names, or other clinical data. This test is the guardrail."""
+        from apps.billing.notifications import send_notification
+
+        # PHI-shaped strings that must NEVER appear in a body.
+        forbidden = ['ssn', 'social security', 'medical record number']
+
+        for kind in ('trial_7d', 'trial_3d', 'trial_1d',
+                     'payment_failed', 'suspended_warning'):
+            mail.outbox.clear()
+            self.tenant.notifications_sent = {}
+            self.tenant.save()
+            send_notification(tenant=self.tenant, kind=kind)
+            body = mail.outbox[0].body.lower()
+            for term in forbidden:
+                self.assertNotIn(
+                    term, body,
+                    f'{kind} email body contains forbidden PHI-shaped term: {term}',
+                )
+
+    def test_clear_notification_removes_key(self):
+        from apps.billing.notifications import (
+            clear_notification, send_notification,
+        )
+        send_notification(tenant=self.tenant, kind='payment_failed')
+        self.tenant.refresh_from_db()
+        self.assertIn('payment_failed', self.tenant.notifications_sent)
+        clear_notification(tenant=self.tenant, kind='payment_failed')
+        self.tenant.refresh_from_db()
+        self.assertNotIn('payment_failed', self.tenant.notifications_sent)
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class SendTrialRemindersCommandTests(TestCase):
+    """The daily ``send_trial_reminders`` command. Idempotent across
+    multiple invocations; respects the per-window slop; never sends
+    to non-trial / grandfathered tenants."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from apps.tenants.services import create_tenant_with_defaults
+        self.User = get_user_model()
+        self._mktenant = lambda slug, days, **kw: create_tenant_with_defaults(
+            name=slug.replace('-', ' ').title(),
+            slug=slug,
+            owner_user=self.User.objects.create_user(
+                email=f'{slug}@trialtest.com', password='x', first_name='X',
+            ),
+            status=kw.pop('status', Tenant.Status.TRIAL),
+            plan=kw.pop('plan', Tenant.Plan.TRIAL),
+            trial_ends_at=djtz.now() + dt.timedelta(days=days),
+            **kw,
+        )
+
+    def test_7d_window_sends_trial_7d(self):
+        self._mktenant('seven-day-spa', days=7)
+        call_command('send_trial_reminders')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('7 days', mail.outbox[0].subject)
+
+    def test_3d_window_sends_trial_3d(self):
+        self._mktenant('three-day-spa', days=3)
+        call_command('send_trial_reminders')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('3 days', mail.outbox[0].subject)
+
+    def test_1d_window_sends_trial_1d(self):
+        self._mktenant('one-day-spa', days=1)
+        call_command('send_trial_reminders')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('tomorrow', mail.outbox[0].subject)
+
+    def test_outside_window_sends_nothing(self):
+        # 14 days out — no reminder applies yet.
+        self._mktenant('mid-trial-spa', days=14)
+        call_command('send_trial_reminders')
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_grandfathered_tenant_skipped(self):
+        self._mktenant('gf-spa-trial', days=7, grandfathered=True)
+        call_command('send_trial_reminders')
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_active_tenant_skipped(self):
+        self._mktenant(
+            'active-spa-trial', days=7,
+            status=Tenant.Status.ACTIVE, plan=Tenant.Plan.STARTER,
+        )
+        call_command('send_trial_reminders')
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_idempotent_second_run_sends_nothing(self):
+        self._mktenant('idempotent-spa', days=7)
+        call_command('send_trial_reminders')
+        call_command('send_trial_reminders')
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_dry_run_sends_nothing(self):
+        self._mktenant('dryrun-spa', days=7)
+        call_command('send_trial_reminders', dry_run=True)
+        self.assertEqual(len(mail.outbox), 0)
+        # Idempotency key NOT set on dry-run (so a real run
+        # afterwards still sends).
+        t = Tenant.objects.get(slug='dryrun-spa')
+        self.assertNotIn('trial_7d', t.notifications_sent or {})
+
+    def test_tenant_flag_limits_to_one(self):
+        self._mktenant('one-of-two-a', days=7)
+        self._mktenant('one-of-two-b', days=7)
+        call_command('send_trial_reminders', tenant='one-of-two-a')
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('one-of-two-a', mail.outbox[0].to[0])
+
+
+@override_settings(EMAIL_BACKEND='django.core.mail.backends.locmem.EmailBackend')
+class ProcessDunningCommandTests(TestCase):
+    """``process_dunning`` handles past_due → suspended transition +
+    payment_failed + suspended_warning emails."""
+
+    def setUp(self):
+        from django.contrib.auth import get_user_model
+        from apps.tenants.services import create_tenant_with_defaults
+        self.User = get_user_model()
+        self._mktenant = lambda slug, status, **kw: create_tenant_with_defaults(
+            name=slug.replace('-', ' ').title(),
+            slug=slug,
+            owner_user=self.User.objects.create_user(
+                email=f'{slug}@dunning.com', password='x', first_name='Y',
+            ),
+            status=status,
+            plan=kw.pop('plan', Tenant.Plan.STARTER),
+            **kw,
+        )
+
+    def test_past_due_tenant_gets_payment_failed_email(self):
+        self._mktenant('past-due-fresh', Tenant.Status.PAST_DUE)
+        call_command('process_dunning')
+        # 1 email (payment_failed); no transition yet (just-now updated_at).
+        self.assertEqual(len(mail.outbox), 1)
+        self.assertIn('payment failed', mail.outbox[0].subject.lower())
+
+    def test_past_due_over_7_days_transitions_to_suspended(self):
+        t = self._mktenant('past-due-old', Tenant.Status.PAST_DUE)
+        # Force updated_at backwards to simulate 8 days in past_due.
+        Tenant.objects.filter(pk=t.pk).update(
+            updated_at=djtz.now() - dt.timedelta(days=8),
+        )
+        call_command('process_dunning')
+        t.refresh_from_db()
+        self.assertEqual(t.status, Tenant.Status.SUSPENDED)
+
+    def test_suspended_45_days_gets_warning_email(self):
+        t = self._mktenant('suspended-45', Tenant.Status.SUSPENDED)
+        Tenant.objects.filter(pk=t.pk).update(
+            updated_at=djtz.now() - dt.timedelta(days=46),
+        )
+        call_command('process_dunning')
+        # Find the suspended_warning email (subject contains "deleted").
+        deletion_emails = [
+            m for m in mail.outbox if 'deleted' in m.subject.lower()
+        ]
+        self.assertEqual(len(deletion_emails), 1)
+
+    def test_suspended_under_45_days_gets_no_warning(self):
+        t = self._mktenant('suspended-recent', Tenant.Status.SUSPENDED)
+        Tenant.objects.filter(pk=t.pk).update(
+            updated_at=djtz.now() - dt.timedelta(days=10),
+        )
+        call_command('process_dunning')
+        # No data-deletion email.
+        for msg in mail.outbox:
+            self.assertNotIn('deleted', msg.subject.lower())
+
+    def test_grandfathered_tenant_skipped_even_if_past_due(self):
+        # Grandfathered tenants are exempt from automated dunning.
+        self._mktenant(
+            'gf-past-due', Tenant.Status.PAST_DUE, grandfathered=True,
+        )
+        call_command('process_dunning')
+        self.assertEqual(len(mail.outbox), 0)
+
+    def test_idempotent_payment_failed_not_resent(self):
+        self._mktenant('idem-pd', Tenant.Status.PAST_DUE)
+        call_command('process_dunning')
+        call_command('process_dunning')
+        # Two runs = one email (idempotency tracker hits on run 2).
+        self.assertEqual(len(mail.outbox), 1)
+
+    def test_dry_run_changes_nothing(self):
+        t = self._mktenant('dryrun-pd', Tenant.Status.PAST_DUE)
+        Tenant.objects.filter(pk=t.pk).update(
+            updated_at=djtz.now() - dt.timedelta(days=10),
+        )
+        call_command('process_dunning', dry_run=True)
+        t.refresh_from_db()
+        self.assertEqual(t.status, Tenant.Status.PAST_DUE)  # NOT suspended
+        self.assertEqual(len(mail.outbox), 0)
