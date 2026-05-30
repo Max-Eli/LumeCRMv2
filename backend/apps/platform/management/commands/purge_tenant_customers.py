@@ -110,8 +110,14 @@ class Command(BaseCommand):
         from apps.waitlist.models import WaitlistEntry
 
         # Deletion order: leaf PROTECT-referencers first, then their
-        # parents, then Customer last. Comments record which FK forced
-        # each entry's position.
+        # parents, then Customer last. The non-obvious wrinkle is
+        # InvoiceLineItem — cascades FROM Invoice but is PROTECTed by
+        # PurchasedPackage.source_invoice_line and
+        # Subscription.source_invoice_line (and the same on each
+        # redemption). So PurchasedPackage / Subscription must be
+        # deleted BEFORE Invoice, even though both also PROTECT → Customer.
+        # Update this list if you add a new PROTECT FK upstream of
+        # Invoice / Appointment / Customer.
         delete_plan = [
             # ── invoice-attached ledger rows (all PROTECT → Invoice) ──
             ('payments.Refund',            Refund),
@@ -124,16 +130,21 @@ class Command(BaseCommand):
             ('charts.ChartNote',           ChartNote),
             ('waitlist.WaitlistEntry',     WaitlistEntry),
             ('integrations.SocialThread',  SocialThread),
-            # ── appointment-attached PROTECT redemptions ──
+            # ── redemptions (PROTECT → Subscription/PurchasedPackage,
+            #    Appointment, and InvoiceLineItem) ──
             ('memberships.SubscriptionRedemption', SubscriptionRedemption),
             ('packages.PackageRedemption', PackageRedemption),
-            # ── invoice (PROTECT → Customer + Appointment); InvoiceLineItem cascades ──
+            # ── Subscription + PurchasedPackage MUST go before Invoice:
+            #    both PROTECT-reference InvoiceLineItem via
+            #    source_invoice_line, which Invoice's cascade would
+            #    otherwise try to delete out from under them ──
+            ('memberships.Subscription',   Subscription),
+            ('packages.PurchasedPackage',  PurchasedPackage),
+            # ── invoice (PROTECT → Customer + Appointment); now
+            #    nothing PROTECT-references its line items ──
             ('invoices.Invoice',           Invoice),
             # ── appointment (PROTECT → Customer) ──
             ('appointments.Appointment',   Appointment),
-            # ── remaining PROTECT → Customer ──
-            ('memberships.Subscription',   Subscription),
-            ('packages.PurchasedPackage',  PurchasedPackage),
             # ── finally Customer itself; portal tokens/sessions cascade,
             #    giftcards.GiftCard FKs are SET_NULL ──
             ('customers.Customer',         Customer),
