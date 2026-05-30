@@ -72,7 +72,7 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                             'recent_appointments',
                             'upcoming_appointments',
                             'active_packages',
-                            'active_membership',
+                            'active_memberships',
                             'outstanding_balance_cents',
                             'gift_card_balance_cents',
                         ],
@@ -344,35 +344,93 @@ def _tool_get_customer_context(
         ]
 
     if 'active_packages' in requested:
-        rows = (
+        # Filter to packages the customer can ACTUALLY redeem against:
+        # status=active, not expired, and at least one credit left.
+        # The "active" terminology here means redeemable, which is what
+        # the customer means when they ask "what packages do I have?"
+        now = djtz.now()
+        candidates = (
             PurchasedPackage.objects
-            .filter(tenant=tenant, customer=customer)
-            .select_related('source_template')[:20]
+            .filter(tenant=tenant, customer=customer, status='active')
+            .filter(models.Q(expires_at__isnull=True) | models.Q(expires_at__gt=now))
+            .prefetch_related('items')
+            .order_by('expires_at')
         )
-        out['active_packages'] = [
-            {
-                'name': (p.source_template.name if p.source_template else 'Package'),
-                'remaining': getattr(p, 'remaining_sessions', None),
-                'expires_at': p.expires_at.isoformat() if getattr(p, 'expires_at', None) else None,
-            }
-            for p in rows
-        ]
+        packages = []
+        for pkg in candidates:
+            items = [
+                {
+                    'service_name': item.service_name,
+                    'remaining': item.quantity_remaining,
+                    'purchased': item.quantity_purchased,
+                }
+                for item in pkg.items.all()
+                if item.quantity_remaining > 0
+            ]
+            if not items:
+                # Package has no credits left across any line item — not
+                # useful to surface even though status=active.
+                continue
+            packages.append({
+                'package_id': pkg.id,
+                'package_name': (
+                    pkg.source_template.name if pkg.source_template_id else 'Package'
+                ),
+                'total_credits_remaining': pkg.total_credits_remaining,
+                'expires_at': (
+                    pkg.expires_at.isoformat() if pkg.expires_at else None
+                ),
+                'items': items,
+            })
+        out['active_packages'] = packages
 
     if 'active_membership' in requested:
-        sub = (
+        # Active memberships only — status=active AND inside the
+        # current billing period. A "cancelled" or "expired" sub still
+        # exists in the DB but the customer can't redeem against it,
+        # so don't surface it as something they "have".
+        now = djtz.now()
+        candidates = (
             Subscription.objects
-            .filter(tenant=tenant, customer=customer)
+            .filter(tenant=tenant, customer=customer, status='active')
             .select_related('plan')
+            .prefetch_related('items__service', 'items__category')
             .order_by('-id')
-            .first()
         )
-        out['active_membership'] = (
-            {
-                'plan': sub.plan.name if sub and sub.plan else None,
-                'status': getattr(sub, 'status', None) if sub else None,
-            }
-            if sub else None
-        )
+        memberships = []
+        for sub in candidates:
+            in_period = (
+                sub.current_period_starts_at is not None
+                and sub.current_period_ends_at is not None
+                and sub.current_period_starts_at <= now <= sub.current_period_ends_at
+            ) if hasattr(sub, 'current_period_starts_at') else bool(
+                sub.current_period_ends_at and sub.current_period_ends_at > now
+            )
+            items = []
+            for item in sub.items.all():
+                target = (
+                    item.service.name if item.service_id else
+                    f'Any {item.category.name}' if item.category_id else
+                    'Membership credit'
+                )
+                items.append({
+                    'covers': target,
+                    'remaining_this_cycle': item.quantity_remaining,
+                    'per_cycle': item.quantity_per_cycle,
+                })
+            memberships.append({
+                'plan_name': sub.plan.name if sub.plan else None,
+                'in_current_period': in_period,
+                'next_renewal_at': (
+                    sub.current_period_ends_at.isoformat()
+                    if sub.current_period_ends_at else None
+                ),
+                'total_credits_remaining_this_cycle': sub.total_credits_remaining,
+                'items': items,
+            })
+        # Keep the response shape stable: even with multiple memberships,
+        # return as a list. For one-membership tenants this is just [{...}].
+        out['active_memberships'] = memberships
 
     if 'outstanding_balance_cents' in requested:
         invoices = Invoice.objects.filter(
