@@ -73,6 +73,10 @@ data "aws_iam_policy_document" "ecs_execution_secrets" {
       # Instagram Login credentials.
       aws_secretsmanager_secret.instagram_app_id.arn,
       aws_secretsmanager_secret.instagram_app_secret.arn,
+      # Anthropic API key — direct-API provider for apps/ai_inbox
+      # (ADR 0032). Read by ECS at task-start to inject into the
+      # backend container's ANTHROPIC_API_KEY env var.
+      aws_secretsmanager_secret.anthropic_api_key.arn,
     ]
   }
 

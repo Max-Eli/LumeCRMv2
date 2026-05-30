@@ -77,6 +77,19 @@ resource "aws_secretsmanager_secret" "twilio_auth_token" {
   tags = { Name = "${local.name_prefix}-twilio-auth-token" }
 }
 
+# Anthropic API key — direct-API path for the AI SMS inbox
+# (ADR 0032). Used when AI_LLM_PROVIDER=anthropic. Empty when
+# AI_LLM_PROVIDER=bedrock (Bedrock uses IAM-role auth instead).
+# Populated via AWS console / CLI, never in Terraform state.
+resource "aws_secretsmanager_secret" "anthropic_api_key" {
+  name                    = "${local.name_prefix}/anthropic-api-key"
+  description             = "Anthropic API key for apps/ai_inbox direct-Anthropic provider. Populated via AWS console / CLI."
+  kms_key_id              = aws_kms_key.secrets.arn
+  recovery_window_in_days = 7
+
+  tags = { Name = "${local.name_prefix}-anthropic-api-key" }
+}
+
 
 # ── Meta (Instagram + Facebook + WhatsApp) credentials ─────────────
 #

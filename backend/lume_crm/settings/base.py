@@ -299,6 +299,29 @@ TWILIO_FROM_NUMBER = env('TWILIO_FROM_NUMBER', default='')
 TWILIO_STATUS_CALLBACK_URL = env('TWILIO_STATUS_CALLBACK_URL', default='')
 TWILIO_TEST_MODE = env.bool('TWILIO_TEST_MODE', default=False)
 
+# ── AI SMS inbox (apps/ai_inbox) ─────────────────────────────────────
+# Picks the LLM provider; valid values: 'bedrock' (default — AWS BAA
+# covered, prod path) or 'anthropic' (direct API; cheaper + faster
+# onboarding, NOT BAA-covered unless a separate Anthropic BAA is
+# signed). See ADR 0032 + apps/ai_inbox/README.md.
+AI_LLM_PROVIDER = env('AI_LLM_PROVIDER', default='bedrock')
+
+# Bedrock provider settings.
+BEDROCK_REGION = env('BEDROCK_REGION', default='us-east-1')
+BEDROCK_CLAUDE_MODEL_ID = env(
+    'BEDROCK_CLAUDE_MODEL_ID',
+    default='us.anthropic.claude-sonnet-4-6',
+)
+
+# Direct-Anthropic provider settings. ANTHROPIC_API_KEY is empty in
+# dev (the bedrock provider doesn't need it); in prod it's injected
+# from AWS Secrets Manager via the ECS task def's `secrets` block.
+ANTHROPIC_API_KEY = env('ANTHROPIC_API_KEY', default='')
+ANTHROPIC_CLAUDE_MODEL_ID = env(
+    'ANTHROPIC_CLAUDE_MODEL_ID',
+    default='claude-sonnet-4-6',
+)
+
 # Public host the tokenized fill URLs resolve under. Used to build
 # the absolute /sign/<token> link in emails. Dev: localhost:3000;
 # prod: per-tenant subdomain (set via env).

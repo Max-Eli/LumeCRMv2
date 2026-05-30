@@ -22,12 +22,19 @@ from .base import LLMClient
 def get_llm_client() -> LLMClient:
     """Return the configured LLM client for this process.
 
-    Today: always BedrockClient. Future: routed by settings. Caching
-    is on the client itself — it stores its boto3 session — so this
-    function is cheap to call repeatedly.
+    Routed by ``settings.AI_LLM_PROVIDER``:
+      - ``bedrock``    — Claude via Amazon Bedrock (AWS BAA, prod default)
+      - ``anthropic``  — Claude via direct Anthropic API (no BAA out of the
+                         box — only use for tenants with zero real PHI)
+
+    Caching lives on each client (it stores its SDK / boto3 session)
+    so this function is cheap to call repeatedly.
     """
     provider = getattr(settings, 'AI_LLM_PROVIDER', 'bedrock')
     if provider == 'bedrock':
         from .bedrock_client import BedrockClient
         return BedrockClient()
+    if provider == 'anthropic':
+        from .anthropic_direct_client import DirectAnthropicClient
+        return DirectAnthropicClient()
     raise ValueError(f'Unknown AI_LLM_PROVIDER: {provider!r}')

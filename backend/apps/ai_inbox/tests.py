@@ -377,3 +377,100 @@ class BedrockClientTests(TestCase):
         body = _json.loads(call_kwargs['body'])
         self.assertEqual(body['system'], 'S')
         self.assertEqual(body['messages'][0]['content'], 'hi')
+
+
+class DirectAnthropicClientTests(TestCase):
+    """Anthropic direct client converts SDK objects into the LLMResponse shape."""
+
+    def test_chat_calls_sdk_and_parses_response(self):
+        from unittest.mock import MagicMock
+
+        from django.test import override_settings
+
+        from apps.ai_inbox.llm.base import LLMResponse, LLMTransportError
+
+        # Build a fake SDK response shape — content blocks + usage + stop_reason.
+        text_block = MagicMock()
+        text_block.model_dump.return_value = {'type': 'text', 'text': 'hi back'}
+        usage = MagicMock(input_tokens=12, output_tokens=4)
+        fake_response = MagicMock(
+            content=[text_block],
+            stop_reason='end_turn',
+            model='claude-sonnet-4-6',
+            usage=usage,
+        )
+        fake_response.model_dump.return_value = {'fake': True}
+
+        fake_anthropic_client = MagicMock()
+        fake_anthropic_client.messages.create.return_value = fake_response
+
+        with patch('anthropic.Anthropic', return_value=fake_anthropic_client), \
+                override_settings(ANTHROPIC_API_KEY='sk-test-key'):
+            from apps.ai_inbox.llm.anthropic_direct_client import DirectAnthropicClient
+            client = DirectAnthropicClient()
+            resp = client.chat(
+                system='S', messages=[{'role': 'user', 'content': 'hi'}],
+                tools=[{'name': 't', 'description': 'd', 'input_schema': {'type': 'object'}}],
+            )
+
+        self.assertIsInstance(resp, LLMResponse)
+        self.assertEqual(resp.text_blocks(), ['hi back'])
+        self.assertEqual(resp.stop_reason, 'end_turn')
+        self.assertEqual(resp.input_tokens, 12)
+        self.assertEqual(resp.output_tokens, 4)
+        self.assertEqual(resp.model, 'claude-sonnet-4-6')
+
+        # SDK was called with the messages-API kwargs.
+        call_kwargs = fake_anthropic_client.messages.create.call_args.kwargs
+        self.assertEqual(call_kwargs['system'], 'S')
+        self.assertEqual(call_kwargs['messages'], [{'role': 'user', 'content': 'hi'}])
+        self.assertEqual(call_kwargs['model'], 'claude-sonnet-4-6')
+        self.assertEqual(len(call_kwargs['tools']), 1)
+
+    def test_init_raises_when_api_key_missing(self):
+        from django.test import override_settings
+        with patch('anthropic.Anthropic'), override_settings(ANTHROPIC_API_KEY=''):
+            from apps.ai_inbox.llm.anthropic_direct_client import DirectAnthropicClient
+            with self.assertRaises(RuntimeError):
+                DirectAnthropicClient()
+
+    def test_chat_wraps_sdk_exceptions(self):
+        from django.test import override_settings
+
+        from apps.ai_inbox.llm.base import LLMTransportError
+
+        fake_anthropic_client = MagicMock()
+        fake_anthropic_client.messages.create.side_effect = RuntimeError('boom')
+
+        with patch('anthropic.Anthropic', return_value=fake_anthropic_client), \
+                override_settings(ANTHROPIC_API_KEY='sk-test-key'):
+            from apps.ai_inbox.llm.anthropic_direct_client import DirectAnthropicClient
+            client = DirectAnthropicClient()
+            with self.assertRaises(LLMTransportError):
+                client.chat(system='S', messages=[{'role': 'user', 'content': 'hi'}])
+
+
+class LLMClientFactoryTests(TestCase):
+    """get_llm_client() routes by AI_LLM_PROVIDER setting."""
+
+    def test_bedrock_provider(self):
+        from django.test import override_settings
+        with patch('boto3.client'), override_settings(AI_LLM_PROVIDER='bedrock'):
+            from apps.ai_inbox.llm import get_llm_client
+            from apps.ai_inbox.llm.bedrock_client import BedrockClient
+            self.assertIsInstance(get_llm_client(), BedrockClient)
+
+    def test_anthropic_provider(self):
+        from django.test import override_settings
+        with patch('anthropic.Anthropic'), \
+                override_settings(AI_LLM_PROVIDER='anthropic', ANTHROPIC_API_KEY='sk-x'):
+            from apps.ai_inbox.llm import get_llm_client
+            from apps.ai_inbox.llm.anthropic_direct_client import DirectAnthropicClient
+            self.assertIsInstance(get_llm_client(), DirectAnthropicClient)
+
+    def test_unknown_provider_raises(self):
+        from django.test import override_settings
+        with override_settings(AI_LLM_PROVIDER='not-a-provider'):
+            from apps.ai_inbox.llm import get_llm_client
+            with self.assertRaises(ValueError):
+                get_llm_client()
