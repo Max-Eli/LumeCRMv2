@@ -166,14 +166,15 @@ class Command(BaseCommand):
                     continue
                 self.stdout.write(f'  {label:42s} {count:>8d}  → {verb}')
                 if do_delete:
-                    # Use raw SQL DELETE (no Django signals) for the
-                    # large customer-attached tables to avoid loading
-                    # rows into memory. For small tables Django's
-                    # QuerySet.delete() is fine and runs signals.
-                    if count > 1000:
-                        qs._raw_delete(using=qs.db)  # noqa: SLF001
-                    else:
-                        qs.delete()
+                    # Use QuerySet.delete() (not _raw_delete) — the
+                    # ORM collector walks CASCADE FKs (InvoiceLineItem
+                    # on Invoice, SubscriptionItem on Subscription,
+                    # PortalToken/PortalSession on Customer, etc.).
+                    # _raw_delete bypasses that and the COMMIT then
+                    # fails on the dangling FK. The biggest table here
+                    # is ~7.5k rows — well within Django's collector
+                    # comfort zone for a one-shot ops task.
+                    qs.delete()
 
             if do_delete:
                 # One audit row per resource type, plus a roll-up row
