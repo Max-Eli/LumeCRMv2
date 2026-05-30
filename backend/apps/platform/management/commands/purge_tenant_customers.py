@@ -101,7 +101,7 @@ class Command(BaseCommand):
         from apps.commissions.models import CommissionEntry
         from apps.customers.models import Customer
         from apps.forms.models import FormSubmission
-        from apps.giftcards.models import GiftCardLedgerEntry
+        from apps.giftcards.models import GiftCardLedger
         from apps.integrations.models import SocialThread
         from apps.invoices.models import Invoice
         from apps.memberships.models import Subscription, SubscriptionRedemption
@@ -117,7 +117,7 @@ class Command(BaseCommand):
             ('payments.Refund',            Refund),
             ('payments.Charge',            Charge),
             ('commissions.CommissionEntry', CommissionEntry),
-            ('giftcards.GiftCardLedgerEntry', GiftCardLedgerEntry),
+            ('giftcards.GiftCardLedger',   GiftCardLedger),
             # ── customer-attached PROTECT leaves ──
             ('forms.FormSubmission',       FormSubmission),
             ('charts.TreatmentRecord',     TreatmentRecord),
