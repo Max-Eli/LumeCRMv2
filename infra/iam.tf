@@ -167,6 +167,28 @@ data "aws_iam_policy_document" "backend_task" {
     ]
     resources = ["*"]
   }
+
+  # Bedrock — Claude via Amazon Bedrock for apps/ai_inbox
+  # (ADR 0032). Permissions cover the US cross-region inference
+  # profile + the underlying foundation model ARNs in each region
+  # the profile may route to (us-east-1, us-east-2, us-west-2).
+  # Bedrock requires BOTH the profile ARN AND the model ARN(s) on
+  # an InvokeModel call against a cross-region profile.
+  statement {
+    sid = "BedrockInvokeClaudeForAIInbox"
+    actions = [
+      "bedrock:InvokeModel",
+      "bedrock:InvokeModelWithResponseStream",
+    ]
+    resources = [
+      # Cross-region inference profile (us.* in us-east-1 home region).
+      "arn:aws:bedrock:us-east-1:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-5-20250929-v1:0",
+      # Underlying foundation-model ARNs in every region the profile may route to.
+      "arn:aws:bedrock:us-east-1::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "arn:aws:bedrock:us-east-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+      "arn:aws:bedrock:us-west-2::foundation-model/anthropic.claude-sonnet-4-5-20250929-v1:0",
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "backend_task" {

@@ -294,13 +294,15 @@ class DispatchTests(TestCase):
         self.assertEqual(log.metadata.get('event'), 'ai_dispatch_skipped')
         self.assertEqual(log.metadata.get('reason'), 'no_ai_config')
 
-    def test_would_dispatch_writes_audit_row(self):
+    def test_dispatch_writes_audit_row_and_calls_agent(self):
         _make_config(self.tenant)
-        dispatch.maybe_dispatch_to_ai(message=self.message)
+        with patch('apps.ai_inbox.agents.sms_agent.run_agent') as mock_run:
+            dispatch.maybe_dispatch_to_ai(message=self.message)
+        mock_run.assert_called_once()
         log = AuditLog.objects.filter(
             tenant=self.tenant, resource_type='ai_dispatch',
         ).latest('timestamp')
-        self.assertEqual(log.metadata.get('event'), 'ai_dispatch_would_run')
+        self.assertEqual(log.metadata.get('event'), 'ai_dispatch_run')
 
     def test_outbound_message_is_ignored(self):
         outbound = Message.objects.create(
@@ -346,17 +348,32 @@ class ModelInvariantsTests(TestCase):
 # ── bedrock client smoke ─────────────────────────────────────────
 
 
-class BedrockClientPhase1Tests(TestCase):
-    """Phase 1 only: confirm calling chat() raises NotImplementedError
-    so any accidental invocation before Phase 2 is loud."""
+class BedrockClientTests(TestCase):
+    """Bedrock client invokes boto3 with the expected Messages-API body shape."""
 
-    def test_chat_raises_until_phase_2(self):
-        # Lazy import — avoids requiring boto3 in environments where
-        # the BedrockClient constructor would fail. We construct via
-        # patching boto3.client to return a Mock so __init__ succeeds.
-        with patch('boto3.client') as mock_b:
-            mock_b.return_value = object()
+    def test_chat_builds_messages_body_and_parses_response(self):
+        from unittest.mock import MagicMock
+
+        from apps.ai_inbox.llm.base import LLMResponse
+
+        fake_boto = MagicMock()
+        fake_body = b'{"content":[{"type":"text","text":"hi"}],"stop_reason":"end_turn","usage":{"input_tokens":5,"output_tokens":2}}'
+        fake_boto.invoke_model.return_value = {'body': MagicMock(read=MagicMock(return_value=fake_body))}
+
+        with patch('boto3.client', return_value=fake_boto):
             from apps.ai_inbox.llm.bedrock_client import BedrockClient
             client = BedrockClient()
-            with self.assertRaises(NotImplementedError):
-                client.chat(system='', messages=[])
+            resp = client.chat(system='S', messages=[{'role': 'user', 'content': 'hi'}])
+
+        self.assertIsInstance(resp, LLMResponse)
+        self.assertEqual(resp.stop_reason, 'end_turn')
+        self.assertEqual(resp.text_blocks(), ['hi'])
+        self.assertEqual(resp.input_tokens, 5)
+        self.assertEqual(resp.output_tokens, 2)
+
+        # Body should be JSON containing system + messages.
+        call_kwargs = fake_boto.invoke_model.call_args.kwargs
+        import json as _json
+        body = _json.loads(call_kwargs['body'])
+        self.assertEqual(body['system'], 'S')
+        self.assertEqual(body['messages'][0]['content'], 'hi')

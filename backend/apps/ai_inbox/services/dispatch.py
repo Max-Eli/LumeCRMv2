@@ -84,29 +84,23 @@ def _dispatch_inner(
         )
         return
 
-    # All guardrails passed. Hand off to the agent loop.
-    #
-    # Phase 1: stub no-op + a "would dispatch" audit row, so we have
-    # full observability of when the guardrails WOULD have fired the
-    # agent. Lets us tail the audit log during sandbox testing to
-    # verify the dispatch path before the Phase-2 agent lands.
-    #
-    # Phase 2 will replace this with:
-    #   from apps.ai_inbox.agents.sms_agent import run_agent
-    #   run_agent(message=message)
+    # All guardrails passed. Hand off to the agent loop synchronously.
+    # run_agent never raises; it owns its own error handling +
+    # emergency-escalation path.
     record(
-        action=AuditLog.Action.READ,  # 'read' as a generic "noop dispatch" until Phase 2
+        action=AuditLog.Action.READ,
         resource_type='ai_dispatch',
         resource_id=message.id,
         tenant=message.tenant,
         request=request,
         metadata={
-            'event': 'ai_dispatch_would_run',
-            'phase': 'phase_1_noop',
+            'event': 'ai_dispatch_run',
             'message_id': message.id,
             'customer_id': message.customer_id,
         },
     )
+    from apps.ai_inbox.agents.sms_agent import run_agent
+    run_agent(message=message)
 
 
 def _audit_skip(

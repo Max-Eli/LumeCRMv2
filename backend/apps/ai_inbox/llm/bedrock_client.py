@@ -63,42 +63,43 @@ class BedrockClient(LLMClient):
         max_tokens: int = 1024,
         temperature: float = 0.4,
     ) -> LLMResponse:
-        """Phase-1 stub — raises so accidental Phase-1 invocations are loud.
+        """Invoke Claude via Bedrock InvokeModel with the Messages API body shape.
 
-        The real implementation lands in Phase 2 once the agent loop
-        is wired up. For now we want the abstraction in place + the
-        IAM policy applied + the client constructable so Phase 2 can
-        land in one commit without rewriring infrastructure.
+        Wire-level: Bedrock proxies the Anthropic Messages API; the
+        body is the same JSON Anthropic's own API accepts (minus the
+        api_key + headers), with an additional ``anthropic_version``
+        field naming the API contract.
         """
-        raise NotImplementedError(
-            'BedrockClient.chat is a Phase-2 deliverable — '
-            'dispatching to the AI agent should be gated behind the '
-            'guardrail layer and is currently a no-op.'
-        )
+        body: dict[str, Any] = {
+            'anthropic_version': 'bedrock-2023-05-31',
+            'max_tokens': max_tokens,
+            'temperature': temperature,
+            'system': system,
+            'messages': messages,
+        }
+        if tools:
+            body['tools'] = tools
 
-    # The real Phase-2 implementation will look approximately like:
-    #
-    #   body = {
-    #       'anthropic_version': 'bedrock-2023-05-31',
-    #       'max_tokens': max_tokens,
-    #       'temperature': temperature,
-    #       'system': system,
-    #       'messages': messages,
-    #   }
-    #   if tools:
-    #       body['tools'] = tools
-    #   response = self._client.invoke_model(
-    #       modelId=self._model_id,
-    #       contentType='application/json',
-    #       accept='application/json',
-    #       body=json.dumps(body),
-    #   )
-    #   payload = json.loads(response['body'].read())
-    #   return LLMResponse(
-    #       content=payload.get('content', []),
-    #       stop_reason=payload.get('stop_reason', 'end_turn'),
-    #       model=payload.get('model', self._model_id),
-    #       input_tokens=payload.get('usage', {}).get('input_tokens', 0),
-    #       output_tokens=payload.get('usage', {}).get('output_tokens', 0),
-    #       raw=payload,
-    #   )
+        try:
+            response = self._client.invoke_model(
+                modelId=self._model_id,
+                contentType='application/json',
+                accept='application/json',
+                body=json.dumps(body),
+            )
+        except Exception as exc:  # noqa: BLE001  — wrap boto exception class hierarchy
+            logger.exception(
+                'ai_inbox.bedrock_invoke_failed model=%s', self._model_id,
+            )
+            raise LLMTransportError(str(exc)) from exc
+
+        payload = json.loads(response['body'].read())
+        usage = payload.get('usage') or {}
+        return LLMResponse(
+            content=payload.get('content', []),
+            stop_reason=payload.get('stop_reason', 'end_turn'),
+            model=payload.get('model', self._model_id),
+            input_tokens=int(usage.get('input_tokens') or 0),
+            output_tokens=int(usage.get('output_tokens') or 0),
+            raw=payload,
+        )

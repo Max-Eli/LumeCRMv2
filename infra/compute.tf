@@ -156,6 +156,16 @@ locals {
         # Valid OAuth Redirect URIs). Mismatch = browser-visible
         # OAuth error from Facebook, not a 4xx from us.
         { name = "META_OAUTH_REDIRECT_URI", value = "https://api.${var.domain_name}/api/integrations/meta/oauth/callback/" },
+        # Bedrock — Claude via Amazon Bedrock for the AI SMS inbox
+        # (apps/ai_inbox, ADR 0032). IAM-role auth via the ECS task
+        # role; no API key in Secrets Manager. The model ID is the
+        # US cross-region inference profile so Bedrock can route to
+        # whichever us-* region has capacity; the underlying
+        # foundation-model IAM permissions cover us-east-1 / us-east-2
+        # / us-west-2.
+        { name = "AI_LLM_PROVIDER", value = "bedrock" },
+        { name = "BEDROCK_REGION", value = var.aws_region },
+        { name = "BEDROCK_CLAUDE_MODEL_ID", value = "us.anthropic.claude-sonnet-4-5-20250929-v1:0" },
       ]
 
       secrets = [
