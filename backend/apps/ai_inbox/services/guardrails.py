@@ -43,7 +43,7 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone as djtz
 
-from apps.tenants.plans import tenant_has_feature
+from apps.tenants.plans import F_AI_INBOX, tenant_has_feature
 
 if TYPE_CHECKING:
     from apps.customers.models import Customer
@@ -54,10 +54,6 @@ if TYPE_CHECKING:
 
 
 logger = logging.getLogger(__name__)
-
-
-F_AI_INBOX = 'ai_inbox'
-"""Feature flag key. Added to PRO_FEATURES + ENTERPRISE_FEATURES in Phase 3."""
 
 
 # Min seconds between consecutive AI replies on the same conversation.
