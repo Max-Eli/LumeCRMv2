@@ -462,12 +462,13 @@ class AIConversationEndpointTests(TestCase):
         self.tenant, self.owner = _make_tenant(slug='ep-test')
         self.customer = _make_customer(self.tenant)
         from rest_framework.test import APIClient
+        self.client = APIClient()
+        self.client.force_authenticate(user=self.owner)
         # X-Tenant-Slug header is the dev/test path the TenantMiddleware
         # uses to resolve request.tenant (subdomain lookup is the prod
         # path). Without it, IsTenantStaff 403s because the middleware
         # never populates request.tenant_membership.
-        self.client = APIClient(HTTP_X_TENANT_SLUG=self.tenant.slug)
-        self.client.force_authenticate(user=self.owner)
+        self.headers = {'HTTP_X_TENANT_SLUG': self.tenant.slug}
 
     def _url(self, customer_id: int, suffix: str = '') -> str:
         return f'/api/ai-inbox/conversations/{customer_id}/{suffix}'
@@ -479,14 +480,14 @@ class AIConversationEndpointTests(TestCase):
         )
 
     def test_get_creates_conversation_lazily(self):
-        r = self.client.get(self._url(self.customer.id))
+        r = self.client.get(self._url(self.customer.id), **self.headers)
         self._assert_status(r, 200)
         self.assertEqual(r.data['status'], 'active')
         self.assertEqual(r.data['customer_id'], self.customer.id)
         self.assertEqual(AIConversation.objects.count(), 1)
 
     def test_pause_flips_status_and_audits(self):
-        r = self.client.post(self._url(self.customer.id, 'pause/'))
+        r = self.client.post(self._url(self.customer.id, 'pause/'), **self.headers)
         self._assert_status(r, 200)
         self.assertEqual(r.data['status'], 'paused')
         conv = AIConversation.objects.get(tenant=self.tenant, customer=self.customer)
@@ -501,14 +502,14 @@ class AIConversationEndpointTests(TestCase):
         )
 
     def test_pause_is_idempotent(self):
-        self.client.post(self._url(self.customer.id, 'pause/'))
-        r = self.client.post(self._url(self.customer.id, 'pause/'))
+        self.client.post(self._url(self.customer.id, 'pause/'), **self.headers)
+        r = self.client.post(self._url(self.customer.id, 'pause/'), **self.headers)
         self._assert_status(r, 200)
         self.assertEqual(r.data['status'], 'paused')
 
     def test_resume_clears_pause_state(self):
-        self.client.post(self._url(self.customer.id, 'pause/'))
-        r = self.client.post(self._url(self.customer.id, 'resume/'))
+        self.client.post(self._url(self.customer.id, 'pause/'), **self.headers)
+        r = self.client.post(self._url(self.customer.id, 'resume/'), **self.headers)
         self._assert_status(r, 200)
         self.assertEqual(r.data['status'], 'active')
         conv = AIConversation.objects.get(tenant=self.tenant, customer=self.customer)
@@ -525,7 +526,7 @@ class AIConversationEndpointTests(TestCase):
             tenant=self.tenant, conversation=conv, customer=self.customer,
             reason='requested_human',
         )
-        r = self.client.post(self._url(self.customer.id, 'resume/'))
+        r = self.client.post(self._url(self.customer.id, 'resume/'), **self.headers)
         self._assert_status(r, 200)
         alert = EscalationAlert.objects.get(conversation=conv)
         self.assertIsNotNone(alert.resolved_at)
@@ -537,7 +538,7 @@ class AIConversationEndpointTests(TestCase):
         # Auth as the first tenant's owner (with their tenant in the
         # X-Tenant-Slug header) but hit a customer from the OTHER tenant.
         # The tenant-scoped queryset filter must return 404.
-        r = self.client.get(self._url(other_customer.id))
+        r = self.client.get(self._url(other_customer.id), **self.headers)
         self._assert_status(r, 404)
 
 
@@ -545,11 +546,12 @@ class AIConfigEndpointTests(TestCase):
     def setUp(self):
         self.tenant, self.owner = _make_tenant(slug='cfg-test')
         from rest_framework.test import APIClient
-        self.client = APIClient(HTTP_X_TENANT_SLUG=self.tenant.slug)
+        self.client = APIClient()
         self.client.force_authenticate(user=self.owner)
+        self.headers = {'HTTP_X_TENANT_SLUG': self.tenant.slug}
 
     def test_get_creates_lazily(self):
-        r = self.client.get('/api/ai-inbox/config/')
+        r = self.client.get('/api/ai-inbox/config/', **self.headers)
         self.assertEqual(r.status_code, 200)
         self.assertFalse(r.data['enabled'])
         self.assertTrue(r.data['test_mode'])
@@ -558,6 +560,7 @@ class AIConfigEndpointTests(TestCase):
         r = self.client.patch(
             '/api/ai-inbox/config/',
             data={'persona': 'You are Avery.'}, format='json',
+            **self.headers,
         )
         self.assertEqual(r.status_code, 200)
         config = AIConfig.objects.get(tenant=self.tenant)
@@ -569,6 +572,7 @@ class AIConfigEndpointTests(TestCase):
         r = self.client.patch(
             '/api/ai-inbox/config/',
             data={'enabled': True}, format='json',
+            **self.headers,
         )
         self.assertEqual(r.status_code, 400)
         self.assertIn('enabled', r.data)
@@ -578,6 +582,7 @@ class AIConfigEndpointTests(TestCase):
             '/api/ai-inbox/config/',
             data={'enabled': True, 'test_mode': True, 'test_mode_number': ''},
             format='json',
+            **self.headers,
         )
         self.assertEqual(r.status_code, 400)
 
