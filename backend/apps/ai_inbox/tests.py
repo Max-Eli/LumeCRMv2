@@ -193,12 +193,14 @@ class GuardrailsTests(TestCase):
         self.assertFalse(d.proceed)
         self.assertEqual(d.reason, 'conversation_escalated')
 
-    def test_rate_limit_blocks_within_30s(self):
+    def test_rate_limit_blocks_within_gap(self):
         _make_config(self.tenant)
         AIConversation.objects.create(
             tenant=self.tenant, customer=self.customer,
             status=AIConversation.Status.ACTIVE,
-            last_ai_at=djtz.now() - dt.timedelta(seconds=10),
+            # Less than PER_CONVERSATION_REPLY_GAP_SECONDS — a Twilio
+            # webhook retry, not a real customer reply.
+            last_ai_at=djtz.now() - dt.timedelta(seconds=1),
         )
         d = guardrails.evaluate(
             tenant=self.tenant, customer=self.customer,
@@ -207,12 +209,13 @@ class GuardrailsTests(TestCase):
         self.assertFalse(d.proceed)
         self.assertEqual(d.reason, 'rate_limited')
 
-    def test_rate_limit_allows_after_30s(self):
+    def test_rate_limit_allows_after_gap(self):
         _make_config(self.tenant)
         AIConversation.objects.create(
             tenant=self.tenant, customer=self.customer,
             status=AIConversation.Status.ACTIVE,
-            last_ai_at=djtz.now() - dt.timedelta(seconds=60),
+            # Comfortably past the gap — normal customer reply latency.
+            last_ai_at=djtz.now() - dt.timedelta(seconds=15),
         )
         d = guardrails.evaluate(
             tenant=self.tenant, customer=self.customer,

@@ -27,7 +27,7 @@ if TYPE_CHECKING:
     from apps.tenants.models import Tenant
 
 
-MIN_REPLY_GAP_SECONDS = 30
+MIN_REPLY_GAP_SECONDS = 5
 
 
 class ReplyLockBusy(Exception):

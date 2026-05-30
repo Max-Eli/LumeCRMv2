@@ -57,8 +57,13 @@ logger = logging.getLogger(__name__)
 
 
 # Min seconds between consecutive AI replies on the same conversation.
-# Guards against runaway loops + double-fired Twilio retries.
-PER_CONVERSATION_REPLY_GAP_SECONDS = 30
+# Tuned to handle Twilio webhook retries (which fire within seconds)
+# without blocking a normal customer reply pace (typically 5-30s
+# after the AI's message). 30s was too aggressive — it silently
+# dropped legit customer replies that came back within the window.
+# 5s catches retries; daily cap + per-inbound idempotency protect
+# against runaway loops.
+PER_CONVERSATION_REPLY_GAP_SECONDS = 5
 
 
 # Sentinel object returned when guardrails block dispatch — never
