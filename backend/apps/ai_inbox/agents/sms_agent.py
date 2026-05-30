@@ -135,7 +135,12 @@ def _run_inner(*, message: Message) -> None:
                 messages=messages,
                 tools=tools.TOOL_SCHEMAS,
                 max_tokens=1024,
-                temperature=0.4,
+                # Lower temperature for the booking flow — we want
+                # predictable tool-call behaviour and minimal model
+                # creativity around schedule confirmations. 0.4 was
+                # producing the occasional fabricated "you're booked"
+                # claim; 0.2 keeps replies grounded in tool results.
+                temperature=0.2,
             )
         except LLMTransportError:
             # One retry on the next iteration — but only once. To

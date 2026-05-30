@@ -86,7 +86,13 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             'Return open appointment slots for a service in a date window. '
             'If provider_id is omitted, returns slots from any eligible '
             'bookable provider. Date strings are ISO 8601 (YYYY-MM-DD). '
-            'Returns at most 6 slots.'
+            'Returns at most 6 slots, each with a 1-based index. '
+            'IMPORTANT: this call AUTOMATICALLY stages the returned slots '
+            "as a pending booking proposal. The customer's digit reply "
+            '(1-9) will auto-book the slot at that index. You do NOT need '
+            'to call any other tool to make this work — just send a single '
+            'SMS listing the slots using the EXACT indices and times '
+            'returned, and end with "Reply 1, 2, or 3 to confirm."'
         ),
         'input_schema': {
             'type': 'object',
@@ -98,28 +104,6 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 'location_id': {'type': 'integer'},
             },
             'required': ['service_id'],
-        },
-    },
-    {
-        'name': 'propose_slots',
-        'description': (
-            'Stage 1 of 2-step booking. Pass the indices of the slots from '
-            'the previous check_availability result you want to offer the '
-            "customer. This DOES NOT send the SMS — your next text turn must "
-            'phrase the slots as a numbered list and ask the customer to '
-            'reply with the number. The customer\'s numbered reply will auto-'
-            'book.'
-        ),
-        'input_schema': {
-            'type': 'object',
-            'properties': {
-                'slot_indices': {
-                    'type': 'array',
-                    'items': {'type': 'integer'},
-                    'maxItems': 9,
-                },
-            },
-            'required': ['slot_indices'],
         },
     },
     {
@@ -474,7 +458,44 @@ def _tool_check_availability(
             break
         cur += dt.timedelta(days=1)
 
-    return {'slots': collected[:_MAX_SLOTS_RETURNED]}
+    final = collected[:_MAX_SLOTS_RETURNED]
+
+    # Auto-stamp pending_proposal so the digit fast-path works
+    # WITHOUT requiring Claude to remember a second tool call.
+    # The user's "1" / "2" / "3" reply maps to the SAME indices we
+    # return here. Includes 24h TTL — long enough for the
+    # customer to chew on it, short enough to avoid stale booking
+    # races against staff edits to the calendar.
+    if final:
+        indexed = [
+            {
+                'index': i + 1,
+                'start_iso': s['start_iso'],
+                'end_iso': s['end_iso'],
+                'provider_id': s.get('provider_id'),
+                'service_id': s['service_id'],
+                'location_id': s['location_id'],
+                'label': s['label'],
+            }
+            for i, s in enumerate(final)
+        ]
+        conversation.pending_proposal = {
+            'service_id': service.id,
+            'location_id': location.id,
+            'provider_id': final[0].get('provider_id'),
+            'proposed_at': djtz.now().isoformat(),
+            'slots': indexed,
+        }
+        conversation.pending_proposal_expires_at = djtz.now() + dt.timedelta(hours=24)
+        conversation.save(update_fields=[
+            'pending_proposal', 'pending_proposal_expires_at', 'updated_at',
+        ])
+        # Return indexed slots so Claude sees the same indices the
+        # user will type. Avoids any "Claude renumbers in the SMS"
+        # foot-gun.
+        return {'slots': indexed}
+
+    return {'slots': []}
 
 
 def _tool_propose_slots(
