@@ -83,6 +83,18 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
     } catch {
       // response had no JSON body — fine
     }
+    // 402 Payment Required = backend PlanFeatureRequired rejected
+    // the call because the tenant's plan doesn't include this
+    // feature. Surface a global custom event so the app shell can
+    // show a tier-specific upsell modal regardless of which
+    // component triggered the call. The error STILL throws so the
+    // caller's onError handlers run normally — the event is
+    // additive, not a replacement.
+    if (res.status === 402 && typeof window !== 'undefined' && body && typeof body === 'object') {
+      window.dispatchEvent(
+        new CustomEvent('lume:plan-feature-required', { detail: body }),
+      );
+    }
     throw new ApiError(res.status, body, `Request failed: ${res.status} ${res.statusText}`);
   }
 

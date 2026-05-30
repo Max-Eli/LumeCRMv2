@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 import { AppSidebar } from '@/components/app-sidebar';
+import { LifecycleBanner } from '@/components/billing/lifecycle-banner';
+import { UpsellModal } from '@/components/billing/upsell-modal';
 import { MobileNav } from '@/components/mobile-nav';
 import { useLogout, useUser } from '@/lib/auth';
 import { cn } from '@/lib/utils';
@@ -108,8 +110,19 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           'pb-[calc(56px+env(safe-area-inset-bottom))] lg:pb-0',
         )}
       >
+        {/* Subscription lifecycle strip — sticky inside the scrolling
+            <main>, so it stays visible as the operator scrolls a long
+            calendar / report. Renders nothing for active +
+            grandfathered tenants. */}
+        <LifecycleBanner />
         {children}
       </main>
+
+      {/* Global 402 → upsell modal. Listens for the custom event
+          lib/api.ts dispatches when ANY backend call returns 402
+          (PlanFeatureRequired). Mounted once here so every page in
+          the CRM gets the same upsell UX, no per-component wiring. */}
+      <UpsellModal />
     </div>
   );
 }

@@ -27,6 +27,11 @@ function setActiveTenantCookie(slug: string | undefined) {
 /** Subscription tier a tenant is on. Mirrors backend Tenant.Plan. */
 export type TenantPlan = 'trial' | 'starter' | 'pro' | 'enterprise';
 
+/** Lifecycle status — drives the trial countdown banner / past-due
+ *  banner / suspended screen in the CRM shell. Mirrors backend
+ *  Tenant.Status. */
+export type TenantStatus = 'trial' | 'active' | 'past_due' | 'suspended' | 'cancelled';
+
 /** Tenant info nested in a Membership. Includes the resolved feature
  *  set so the frontend can gate nav items + render upsell badges
  *  without a second roundtrip. Backend ``PlanFeatureRequired`` is
@@ -36,6 +41,10 @@ export interface MembershipTenant {
   name: string;
   slug: string;
   plan: TenantPlan;
+  status: TenantStatus;
+  /** ISO datetime — null for tenants not in trial (active /
+   *  past_due / suspended / cancelled / grandfathered). */
+  trial_ends_at: string | null;
   /** True for the original launch spas — exempt from plan capacity
    *  gates + always sees every feature regardless of nominal plan. */
   grandfathered: boolean;

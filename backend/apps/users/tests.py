@@ -134,6 +134,68 @@ class LoginSeparationTests(TestCase):
         self.assertEqual(response.status_code, status.HTTP_200_OK)
         self.assertTrue(response.data['user']['is_platform_admin'])
 
+    def test_me_endpoint_membership_tenant_includes_lifecycle_fields(self):
+        """The /me/ payload's tenant block carries plan + status +
+        trial_ends_at + features + grandfathered. The frontend lifecycle
+        banner + nav-feature-gating + upsell modal all consume these —
+        breaking the shape breaks the operator UX."""
+        import datetime as dt
+        from django.utils import timezone as djtz
+        from apps.tenants.models import Tenant
+        from apps.tenants.services import create_tenant_with_defaults
+
+        owner = User.objects.create_user(email='lc-owner@xn--lumcrm-5ua.com', password='x')
+        tenant = create_tenant_with_defaults(
+            name='Lifecycle Spa', slug='lifecycle-spa',
+            owner_user=owner,
+            status=Tenant.Status.TRIAL,
+            plan=Tenant.Plan.TRIAL,
+            trial_ends_at=djtz.now() + dt.timedelta(days=14),
+        )
+        client = APIClient()
+        client.force_login(owner)
+        response = client.get(reverse('auth-me'))
+        self.assertEqual(response.status_code, status.HTTP_200_OK)
+        memberships = response.data['user']['memberships']
+        spa = next(m for m in memberships if m['tenant']['slug'] == 'lifecycle-spa')
+        # Every field the frontend banner/modal reads must be present.
+        for key in ('plan', 'status', 'trial_ends_at', 'grandfathered', 'features'):
+            self.assertIn(key, spa['tenant'], f'missing key {key} on tenant payload')
+        self.assertEqual(spa['tenant']['status'], 'trial')
+        self.assertEqual(spa['tenant']['plan'], 'trial')
+        self.assertFalse(spa['tenant']['grandfathered'])
+        # trial_ends_at is ISO-formatted; the frontend parses with Date().
+        self.assertIsNotNone(spa['tenant']['trial_ends_at'])
+        self.assertIn('T', spa['tenant']['trial_ends_at'])
+        # Features is a sorted list of strings (deterministic shape).
+        self.assertIsInstance(spa['tenant']['features'], list)
+        # Trial inherits Pro features per the catalog.
+        self.assertIn('email_marketing', spa['tenant']['features'])
+
+    def test_me_endpoint_active_tenant_has_null_trial_ends_at(self):
+        """An active (post-trial) tenant must serialize trial_ends_at
+        as null so the frontend banner hides correctly."""
+        from apps.tenants.models import Tenant
+        from apps.tenants.services import create_tenant_with_defaults
+
+        owner = User.objects.create_user(email='active-owner@xn--lumcrm-5ua.com', password='x')
+        create_tenant_with_defaults(
+            name='Active Spa', slug='active-spa',
+            owner_user=owner,
+            status=Tenant.Status.ACTIVE,
+            plan=Tenant.Plan.STARTER,
+            trial_ends_at=None,
+        )
+        client = APIClient()
+        client.force_login(owner)
+        response = client.get(reverse('auth-me'))
+        spa = next(
+            m for m in response.data['user']['memberships']
+            if m['tenant']['slug'] == 'active-spa'
+        )
+        self.assertEqual(spa['tenant']['status'], 'active')
+        self.assertIsNone(spa['tenant']['trial_ends_at'])
+
 
 class PlatformAdminAccountTests(TestCase):
     """Bootstrap command + invariants on platform admin accounts."""

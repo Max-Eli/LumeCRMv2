@@ -63,6 +63,13 @@ def _serialize_user(user):
                 'slug': m.tenant.slug,
                 'plan': m.tenant.plan,
                 'grandfathered': m.tenant.grandfathered,
+                # Lifecycle status drives the trial countdown banner /
+                # past-due banner / suspended screen in the CRM shell.
+                'status': m.tenant.status,
+                'trial_ends_at': (
+                    m.tenant.trial_ends_at.isoformat()
+                    if m.tenant.trial_ends_at else None
+                ),
                 # Serialize as a sorted list (deterministic + JSON-safe;
                 # frozenset isn't natively serializable). Frontend
                 # builds a Set client-side for membership checks.
