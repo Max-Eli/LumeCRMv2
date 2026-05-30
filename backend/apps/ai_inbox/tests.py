@@ -463,7 +463,11 @@ class AIConversationEndpointTests(TestCase):
         self.customer = _make_customer(self.tenant)
         from rest_framework.test import APIClient
         self.client = APIClient()
-        self.client.force_authenticate(user=self.owner)
+        # force_login (Django session cookie) — NOT force_authenticate.
+        # The latter is DRF-only and runs after middleware, so
+        # TenantMiddleware sees AnonymousUser and tenant_membership
+        # stays None → IsTenantStaff 403s.
+        self.client.force_login(self.owner)
         # X-Tenant-Slug header is the dev/test path the TenantMiddleware
         # uses to resolve request.tenant (subdomain lookup is the prod
         # path). Without it, IsTenantStaff 403s because the middleware
@@ -547,7 +551,11 @@ class AIConfigEndpointTests(TestCase):
         self.tenant, self.owner = _make_tenant(slug='cfg-test')
         from rest_framework.test import APIClient
         self.client = APIClient()
-        self.client.force_authenticate(user=self.owner)
+        # force_login (Django session cookie) — NOT force_authenticate.
+        # The latter is DRF-only and runs after middleware, so
+        # TenantMiddleware sees AnonymousUser and tenant_membership
+        # stays None → IsTenantStaff 403s.
+        self.client.force_login(self.owner)
         self.headers = {'HTTP_X_TENANT_SLUG': self.tenant.slug}
 
     def test_get_creates_lazily(self):
