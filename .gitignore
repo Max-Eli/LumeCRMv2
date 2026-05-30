@@ -57,6 +57,13 @@ logs/
 # Next.js app router — the rule above was meant for runtime log
 # files, not Next route folders that happen to be named `logs`.
 !frontend/src/app/(platform)/platform/logs/
+# And the per-appointment activity-log page (linked from the
+# calendar's appointment popover). Same reason — the directory is
+# a Next route, not a runtime log dir. Brackets are escaped because
+# gitignore treats unescaped `[...]` as a character class glob,
+# which doesn't match the literal `[id]` segment name.
+!frontend/src/app/(app)/appointments/\[id\]/logs/
+!frontend/src/app/(app)/appointments/\[id\]/logs/**
 !frontend/src/app/(platform)/platform/logs/**
 npm-debug.log*
 yarn-debug.log*
