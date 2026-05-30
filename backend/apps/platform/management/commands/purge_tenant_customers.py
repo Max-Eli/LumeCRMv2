@@ -101,10 +101,12 @@ class Command(BaseCommand):
         from apps.commissions.models import CommissionEntry
         from apps.customers.models import Customer
         from apps.forms.models import FormSubmission
-        from apps.giftcards.models import GiftCardLedger
+        from apps.giftcards.models import GiftCard, GiftCardLedger
         from apps.integrations.models import SocialThread
         from apps.invoices.models import Invoice
+        from apps.marketing.models import MarketingSendLog, UnsubscribeToken
         from apps.memberships.models import Subscription, SubscriptionRedemption
+        from apps.messaging.models import Message
         from apps.packages.models import PackageRedemption, PurchasedPackage
         from apps.payments.models import Charge, Refund
         from apps.waitlist.models import WaitlistEntry
@@ -134,19 +136,29 @@ class Command(BaseCommand):
             #    Appointment, and InvoiceLineItem) ──
             ('memberships.SubscriptionRedemption', SubscriptionRedemption),
             ('packages.PackageRedemption', PackageRedemption),
-            # ── Subscription + PurchasedPackage MUST go before Invoice:
-            #    both PROTECT-reference InvoiceLineItem via
-            #    source_invoice_line, which Invoice's cascade would
-            #    otherwise try to delete out from under them ──
+            # ── Subscription + PurchasedPackage + GiftCard MUST go
+            #    before Invoice: all three PROTECT-reference
+            #    InvoiceLineItem via source_invoice_line, which
+            #    Invoice's cascade would otherwise try to delete out
+            #    from under them ──
             ('memberships.Subscription',   Subscription),
             ('packages.PurchasedPackage',  PurchasedPackage),
+            ('giftcards.GiftCard',         GiftCard),
             # ── invoice (PROTECT → Customer + Appointment); now
             #    nothing PROTECT-references its line items ──
             ('invoices.Invoice',           Invoice),
             # ── appointment (PROTECT → Customer) ──
             ('appointments.Appointment',   Appointment),
-            # ── finally Customer itself; portal tokens/sessions cascade,
-            #    giftcards.GiftCard FKs are SET_NULL ──
+            # ── marketing + messaging PROTECT → Customer; the
+            #    inspect_tenant_data census doesn't enumerate these
+            #    (they're communications, not core PHI), so they
+            #    must be explicit here ──
+            ('marketing.MarketingSendLog', MarketingSendLog),
+            ('marketing.UnsubscribeToken', UnsubscribeToken),
+            ('messaging.Message',          Message),
+            # ── finally Customer itself; portal tokens/sessions
+            #    cascade, giftcards.GiftCard customer FKs were
+            #    SET_NULL but the cards themselves are now gone too ──
             ('customers.Customer',         Customer),
         ]
 
@@ -167,6 +179,14 @@ class Command(BaseCommand):
         # The whole purge is one transaction. If any layer fails (e.g.,
         # a new PROTECT FK that isn't in delete_plan), the entire
         # operation rolls back — no half-deleted tenant.
+        #
+        # Dry-run also runs .delete() and then rolls back: this is
+        # the only way to surface PROTECT-chain errors without
+        # committing. The alternative — counting rows but skipping
+        # the delete — would let a missing entry in delete_plan
+        # slip through dry-run and only fail on the live run, which
+        # is exactly what happened during this command's first three
+        # iterations against the demo tenant.
         with transaction.atomic():
             for label, model in delete_plan:
                 qs = model.objects.filter(tenant=tenant)
@@ -176,16 +196,15 @@ class Command(BaseCommand):
                     self.stdout.write(f'  {label:42s} {count:>8d}')
                     continue
                 self.stdout.write(f'  {label:42s} {count:>8d}  → {verb}')
-                if do_delete:
-                    # Use QuerySet.delete() (not _raw_delete) — the
-                    # ORM collector walks CASCADE FKs (InvoiceLineItem
-                    # on Invoice, SubscriptionItem on Subscription,
-                    # PortalToken/PortalSession on Customer, etc.).
-                    # _raw_delete bypasses that and the COMMIT then
-                    # fails on the dangling FK. The biggest table here
-                    # is ~7.5k rows — well within Django's collector
-                    # comfort zone for a one-shot ops task.
-                    qs.delete()
+                # QuerySet.delete() (not _raw_delete) — the ORM
+                # collector walks CASCADE FKs (InvoiceLineItem on
+                # Invoice, SubscriptionItem on Subscription,
+                # PortalToken/PortalSession on Customer, etc.).
+                # _raw_delete bypasses that and the COMMIT then fails
+                # on the dangling FK. The biggest table here is
+                # ~7.5k rows — well within Django's collector
+                # comfort zone for a one-shot ops task.
+                qs.delete()
 
             if do_delete:
                 # One audit row per resource type, plus a roll-up row
