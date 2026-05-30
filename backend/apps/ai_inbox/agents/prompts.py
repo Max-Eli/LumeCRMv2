@@ -93,11 +93,13 @@ def render_system_prompt(*, tenant, config: 'AIConfig', now: dt.datetime) -> str
 
 
 def _render_hours(hours_json: dict | None) -> str:
-    """Render a hours JSON like {monday: [["09:00","17:00"]], ...} as bullet lines.
+    """Render a hours JSON as bullet lines.
 
-    Accepts the same shape as Location.business_hours_json — list of
-    [open, close] pairs per weekday key. Returns an empty string if
-    the input is empty or malformed (caller substitutes a fallback).
+    Accepts either shape used in the codebase:
+      - list of [open, close] pairs, e.g. [["09:00","17:00"]]
+      - list of dicts, e.g. [{"start":"09:00","end":"17:00"}]  (matches ProviderSchedule)
+
+    Empty input → empty string (caller substitutes a fallback).
     """
     if not hours_json:
         return ''
@@ -109,9 +111,15 @@ def _render_hours(hours_json: dict | None) -> str:
             if not blocks:
                 lines.append(f'- {day.capitalize()}: closed')
                 continue
-            parts = [f'{open_t}-{close_t}' for open_t, close_t in blocks]
+            parts = []
+            for b in blocks:
+                if isinstance(b, dict):
+                    parts.append(f"{b.get('start', '?')}-{b.get('end', '?')}")
+                elif isinstance(b, (list, tuple)) and len(b) >= 2:
+                    parts.append(f'{b[0]}-{b[1]}')
+                else:
+                    parts.append(str(b))
             lines.append(f'- {day.capitalize()}: {", ".join(parts)}')
         return '\n'.join(lines)
     except Exception:  # noqa: BLE001  — defensive against bad config
-        # Cheap fallback so we never break the agent on bad JSON.
         return json.dumps(hours_json)
