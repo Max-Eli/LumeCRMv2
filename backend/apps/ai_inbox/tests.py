@@ -252,14 +252,18 @@ class GuardrailsTests(TestCase):
         self.assertFalse(d.proceed)
         self.assertEqual(d.reason, 'idempotency_already_replied')
 
-    def test_unknown_sender_blocks_in_v1(self):
+    def test_unknown_sender_without_customer_row_bails(self):
+        # The messaging webhook auto-creates a Customer for unknown
+        # numbers when AI inbox is enabled, so reaching the guardrail
+        # layer with customer=None is a legacy / defensive path. Bail
+        # explicitly rather than NPE downstream.
         _make_config(self.tenant)
         d = guardrails.evaluate(
             tenant=self.tenant, customer=None,
             inbound_message=self.message,
         )
         self.assertFalse(d.proceed)
-        self.assertEqual(d.reason, 'unknown_sender_v1_drop')
+        self.assertEqual(d.reason, 'unknown_sender_no_customer_row')
 
     def test_missing_tfn_blocks_dispatch(self):
         _make_config(self.tenant)

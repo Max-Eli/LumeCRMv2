@@ -74,6 +74,28 @@ logger = logging.getLogger(__name__)
 _DIGITS_RE = re.compile(r'\D+')
 
 
+def _tenant_ai_inbox_active(tenant) -> bool:
+    """True iff the tenant has AI inbox enabled + not platform-killed.
+
+    Used by the inbound webhook to decide whether to auto-create a
+    Customer row for an unknown sender (so the AI can engage cold
+    inbound leads). Defensive imports + try/except so the messaging
+    webhook never crashes on an ai_inbox-app issue.
+    """
+    try:
+        from apps.ai_inbox.models import AIConfig
+        config = AIConfig.objects.filter(tenant=tenant).first()
+        if config is None:
+            return False
+        if not config.enabled:
+            return False
+        if config.platform_disabled_at is not None:
+            return False
+        return True
+    except Exception:  # noqa: BLE001  — never break the webhook
+        return False
+
+
 def _normalize_e164(phone: str) -> str:
     """Best-effort E.164 normalisation for North American numbers.
 
@@ -439,15 +461,48 @@ class TwilioInboundView(APIView):
                 break
 
         if customer is None:
-            logger.warning(
-                'messaging.inbound.unknown_customer',
-                extra={
-                    'tenant_slug': tenant.slug,
-                    'from_last4': from_number[-4:],
-                    'sid': message_sid,
-                },
-            )
-            return Response({'ok': True, 'unmatched': 'customer'})
+            # Auto-create a placeholder Customer when the tenant has
+            # AI inbox enabled — the AI greets the lead + captures
+            # their real name via update_customer_profile. Without
+            # this, cold inbound (someone texts the spa for the first
+            # time) gets silently dropped, which makes the AI agent
+            # useless for lead capture. The Customer is created with a
+            # placeholder name ("SMS Lead · 1234") so the inbox UI
+            # has SOMETHING to render until the AI fills in the real
+            # name in turn 2.
+            #
+            # For tenants WITHOUT AI inbox, preserve the old behavior
+            # (drop silently) — staff aren't expected to handle cold
+            # inbound today.
+            if _tenant_ai_inbox_active(tenant):
+                e164 = _normalize_e164(from_number) or from_number
+                last4 = (e164 or '')[-4:]
+                customer = Customer.objects.create(
+                    tenant=tenant,
+                    first_name='SMS Lead',
+                    last_name=last4 or 'unknown',
+                    phone=e164,
+                    sms_opt_in=True,
+                    status=Customer.Status.ACTIVE,
+                )
+                logger.info(
+                    'messaging.inbound.auto_created_customer',
+                    extra={
+                        'tenant_slug': tenant.slug,
+                        'customer_id': customer.id,
+                        'phone_last4': last4,
+                    },
+                )
+            else:
+                logger.warning(
+                    'messaging.inbound.unknown_customer',
+                    extra={
+                        'tenant_slug': tenant.slug,
+                        'from_last4': from_number[-4:],
+                        'sid': message_sid,
+                    },
+                )
+                return Response({'ok': True, 'unmatched': 'customer'})
 
         # Idempotency: if we've already recorded this MessageSid,
         # don't duplicate. Twilio retries on 5xx; we return 200 either

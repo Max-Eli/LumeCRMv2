@@ -123,9 +123,13 @@ def evaluate(
             return GuardrailDecision(False, 'test_mode_number_mismatch')
 
     if customer is None:
-        # Cold inbound from an unknown number. v1: drop. Phase 2:
-        # create a placeholder Customer + engage.
-        return GuardrailDecision(False, 'unknown_sender_v1_drop')
+        # The messaging webhook auto-creates a placeholder Customer
+        # when the tenant has AI inbox enabled (see
+        # apps.messaging.views._tenant_ai_inbox_active), so reaching
+        # here with customer=None would mean the webhook took the
+        # legacy drop path. Bail explicitly so we don't NPE
+        # downstream — but normal cold-inbound flow won't hit this.
+        return GuardrailDecision(False, 'unknown_sender_no_customer_row')
 
     if customer.status == 'blocked':
         return GuardrailDecision(False, 'customer_blocked')
