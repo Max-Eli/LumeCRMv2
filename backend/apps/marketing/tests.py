@@ -841,11 +841,15 @@ class AutomationTests(TestCase):
             email_marketing_opt_in=True,
         )
         # And one whose birthday is NEXT month (or any other month) — excluded.
+        # Use day=1 so the date is always valid regardless of which month
+        # we wrap to (Feb has no 29-31; April / June / Sep / Nov have no 31).
+        # The original code copied today's day-of-month, which silently
+        # failed on the 29th/30th/31st of months whose successor is shorter.
         other_month = today.month % 12 + 1
         Customer.objects.create(
             tenant=self.tenant, first_name='Other', last_name='Month',
             email='other@x.com',
-            date_of_birth=djtz.now().date().replace(year=1985, month=other_month),
+            date_of_birth=dt.date(1985, other_month, 1),
             email_marketing_opt_in=True,
         )
 
