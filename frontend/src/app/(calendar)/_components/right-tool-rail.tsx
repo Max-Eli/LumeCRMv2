@@ -42,6 +42,7 @@ import {
 } from 'lucide-react';
 import { useEffect, useState } from 'react';
 
+import { useEscalationAlerts } from '@/lib/ai-inbox';
 import { cn } from '@/lib/utils';
 
 export type CalendarTool =
@@ -123,6 +124,15 @@ export function RightToolRail({ active, onToggle }: RightToolRailProps) {
   // we don't flash the wrong state.
   const [collapsed, setCollapsed] = useState(false);
 
+  // Open AI escalations drive the Messages tool's badge so the
+  // operator sees at a glance that there's something in the inbox
+  // that needs them. Polls every 30s via the underlying query hook.
+  // 402 (PlanFeatureRequired) → escalationCount falls back to 0 and
+  // the badge stays hidden, which is the right behaviour for tenants
+  // without F_AI_INBOX.
+  const { data: openAlerts } = useEscalationAlerts('open');
+  const escalationCount = openAlerts?.length ?? 0;
+
   useEffect(() => {
     if (typeof window === 'undefined') return;
     const stored = window.localStorage.getItem(COLLAPSED_KEY);
@@ -163,6 +173,7 @@ export function RightToolRail({ active, onToggle }: RightToolRailProps) {
             tool={tool}
             collapsed={collapsed}
             active={active === tool.id}
+            badgeCount={badgeCountFor(tool.id, escalationCount)}
             onClick={() => {
               // Popout tools (Messages → /inbox) open a separate
               // browser window and do NOT toggle the in-rail panel.
@@ -183,6 +194,18 @@ export function RightToolRail({ active, onToggle }: RightToolRailProps) {
       </nav>
     </aside>
   );
+}
+
+
+/** Map a tool id to the count to show as a badge.
+ *
+ * Today only Messages has a meaningful count (AI escalations). If
+ * more tool-side counts come later (saved replies pending review,
+ * unread social DMs), wire them here.
+ */
+function badgeCountFor(toolId: CalendarTool, escalationCount: number): number {
+  if (toolId === 'messages') return escalationCount;
+  return 0;
 }
 
 // ── Sub-components ──────────────────────────────────────────────────────
@@ -232,11 +255,16 @@ function ToolButton({
   tool,
   collapsed,
   active,
+  badgeCount,
   onClick,
 }: {
   tool: ToolDef;
   collapsed: boolean;
   active: boolean;
+  /** Count to display as a notification badge on this tool. 0 hides
+   *  the badge. Today only the Messages tool uses this (AI
+   *  escalations); see badgeCountFor() for the mapping. */
+  badgeCount: number;
   onClick: () => void;
 }) {
   const Icon = tool.icon;
@@ -245,6 +273,10 @@ function ToolButton({
     : tool.popoutUrl
       ? ' · opens in a new window'
       : '';
+  const hasBadge = badgeCount > 0;
+  const badgeAriaSuffix = hasBadge
+    ? ` · ${badgeCount} attention-needed item${badgeCount === 1 ? '' : 's'}`
+    : '';
 
   if (collapsed) {
     return (
@@ -252,8 +284,8 @@ function ToolButton({
         type="button"
         onClick={onClick}
         aria-pressed={active}
-        aria-label={tool.label}
-        title={tool.label + titleSuffix}
+        aria-label={tool.label + badgeAriaSuffix}
+        title={tool.label + titleSuffix + (hasBadge ? ` · ${badgeCount} needs attention` : '')}
         className={cn(
           'relative inline-flex size-9 items-center justify-center rounded-md transition-colors',
           active
@@ -262,7 +294,19 @@ function ToolButton({
         )}
       >
         <Icon className="size-4" />
-        {tool.comingPhase ? (
+        {hasBadge ? (
+          <span
+            className={cn(
+              'absolute -top-0.5 -right-0.5',
+              'inline-flex min-w-[1.1rem] h-[1.1rem] items-center justify-center',
+              'rounded-full bg-rose-600 text-white text-[10px] font-semibold leading-none px-1',
+              'ring-2 ring-sidebar',
+            )}
+            aria-hidden
+          >
+            {badgeCount > 99 ? '99+' : badgeCount}
+          </span>
+        ) : tool.comingPhase ? (
           <span
             className="absolute top-1 right-1 size-1 rounded-full bg-muted-foreground/40"
             aria-hidden
@@ -277,6 +321,7 @@ function ToolButton({
       type="button"
       onClick={onClick}
       aria-pressed={active}
+      aria-label={tool.label + badgeAriaSuffix}
       title={`${tool.label}${titleSuffix}`}
       className={cn(
         'flex items-center gap-2.5 h-9 rounded-md px-2.5 text-sm transition-colors text-left',
@@ -287,7 +332,17 @@ function ToolButton({
     >
       <Icon className="size-4 shrink-0" />
       <span className="truncate flex-1">{tool.label}</span>
-      {tool.comingPhase ? (
+      {hasBadge ? (
+        <span
+          className={cn(
+            'shrink-0 inline-flex min-w-[1.25rem] h-[1.1rem] items-center justify-center',
+            'rounded-full bg-rose-600 text-white text-[10px] font-semibold leading-none px-1.5',
+          )}
+          aria-hidden
+        >
+          {badgeCount > 99 ? '99+' : badgeCount}
+        </span>
+      ) : tool.comingPhase ? (
         <span
           className={cn(
             'shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-px rounded',

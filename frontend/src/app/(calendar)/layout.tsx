@@ -16,6 +16,7 @@
 import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
+import { EscalationNotifier } from '@/components/ai-inbox/escalation-notifier';
 import { useUser } from '@/lib/auth';
 
 export default function CalendarShellLayout({ children }: { children: React.ReactNode }) {
@@ -37,5 +38,13 @@ export default function CalendarShellLayout({ children }: { children: React.Reac
   }
   if (!user) return null;
 
-  return <div className="flex flex-col h-screen overflow-hidden bg-background">{children}</div>;
+  return (
+    <div className="flex flex-col h-screen overflow-hidden bg-background">
+      {children}
+      {/* AI escalation notifier — same instance as the (app) shell so
+          the bell badge + toast are omnipresent regardless of which
+          route group the operator is in. */}
+      <EscalationNotifier />
+    </div>
+  );
 }
