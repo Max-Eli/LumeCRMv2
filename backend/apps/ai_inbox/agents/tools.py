@@ -43,8 +43,13 @@ logger = logging.getLogger(__name__)
 
 # Range used when the model doesn't specify a date range.
 _DEFAULT_AVAILABILITY_HORIZON_DAYS = 14
-# Per-tool result cap (number of slots returned to the model).
-_MAX_SLOTS_RETURNED = 6
+# Per-tool result cap (number of slots returned to the model). When
+# the agent provides a time-of-day window (time_from/time_to), we
+# raise the cap so we don't accidentally truncate inside the window —
+# otherwise the agent could erroneously tell the customer "no
+# openings at 2pm" because we cut off at slot 6 in the early morning.
+_MAX_SLOTS_RETURNED = 8
+_MAX_SLOTS_RETURNED_WITH_WINDOW = 12
 
 
 # ── Tool schemas (Anthropic / Bedrock Messages-API format) ───────
@@ -111,18 +116,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
     {
         'name': 'check_availability',
         'description': (
-            'Return open appointment slots for a service in a date window. '
-            'Only returns slots for providers who are ELIGIBLE for the service '
-            "(based on the spa's service-category job-title eligibility rules) "
-            "— a massage therapist won't be returned for an injectable. "
-            'Date strings are ISO 8601 (YYYY-MM-DD). Returns at most 6 slots, '
-            'each with a 1-based index. '
-            'IMPORTANT: this call AUTOMATICALLY stages the returned slots '
-            "as a pending booking proposal. The customer's digit reply "
-            '(1-9) will auto-book the slot at that index. You do NOT need '
-            'to call any other tool to make this work — just send a single '
-            'SMS listing the slots using the EXACT indices and times '
-            'returned, and end with "Reply 1, 2, or 3 to confirm." '
+            'Return open appointment slots for a service in a date '
+            'AND optional time-of-day window. Only returns slots for '
+            'providers ELIGIBLE for the service — a massage therapist '
+            "won't be returned for an injectable. Date strings are "
+            'ISO 8601 (YYYY-MM-DD). Time strings are 24h HH:MM in the '
+            "spa's local timezone.\n\n"
+            'IF the customer mentions a time preference ("around 2pm", '
+            '"morning", "evening", "between 1 and 3"), YOU MUST pass '
+            'time_from/time_to so you only get slots in their window. '
+            'Otherwise this tool returns the first 8 slots starting '
+            'from date_from chronologically — which for a 9am-8pm day '
+            'will be the early morning ones, and you\'ll mistakenly '
+            'tell the customer no afternoon openings exist when they '
+            'do.\n\n'
+            'Returns up to 8 slots (12 if a time window is passed), '
+            'each with a 1-based index. Automatically stages the '
+            "returned slots as a pending booking proposal. The customer's "
+            'digit reply (1-9) auto-books the slot at that index. '
             'service_id MUST come from a find_service result — never guess.'
         ),
         'input_schema': {
@@ -130,8 +141,16 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             'properties': {
                 'service_id': {'type': 'integer'},
                 'provider_id': {'type': 'integer'},
-                'date_from': {'type': 'string'},
-                'date_to': {'type': 'string'},
+                'date_from': {'type': 'string', 'description': 'YYYY-MM-DD'},
+                'date_to': {'type': 'string', 'description': 'YYYY-MM-DD'},
+                'time_from': {
+                    'type': 'string',
+                    'description': '24h HH:MM lower bound on the slot start time (inclusive). E.g. "13:00" for 1pm.',
+                },
+                'time_to': {
+                    'type': 'string',
+                    'description': '24h HH:MM upper bound on the slot start time (exclusive). E.g. "15:00" for 3pm.',
+                },
                 'location_id': {'type': 'integer'},
             },
             'required': ['service_id'],
@@ -535,6 +554,24 @@ def _tool_check_availability(
     if date_to < date_from:
         date_to = date_from
 
+    # Time-of-day window (optional). Customers often say "around 2pm"
+    # or "morning" — without this filter the agent would get back the
+    # first 8 chronological slots of the day (e.g. 9-10:15am) and
+    # erroneously report no openings at 2pm even though they exist.
+    time_from = _parse_time(tool_input.get('time_from'))
+    time_to = _parse_time(tool_input.get('time_to'))
+    has_time_window = time_from is not None or time_to is not None
+    cap = _MAX_SLOTS_RETURNED_WITH_WINDOW if has_time_window else _MAX_SLOTS_RETURNED
+
+    # Resolve the location's timezone for the time-of-day comparison.
+    # All slot datetimes returned by compute_*_slots are TZ-aware in
+    # the location's local timezone.
+    import zoneinfo
+    try:
+        location_tz = zoneinfo.ZoneInfo(location.timezone or 'America/New_York')
+    except zoneinfo.ZoneInfoNotFoundError:
+        location_tz = zoneinfo.ZoneInfo('America/New_York')
+
     provider_id = tool_input.get('provider_id')
     if provider_id:
         # Caller asked for a specific provider — verify the provider is
@@ -558,13 +595,17 @@ def _tool_check_availability(
 
     collected: list[dict] = []
     cur = date_from
-    while cur <= date_to and len(collected) < _MAX_SLOTS_RETURNED * 3:
+    # Inner safety cap so a tenant with very sparse schedules doesn't
+    # spin the day-loop forever; quadruple the result cap is plenty.
+    inner_cap = cap * 4
+    while cur <= date_to and len(collected) < inner_cap:
         if len(providers) == 1:
             day_slots = [
                 {
                     'start_iso': s.start.isoformat(),
                     'end_iso': s.end.isoformat(),
                     'provider_id': providers[0].id,
+                    '_start_dt': s.start,
                 }
                 for s in compute_provider_slots(
                     provider=providers[0], service=service,
@@ -577,28 +618,45 @@ def _tool_check_availability(
                 eligible_providers=providers, service=service,
                 location=location, on_date=cur,
             )
-            day_slots = [
-                {
+            day_slots = []
+            for p in payloads:
+                if not p['available']:
+                    continue
+                try:
+                    parsed = dt.datetime.fromisoformat(p['start'])
+                except (TypeError, ValueError):
+                    parsed = None
+                day_slots.append({
                     'start_iso': p['start'],
                     'end_iso': p['end'],
                     'provider_id': p.get('provider_id'),
-                }
-                for p in payloads if p['available']
-            ]
+                    '_start_dt': parsed,
+                })
+
         for slot in day_slots:
+            # Apply time-of-day filter if the caller passed one.
+            if has_time_window and slot['_start_dt'] is not None:
+                local_start = slot['_start_dt'].astimezone(location_tz)
+                local_time = local_start.time()
+                if time_from is not None and local_time < time_from:
+                    continue
+                if time_to is not None and local_time >= time_to:
+                    continue
             collected.append({
-                **slot,
+                'start_iso': slot['start_iso'],
+                'end_iso': slot['end_iso'],
+                'provider_id': slot.get('provider_id'),
                 'service_id': service.id,
                 'location_id': location.id,
                 'label': _human_label(slot['start_iso']),
             })
-            if len(collected) >= _MAX_SLOTS_RETURNED:
+            if len(collected) >= cap:
                 break
-        if len(collected) >= _MAX_SLOTS_RETURNED:
+        if len(collected) >= cap:
             break
         cur += dt.timedelta(days=1)
 
-    final = collected[:_MAX_SLOTS_RETURNED]
+    final = collected[:cap]
 
     # Auto-stamp pending_proposal so the digit fast-path works
     # WITHOUT requiring Claude to remember a second tool call.
@@ -830,6 +888,21 @@ def _parse_date(s: str | None) -> dt.date | None:
         return None
     try:
         return dt.date.fromisoformat(s[:10])
+    except (TypeError, ValueError):
+        return None
+
+
+def _parse_time(s: str | None) -> dt.time | None:
+    """Parse a 24h HH:MM (or HH:MM:SS) time string from the agent.
+
+    Returns None for invalid / empty input so the time-window filter
+    silently no-ops rather than rejecting the whole tool call.
+    """
+    if not s:
+        return None
+    try:
+        # Accept both '13:00' and '13:00:00'
+        return dt.time.fromisoformat(s[:8])
     except (TypeError, ValueError):
         return None
 
