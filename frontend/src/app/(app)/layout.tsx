@@ -4,6 +4,7 @@ import { useRouter } from 'next/navigation';
 import { useEffect } from 'react';
 
 import { AppSidebar } from '@/components/app-sidebar';
+import { EscalationNotifier } from '@/components/ai-inbox/escalation-notifier';
 import { LifecycleBanner } from '@/components/billing/lifecycle-banner';
 import { UpsellModal } from '@/components/billing/upsell-modal';
 import { MobileNav } from '@/components/mobile-nav';
@@ -123,6 +124,13 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
           (PlanFeatureRequired). Mounted once here so every page in
           the CRM gets the same upsell UX, no per-component wiring. */}
       <UpsellModal />
+
+      {/* AI escalation notifier — polls open escalations every 30s,
+          toasts new ones, renders a fixed top-right badge while any
+          are open. Mounted once per app session so the operator
+          sees alerts regardless of which page they're on. Cleanly
+          hidden for tenants without F_AI_INBOX (402 swallowed). */}
+      <EscalationNotifier />
     </div>
   );
 }
