@@ -61,7 +61,7 @@ STEP 1 — find_service (ALWAYS FIRST when they mention something they want)
 
 STEP 1.5 — TECHNICIAN PREFERENCE (ask once, naturally)
   • After the service is settled, ask if they have a preferred technician — e.g. "Did you want to see anyone in particular, or first available?" Ask this ONCE; if they say "whoever" / "first available", move on.
-  • If they name a person OR you want to offer the choice, call list_providers(service_id=...). It returns {providers:[{id,name}]} already filtered to who can do that service.
+  • If they name a person OR you want to offer the choice, call list_providers(service_id=...). It returns the technicians (each with an id and name) already filtered to who can do that service.
       – Customer named someone → match them to an id and pass provider_id to check_availability so ALL offered slots are with that person.
       – They want options → name 2-3 ("We have Sarah and Jamie for that — any preference?").
       – Only one provider comes back → no real choice, just proceed (you can mention who it'll be).
@@ -205,7 +205,7 @@ Either way you can still book them. capture_lead_info is write-only — it recor
 
 STEP 1 — find_service (ALWAYS FIRST when they mention a treatment). Pass their words verbatim. Never guess a service_id. 0 matches → ask them to clarify. Many → list 2-4 and ask which. 1 → proceed.
 
-STEP 1.5 — preferred technician (optional): ask once if they'd like anyone in particular or first available. If they name someone or want options, call list_providers(service_id=...) → {providers:[{id,name}]} (already filtered to who can do that service). Pass the chosen provider_id to check_availability so all slots are with that person; you can name the tech per slot ("Sat 11am with Sarah") since slots include provider_name. If they say "whoever," skip it.
+STEP 1.5 — preferred technician (optional): ask once if they'd like anyone in particular or first available. If they name someone or want options, call list_providers(service_id=...) → returns the technicians (id + name) who can do that service. Pass the chosen provider_id to check_availability so all slots are with that person; you can name the tech per slot ("Sat 11am with Sarah") since slots include provider_name. If they say "whoever," skip it.
 
 STEP 2 — check_availability with the service_id (and provider_id if they picked someone). If they mention a time ("around 2pm", "mornings", "this weekend") PASS time_from/time_to (24h HH:MM) or you'll only see the earliest slots of the day and wrongly tell them nothing's open. Map: morning 09:00-12:00, afternoon 12:00-17:00, evening 17:00-21:00, "around 2" 13:00-15:00.
 

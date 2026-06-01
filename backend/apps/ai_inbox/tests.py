@@ -1018,3 +1018,29 @@ class RescheduleAndProviderToolTests(TestCase):
             tenant=self.tenant, customer=self.customer, conversation=self.conv,
         )
         self.assertIn('error', res)
+
+
+class PromptRenderTests(TestCase):
+    """The system prompts are rendered with str.format(), so any stray
+    literal brace ({...}) in the template raises KeyError at runtime and
+    crashes the agent before it can do anything. Render both to catch it."""
+
+    def setUp(self):
+        self.tenant, _ = _make_tenant(slug='ai-prompt')
+        self.config = _make_config(self.tenant)
+
+    def test_sms_prompt_renders(self):
+        from apps.ai_inbox.agents import prompts
+        out = prompts.render_system_prompt(
+            tenant=self.tenant, config=self.config, now=djtz.now(),
+        )
+        self.assertIsInstance(out, str)
+        self.assertGreater(len(out), 100)
+
+    def test_instagram_prompt_renders(self):
+        from apps.ai_inbox.agents import prompts
+        out = prompts.render_instagram_system_prompt(
+            tenant=self.tenant, config=self.config, now=djtz.now(),
+        )
+        self.assertIsInstance(out, str)
+        self.assertGreater(len(out), 100)
