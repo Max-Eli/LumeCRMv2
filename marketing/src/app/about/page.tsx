@@ -98,9 +98,9 @@ export default function AboutPage() {
 
               <ul className="mt-10 grid gap-y-6 gap-x-8 border-y border-foreground/15 py-8 sm:grid-cols-3">
                 <li>
-                  <p className="font-display text-3xl text-accent">22</p>
+                  <p className="font-display text-3xl text-accent">8</p>
                   <p className="mt-1 text-sm text-foreground/70">
-                    Reports across financial, staff, guests, and operations.
+                    Core capabilities — from the calendar to the AI inbox.
                   </p>
                 </li>
                 <li>

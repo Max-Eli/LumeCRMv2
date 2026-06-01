@@ -90,8 +90,8 @@ export default function OpenGraphImage() {
               fontFamily: 'sans-serif',
             }}
           >
-            Booking, client charts, e-signed consent, payments, and
-            22 reports — built specifically for medspa workflows.
+            Booking, charts, consent, payments, AI SMS agent, email + SMS
+            marketing — built specifically for medspa workflows.
           </div>
         </div>
 

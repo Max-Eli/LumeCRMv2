@@ -14,11 +14,13 @@ import type { ComponentType } from 'react';
 import { PageHero } from '@/components/page-hero';
 import { ProductFrame } from '@/components/product-frame';
 import {
+  AISMSMock,
   CalendarMock,
   ChartMock,
   FormMock,
   InvoiceMock,
   LocationsMock,
+  MarketingMock,
   ReportsMock,
 } from '@/components/product-mocks';
 import { ScrollReveal } from '@/components/scroll-reveal';
@@ -28,7 +30,7 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Features',
   description:
-    'Booking, client charts, consent forms, payments, reporting, and multi-location. Every capability built for the way a medspa actually runs.',
+    'Booking, client charts, consent forms, payments, reporting, multi-location, AI SMS agent, and email + SMS marketing. Every capability built for the way a medspa actually runs.',
 };
 
 interface FeatureRow {
@@ -85,9 +87,9 @@ const FEATURES: FeatureRow[] = [
   {
     n: '05',
     kicker: 'Reports',
-    title: 'Twenty-two reports across financial, staff, guests, and operations.',
+    title: 'Full reporting suite across financial, staff, guests, and operations.',
     standfirst:
-      "Daily close-out, AR aging, revenue by service / provider / location, schedule utilization, no-show rate, booking lead time. Live data, CSV export, audit-logged.",
+      "Daily close-out, AR aging, revenue by service / provider / location, schedule utilization, no-show rate, booking lead time. Live data, CSV export on every report, audit-logged.",
     href: '/features/reports',
     mockUrl: '/reports/financial/sales-by-date-range',
     Mock: ReportsMock,
@@ -102,6 +104,26 @@ const FEATURES: FeatureRow[] = [
     mockUrl: '/org/dashboard',
     Mock: LocationsMock,
   },
+  {
+    n: '07',
+    kicker: 'AI SMS agent',
+    title: 'An AI concierge that books appointments around the clock.',
+    standfirst:
+      "Responds to inbound texts, checks real-time availability, books the right service with an eligible provider, and handles objections. Escalates to a staff member when a conversation needs a human — with a full alert in the inbox.",
+    href: '/features',
+    mockUrl: '/inbox',
+    Mock: AISMSMock,
+  },
+  {
+    n: '08',
+    kicker: 'Email + SMS marketing',
+    title: 'Campaigns that run on live client data, not CSV exports.',
+    standfirst:
+      "Automated re-engagement at 90 days, treatment-cycle reminders, birthday offers, membership renewal nudges. Audiences update in real time as clients book, so your suppression lists are never stale.",
+    href: '/features',
+    mockUrl: '/marketing/campaigns',
+    Mock: MarketingMock,
+  },
 ];
 
 export default function FeaturesIndexPage() {
@@ -111,11 +133,11 @@ export default function FeaturesIndexPage() {
         eyebrow="Platform features"
         headline={
           <>
-            Six core capabilities,{' '}
+            Eight core capabilities,{' '}
             <span className="accent-italic">built for medspas.</span>
           </>
         }
-        standfirst="Built around the way a medspa actually runs. Click into any one for the full breakdown."
+        standfirst="Built around the way a medspa actually runs — from the front desk to the treatment room to the marketing inbox. Click into any one for the full breakdown."
       />
 
       <section>

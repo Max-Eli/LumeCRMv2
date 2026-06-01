@@ -394,6 +394,115 @@ const ACTION_TONE: Record<string, string> = {
   PERMISSION_GRANT: 'text-foreground/70',
 };
 
+// ── AI SMS inbox ─────────────────────────────────────────────────────
+
+const SMS_MESSAGES = [
+  { dir: 'in', body: 'Hi! Do you have anything for laser hair removal next week?' },
+  { dir: 'out', body: 'Hi there! Yes — what area and do you have a day preference?', ai: true },
+  { dir: 'in', body: 'Full legs. Monday or Tuesday afternoon would be great' },
+  { dir: 'out', body: 'Here are the open slots:\n1. Mon Jun 9, 1:30pm\n2. Mon Jun 9, 3:00pm\n3. Tue Jun 10, 2:00pm\nReply 1, 2, or 3 to confirm.', ai: true },
+  { dir: 'in', body: '2' },
+  { dir: 'out', body: 'Got it — sending your confirmation shortly.', ai: true },
+];
+
+export function AISMSMock() {
+  return (
+    <div className="absolute inset-0 flex flex-col">
+      <div className="flex items-center justify-between border-b border-foreground/10 px-5 py-3">
+        <div>
+          <p className="font-serif text-base font-medium">AI inbox · +1 (844) 738-0519</p>
+          <p className="text-[10px] text-foreground/55">New lead · AI handling · Mon Jun 9</p>
+        </div>
+        <span className="rounded-full bg-violet-100 px-2.5 py-0.5 text-[9px] font-medium uppercase tracking-wide text-violet-800">
+          AI active
+        </span>
+      </div>
+      <div className="flex-1 overflow-hidden px-5 py-4 space-y-3">
+        {SMS_MESSAGES.map((m, i) => (
+          <div key={i} className={cn('flex', m.dir === 'out' ? 'justify-end' : 'justify-start')}>
+            <div className="max-w-[78%]">
+              {m.ai ? (
+                <div className="mb-1 flex justify-end">
+                  <span className="text-[8px] uppercase tracking-wide text-violet-600 font-medium">AI · agent</span>
+                </div>
+              ) : null}
+              <div className={cn(
+                'rounded-2xl px-3 py-2 text-[10px] leading-relaxed whitespace-pre-line',
+                m.dir === 'out'
+                  ? m.ai
+                    ? 'bg-violet-100 text-violet-900 rounded-br-md'
+                    : 'bg-foreground text-background rounded-br-md'
+                  : 'bg-foreground/[0.06] text-foreground/85 rounded-bl-md',
+              )}>
+                {m.body}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="border-t border-foreground/10 px-5 py-2.5">
+        <span className="text-[9px] text-foreground/40">Staff can pause AI · take over · or review full thread</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Email / SMS marketing campaigns ──────────────────────────────────
+
+const CAMPAIGNS = [
+  { name: '90-day lapsed clients', type: 'Email', status: 'Active', sent: '248', rate: '31%' },
+  { name: 'Botox 12-week reminder', type: 'SMS', status: 'Active', sent: '94', rate: '48%' },
+  { name: 'Birthday month offer', type: 'Email', status: 'Active', sent: '31', rate: '27%' },
+  { name: 'Package balance nudge', type: 'SMS', status: 'Draft', sent: '—', rate: '—' },
+];
+
+export function MarketingMock() {
+  return (
+    <div className="absolute inset-0 flex flex-col">
+      <div className="flex items-center justify-between border-b border-foreground/10 px-5 py-3">
+        <div>
+          <p className="font-serif text-base font-medium">Campaigns</p>
+          <p className="text-[10px] text-foreground/55">Email + SMS · live client data</p>
+        </div>
+        <span className="rounded-full bg-foreground px-3 py-1 text-[9px] font-medium text-background">
+          + New
+        </span>
+      </div>
+      <div className="flex items-center gap-3 border-b border-foreground/10 bg-foreground/[0.02] px-5 py-2 text-[9px] uppercase tracking-wide text-foreground/45">
+        <span className="flex-1">Campaign</span>
+        <span className="w-12">Type</span>
+        <span className="w-14">Status</span>
+        <span className="w-10 text-right">Sent</span>
+        <span className="w-10 text-right">Open</span>
+      </div>
+      <div className="flex-1 divide-y divide-foreground/[0.06]">
+        {CAMPAIGNS.map((c) => (
+          <div key={c.name} className="flex items-center gap-3 px-5 py-3">
+            <span className="flex-1 text-[11px] text-foreground/85 truncate">{c.name}</span>
+            <span className={cn(
+              'w-12 text-[9px] font-medium uppercase',
+              c.type === 'SMS' ? 'text-emerald-700' : 'text-sky-700',
+            )}>{c.type}</span>
+            <span className={cn(
+              'w-14 rounded-full px-2 py-0.5 text-center text-[9px] font-medium',
+              c.status === 'Active'
+                ? 'bg-emerald-100 text-emerald-800'
+                : 'bg-foreground/[0.06] text-foreground/55',
+            )}>{c.status}</span>
+            <span className="w-10 text-right font-mono text-[10px] text-foreground/65">{c.sent}</span>
+            <span className="w-10 text-right font-mono text-[10px] text-foreground/65">{c.rate}</span>
+          </div>
+        ))}
+      </div>
+      <div className="border-t border-foreground/10 px-5 py-2.5">
+        <span className="text-[9px] text-foreground/40">Segments update in real time — no CSV exports</span>
+      </div>
+    </div>
+  );
+}
+
+// ── Audit log ─────────────────────────────────────────────────────────
+
 export function AuditLogMock() {
   return (
     <div className="absolute inset-0 flex flex-col">

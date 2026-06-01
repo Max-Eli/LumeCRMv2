@@ -58,8 +58,8 @@ export function Footer() {
             <BrandMark variant="lockup" size={48} />
             <p className="mt-6 max-w-sm text-sm leading-relaxed text-muted-foreground">
               The HIPAA-compliant CRM for medical spas. Booking, charts,
-              consent forms, payments, and 22 reports — built specifically
-              for the way medspas operate.
+              consent forms, payments, AI SMS agent, email + SMS marketing,
+              and a full reporting suite — built for the way medspas operate.
             </p>
           </div>
 

@@ -47,7 +47,7 @@ const FAQ_SCHEMA = {
       name: 'What is the best CRM software for medical spas?',
       acceptedAnswer: {
         '@type': 'Answer',
-        text: 'The best CRM for medical spas depends on your size and compliance requirements. Lumè CRM is built specifically for medspas with HIPAA compliance as a foundation, not an upgrade. It includes clinical chart notes, per-treatment consent forms, an AI SMS agent, email and SMS marketing campaigns, and 22 reports — all starting at $99/month with a BAA included at every tier. Larger chains may consider Zenoti. Practices already on Mindbody or Vagaro often migrate to Lumè or Aesthetic Record when medical compliance becomes a priority.',
+        text: 'The best CRM for medical spas depends on your size and compliance requirements. Lumè CRM is built specifically for medspas with HIPAA compliance as a foundation, not an upgrade. It includes clinical chart notes, per-treatment consent forms, an AI SMS booking agent, email and SMS marketing campaigns, and a full reporting suite — all starting at $99/month with a BAA included at every tier. Larger chains may consider Zenoti. Practices already on Mindbody or Vagaro often migrate to Lumè or Aesthetic Record when medical compliance becomes a priority.',
       },
     },
     {

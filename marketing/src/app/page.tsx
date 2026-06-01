@@ -21,11 +21,13 @@ import { Marquee } from '@/components/marquee';
 import { Parallax } from '@/components/parallax';
 import { ProductFrame } from '@/components/product-frame';
 import {
+  AISMSMock,
   CalendarMock,
   ChartMock,
   FormMock,
   InvoiceMock,
   LocationsMock,
+  MarketingMock,
   ReportsMock,
 } from '@/components/product-mocks';
 import { ScrollReveal } from '@/components/scroll-reveal';
@@ -74,9 +76,9 @@ function Hero() {
               className="hero-rise mt-8 max-w-2xl text-lg leading-relaxed text-foreground/80 sm:text-xl"
               style={{ animationDelay: '260ms' }}
             >
-              Booking, charts, consent, integrated payments, and
-              twenty-two live reports. HIPAA-compliant. BAA included.
-              Implementation in two to four weeks.
+              Booking, charts, consent, payments, AI SMS agent, email
+              and SMS marketing — and a full reporting suite. HIPAA-compliant.
+              BAA included. Implementation in two to four weeks.
             </p>
             <div
               className="hero-rise mt-10 flex flex-wrap items-center gap-6"
@@ -148,10 +150,11 @@ const CAPABILITY_PHRASES = [
   'Client charts',
   'Consent forms',
   'Payments',
-  '22 reports',
+  'Full reporting suite',
   'Multi-location',
+  'AI SMS agent',
+  'Email + SMS campaigns',
   'HIPAA-compliant',
-  'Tenant isolation',
   'Audit logging',
   'No card-processing markup',
 ];
@@ -247,9 +250,9 @@ const CAPABILITIES: CapabilityRow[] = [
     label: 'Reports',
     title: 'The reports your accountant keeps asking for.',
     body:
-      'Twenty-two of them: daily close-out, AR aging, revenue by service or provider or location, no-show rate, top spenders, booking lead time. Live data. Every CSV export sits behind a HIPAA confirm and is audit-logged.',
+      'Daily close-out, AR aging, revenue by service or provider or location, no-show rate, top spenders, booking lead time — and more. Live data. Every CSV export is audit-logged.',
     bullets: [
-      '22 pre-built reports',
+      'Financial, staff, guest, and operations reports',
       'Live data, no nightly refresh delay',
       'CSV export with PHI confirmation',
       'Audit-logged on every run',
@@ -274,6 +277,38 @@ const CAPABILITIES: CapabilityRow[] = [
     url: '/org/dashboard',
     Mock: LocationsMock,
   },
+  {
+    n: '07',
+    label: 'AI SMS agent',
+    title: 'An AI concierge that answers, books, and never misses a text.',
+    body:
+      "Responds to inbound SMS around the clock. Checks real-time availability, books with the right provider, handles price objections, and escalates to staff the moment a conversation needs a human.",
+    bullets: [
+      'Books from inbound text, any hour',
+      'Real-time availability — not scripted hand-offs',
+      'Escalation alert in the staff inbox',
+      'Staff can pause AI per-conversation anytime',
+    ],
+    href: '/features',
+    url: '/inbox',
+    Mock: AISMSMock,
+  },
+  {
+    n: '08',
+    label: 'Marketing',
+    title: 'Campaigns that run on live data, not spreadsheet exports.',
+    body:
+      "Automated email and SMS campaigns against real CRM segments. Re-engagement at 90 days, treatment-cycle reminders, birthday offers, membership renewal nudges. Audiences update as clients book — no stale lists.",
+    bullets: [
+      'Email + SMS in one campaign builder',
+      'Automated triggers: lapsed, cycle reminder, birthday',
+      'Segments update in real time',
+      'Separate marketing vs. transactional consent tracking',
+    ],
+    href: '/features',
+    url: '/marketing/campaigns',
+    Mock: MarketingMock,
+  },
 ];
 
 function Capabilities() {
@@ -285,7 +320,7 @@ function Capabilities() {
             eyebrow="The platform"
             headline={
               <>
-                Six capabilities,{' '}
+                Eight capabilities,{' '}
                 <span className="accent-italic">every one for medspas.</span>
               </>
             }
