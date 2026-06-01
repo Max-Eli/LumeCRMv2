@@ -100,6 +100,20 @@ class _ExtraServiceInputSerializer(serializers.Serializer):
     )
 
 
+class _PlannedRedemptionInputSerializer(serializers.Serializer):
+    """The `redeem_credit` object on the create payload — records that
+    the front desk plans to settle this appointment's primary service
+    against one of the customer's package or membership credits.
+
+    `kind` selects the ledger; `item_id` is the PurchasedPackageItem id
+    (package) or SubscriptionItem id (membership). The redemption itself
+    happens at checkout — this only stamps the intent on the appointment.
+    """
+
+    kind = serializers.ChoiceField(choices=['package', 'membership'])
+    item_id = serializers.IntegerField(min_value=1)
+
+
 class AppointmentSerializer(serializers.ModelSerializer):
     customer = _CustomerSummary(read_only=True)
     service = _ServiceSummary(read_only=True)
@@ -131,6 +145,16 @@ class AppointmentSerializer(serializers.ModelSerializer):
     total_price_cents = serializers.IntegerField(read_only=True)
     # False once the invoice is paid/void — services lock with payment.
     services_editable = serializers.SerializerMethodField()
+
+    # Write-only on create: book this service "from" a customer credit.
+    # Validated + resolved in validate(); the view pops it before save().
+    redeem_credit = _PlannedRedemptionInputSerializer(
+        many=False, write_only=True, required=False, allow_null=True,
+    )
+    # Read-only mirror: a friendly summary of the planned credit so the
+    # calendar block, appointment detail, and checkout can show
+    # "Covered by <plan>" without re-deriving it. Null when none planned.
+    planned_redemption = serializers.SerializerMethodField()
 
     customer_id = serializers.PrimaryKeyRelatedField(
         queryset=Customer.objects.all(),
@@ -182,6 +206,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
             'provider', 'provider_id',
             'service', 'service_id',
             'extra_services', 'extras',
+            'redeem_credit', 'planned_redemption',
             'location_id',
             'start_time', 'end_time', 'duration_minutes',
             'status', 'invoice_status',
@@ -195,7 +220,7 @@ class AppointmentSerializer(serializers.ModelSerializer):
             'id',
             'customer', 'provider', 'service',
             'extra_services', 'total_price_cents', 'services_editable',
-            'duration_minutes', 'invoice_status',
+            'duration_minutes', 'invoice_status', 'planned_redemption',
             'checked_in_at', 'completed_at', 'cancelled_at',
             'created_at', 'updated_at',
         ]
@@ -208,6 +233,38 @@ class AppointmentSerializer(serializers.ModelSerializer):
         if invoice is None:
             return True
         return invoice.status == 'open'
+
+    def get_planned_redemption(self, obj: Appointment) -> dict | None:
+        """Friendly summary of the credit the front desk plans to apply
+        at checkout. Drives the "Covered by …" badge and the one-click
+        redeem on the invoice. Returns None when no credit was planned
+        (or the underlying package/membership was voided → SET_NULL)."""
+        pkg_item = obj.planned_package_item
+        if pkg_item is not None:
+            pp = pkg_item.purchased_package
+            return {
+                'kind': 'package',
+                'item_id': pkg_item.id,
+                'source_label': (
+                    pp.source_template.name if pp.source_template_id else 'Package'
+                ),
+                'covers_label': pkg_item.service_name or 'Service',
+                'remaining': pkg_item.quantity_remaining,
+            }
+        sub_item = obj.planned_subscription_item
+        if sub_item is not None:
+            covers = (
+                sub_item.service_name
+                or (f'Any {sub_item.category_name}' if sub_item.category_name else 'Service')
+            )
+            return {
+                'kind': 'membership',
+                'item_id': sub_item.id,
+                'source_label': sub_item.subscription.plan.name,
+                'covers_label': covers,
+                'remaining': sub_item.quantity_remaining,
+            }
+        return None
 
     # Status state machine — each entry maps from-status → set of allowed
     # to-statuses. Terminal states accept no further transitions; the
@@ -484,7 +541,145 @@ class AppointmentSerializer(serializers.ModelSerializer):
                 for e in extras_input
             ]
 
+        # Planned credit redemption — book the primary service "from" a
+        # customer's package or membership credit. Create-only (mirrors
+        # `extras`); applying a credit to an existing appointment is done
+        # from its invoice. Resolves to the concrete ledger item + stamps
+        # the matching model FK so save() persists the intent. The credit
+        # is NOT decremented here — that happens at checkout.
+        redeem = attrs.get('redeem_credit')
+        if redeem:
+            if self.instance is not None:
+                raise serializers.ValidationError({
+                    'redeem_credit': (
+                        'Credits are attached at booking time. Apply a credit '
+                        'to an existing appointment from its invoice instead.'
+                    ),
+                })
+            customer = attrs.get('customer')
+            svc = attrs.get('service')
+            if customer is None or svc is None:
+                raise serializers.ValidationError({
+                    'redeem_credit': (
+                        'A customer and service are required to apply a credit.'
+                    ),
+                })
+            from apps.tenants.context import get_current_tenant
+            tenant = get_current_tenant()
+            if redeem['kind'] == 'package':
+                attrs['planned_package_item'] = self._resolve_package_credit(
+                    tenant=tenant, customer=customer, service=svc,
+                    item_id=redeem['item_id'],
+                )
+            else:  # 'membership'
+                attrs['planned_subscription_item'] = self._resolve_membership_credit(
+                    tenant=tenant, customer=customer, service=svc,
+                    item_id=redeem['item_id'],
+                )
+
         return attrs
+
+    @staticmethod
+    def _resolve_package_credit(*, tenant, customer, service, item_id):
+        """Resolve + validate a PurchasedPackageItem the booking plans to
+        redeem. Returns the item, or raises a field-level error."""
+        from apps.packages.models import PurchasedPackageItem
+        item = (
+            PurchasedPackageItem.objects
+            .select_related('purchased_package', 'service')
+            .filter(pk=item_id, purchased_package__tenant=tenant)
+            .first()
+        )
+        if item is None:
+            raise serializers.ValidationError(
+                {'redeem_credit': 'Package credit not found.'},
+            )
+        pp = item.purchased_package
+        if pp.customer_id != customer.id:
+            raise serializers.ValidationError(
+                {'redeem_credit': 'That package belongs to a different customer.'},
+            )
+        if not pp.is_redeemable:
+            raise serializers.ValidationError({
+                'redeem_credit': (
+                    'That package is not active, has expired, or has no '
+                    'credits left.'
+                ),
+            })
+        if item.quantity_remaining <= 0:
+            raise serializers.ValidationError({
+                'redeem_credit': (
+                    'No credits remaining for this service in the package.'
+                ),
+            })
+        if item.service_id != service.id:
+            raise serializers.ValidationError({
+                'redeem_credit': (
+                    f'This package credit covers "{item.service_name}", '
+                    f'not the selected service.'
+                ),
+            })
+        return item
+
+    @staticmethod
+    def _resolve_membership_credit(*, tenant, customer, service, item_id):
+        """Resolve + validate a SubscriptionItem the booking plans to
+        redeem. Handles both single-service and category-wide credits."""
+        from apps.memberships.models import SubscriptionItem
+        item = (
+            SubscriptionItem.objects
+            .select_related('subscription', 'service', 'category')
+            .filter(pk=item_id, subscription__tenant=tenant)
+            .first()
+        )
+        if item is None:
+            raise serializers.ValidationError(
+                {'redeem_credit': 'Membership credit not found.'},
+            )
+        sub = item.subscription
+        if sub.customer_id != customer.id:
+            raise serializers.ValidationError(
+                {'redeem_credit': 'That membership belongs to a different customer.'},
+            )
+        if not sub.is_redeemable:
+            raise serializers.ValidationError({
+                'redeem_credit': (
+                    'That membership is not active for the current period, or '
+                    'has no credits left.'
+                ),
+            })
+        if item.quantity_remaining <= 0:
+            raise serializers.ValidationError({
+                'redeem_credit': (
+                    'No credits remaining for this benefit in the membership.'
+                ),
+            })
+        # Coverage check: a single-service credit must match the service;
+        # a category credit must contain the service's category.
+        if item.service_id is not None:
+            if item.service_id != service.id:
+                raise serializers.ValidationError({
+                    'redeem_credit': (
+                        f'This membership credit covers "{item.service_name}", '
+                        f'not the selected service.'
+                    ),
+                })
+        elif item.category_id is not None:
+            if service.category_id != item.category_id:
+                raise serializers.ValidationError({
+                    'redeem_credit': (
+                        f'This membership credit covers any "{item.category_name}" '
+                        f'service; the selected service isn\'t in that category.'
+                    ),
+                })
+        else:
+            raise serializers.ValidationError({
+                'redeem_credit': (
+                    'This membership credit isn\'t linked to a service or '
+                    'category and can\'t be auto-applied.'
+                ),
+            })
+        return item
 
     @staticmethod
     def _validate_schedule_fit(provider, location, start_dt, end_dt):

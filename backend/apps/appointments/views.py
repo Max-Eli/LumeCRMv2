@@ -71,6 +71,10 @@ class AppointmentViewSet(viewsets.ModelViewSet):
                 # exposes invoice_status off this so each calendar block
                 # can render a paid / open / void pill without N+1 fetch.
                 'invoice',
+                # Planned credit redemption — joined so the serializer's
+                # "Covered by …" badge doesn't N+1 across the calendar.
+                'planned_package_item__purchased_package__source_template',
+                'planned_subscription_item__subscription__plan',
             )
             # Additional services on the appointment — the serializer
             # nests these; prefetch so the calendar list stays one query.
@@ -184,6 +188,11 @@ class AppointmentViewSet(viewsets.ModelViewSet):
         # `_resolved_extras`.
         extras = serializer.validated_data.pop('_resolved_extras', [])
         serializer.validated_data.pop('extras', None)
+        # `redeem_credit` is the write-only input; validate() already
+        # resolved it into the `planned_package_item` /
+        # `planned_subscription_item` model fields, so drop the raw input
+        # before it reaches the model layer.
+        serializer.validated_data.pop('redeem_credit', None)
 
         # Default `location` from the active location when the caller
         # didn't supply one. The serializer field is optional + defaulted

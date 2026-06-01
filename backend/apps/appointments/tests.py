@@ -343,6 +343,146 @@ class AppointmentCreateLocationTests(TestCase):
         self.assertIn('location_id', response.data)
 
 
+class BookFromCreditTests(TestCase):
+    """`POST /api/appointments/` with a `redeem_credit` object stamps the
+    planned package/membership credit on the appointment WITHOUT
+    decrementing it (decrement happens at checkout), and validates
+    ownership + coverage so a credit can't be misapplied."""
+
+    @classmethod
+    def setUpTestData(cls):
+        cls.tenant, cls.owner = _make_tenant('credit-book')
+        cls.main = cls.tenant.locations.get(is_default=True)
+        cls.provider = _make_provider(cls.tenant, location=cls.main)
+        cls.service = _make_service(cls.tenant)  # category 'Cat'
+        cls.other_service = Service.objects.create(
+            tenant=cls.tenant, category=cls.service.category,
+            name='Other', code='OTH30', duration_minutes=30, buffer_minutes=0,
+            price_cents=8000, service_type=Service.ServiceType.REGULAR,
+        )
+        cls.customer = _make_customer(cls.tenant)
+        cls.other_customer = Customer.objects.create(
+            tenant=cls.tenant, first_name='Sam', last_name='Other',
+            email='sam-credit@test.local',
+        )
+
+    def setUp(self):
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+        self.url = reverse('appointment-list')
+
+    def _make_package(self, *, customer, service, remaining=5):
+        from apps.packages.models import PurchasedPackage, PurchasedPackageItem
+        pp = PurchasedPackage.objects.create(
+            tenant=self.tenant, customer=customer, name='5x Facials',
+            status=PurchasedPackage.Status.ACTIVE, purchased_at=djtz.now(),
+        )
+        item = PurchasedPackageItem.objects.create(
+            purchased_package=pp, service=service, service_name=service.name,
+            quantity_purchased=5, quantity_remaining=remaining,
+            unit_value_cents=service.price_cents,
+        )
+        return pp, item
+
+    def _make_membership_category(self, *, customer, category, remaining=2):
+        from apps.memberships.models import (
+            MembershipPlan, Subscription, SubscriptionItem,
+        )
+        plan = MembershipPlan.objects.create(
+            tenant=self.tenant, name='Gold', sku='GOLD', price_cents=9900,
+        )
+        now = djtz.now()
+        sub = Subscription.objects.create(
+            tenant=self.tenant, customer=customer, plan=plan, name='Gold',
+            status=Subscription.Status.ACTIVE, started_at=now,
+            current_period_starts_at=now - dt.timedelta(days=1),
+            current_period_ends_at=now + dt.timedelta(days=29),
+        )
+        item = SubscriptionItem.objects.create(
+            subscription=sub, category=category, category_name=category.name,
+            quantity_per_cycle=2, quantity_remaining=remaining,
+        )
+        return sub, item
+
+    def _payload(self, **over):
+        body = {
+            'customer_id': self.customer.id,
+            'service_id': self.service.id,
+            'provider_id': self.provider.id,
+            'start_time': '2026-06-01T13:00:00Z',
+            'end_time': '2026-06-01T13:30:00Z',
+        }
+        body.update(over)
+        return body
+
+    def _post(self, body):
+        self.client.cookies.pop(ACTIVE_LOCATION_COOKIE, None)
+        return self.client.post(
+            self.url, data=body, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+
+    def test_book_from_package_stamps_intent_without_decrement(self):
+        _, item = self._make_package(customer=self.customer, service=self.service)
+        resp = self._post(self._payload(
+            redeem_credit={'kind': 'package', 'item_id': item.id},
+        ))
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        appt = Appointment.objects.get(id=resp.data['id'])
+        self.assertEqual(appt.planned_package_item_id, item.id)
+        item.refresh_from_db()
+        self.assertEqual(item.quantity_remaining, 5)  # no decrement at booking
+        self.assertEqual(resp.data['planned_redemption']['kind'], 'package')
+        self.assertEqual(resp.data['planned_redemption']['remaining'], 5)
+
+    def test_book_from_membership_category_credit(self):
+        _, item = self._make_membership_category(
+            customer=self.customer, category=self.service.category,
+        )
+        resp = self._post(self._payload(
+            redeem_credit={'kind': 'membership', 'item_id': item.id},
+        ))
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        appt = Appointment.objects.get(id=resp.data['id'])
+        self.assertEqual(appt.planned_subscription_item_id, item.id)
+        self.assertEqual(resp.data['planned_redemption']['kind'], 'membership')
+
+    def test_credit_for_other_customer_rejected(self):
+        _, item = self._make_package(
+            customer=self.other_customer, service=self.service,
+        )
+        resp = self._post(self._payload(
+            redeem_credit={'kind': 'package', 'item_id': item.id},
+        ))
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('redeem_credit', resp.data)
+
+    def test_package_not_covering_service_rejected(self):
+        _, item = self._make_package(
+            customer=self.customer, service=self.other_service,
+        )
+        resp = self._post(self._payload(
+            redeem_credit={'kind': 'package', 'item_id': item.id},
+        ))
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('redeem_credit', resp.data)
+
+    def test_depleted_package_rejected(self):
+        _, item = self._make_package(
+            customer=self.customer, service=self.service, remaining=0,
+        )
+        resp = self._post(self._payload(
+            redeem_credit={'kind': 'package', 'item_id': item.id},
+        ))
+        self.assertEqual(resp.status_code, status.HTTP_400_BAD_REQUEST)
+        self.assertIn('redeem_credit', resp.data)
+
+    def test_booking_without_credit_has_null_planned_redemption(self):
+        resp = self._post(self._payload())
+        self.assertEqual(resp.status_code, status.HTTP_201_CREATED, resp.data)
+        self.assertIsNone(resp.data['planned_redemption'])
+
+
 # ── Bookable memberships filter by ?location= ───────────────────────
 
 

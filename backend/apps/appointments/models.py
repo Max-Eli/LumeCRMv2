@@ -179,6 +179,33 @@ class Appointment(TenantedModel):
         blank=True,
     )
 
+    # Planned credit redemption — set when staff book a service "from"
+    # a customer's package or membership. This is an INTENT, not the
+    # redemption itself: the credit is only decremented at checkout
+    # (Invoice.redeem_from_package / _membership), so a no-show or
+    # reschedule never silently burns a credit. Exactly one of the two
+    # is set, never both (enforced by the check constraint below). String
+    # FK refs keep this app from importing packages/memberships at module
+    # load; SET_NULL so voiding a package/subscription never cascades
+    # into appointment history. The booked `service` must be covered by
+    # the referenced credit — the serializer validates this on write.
+    planned_package_item = models.ForeignKey(
+        'packages.PurchasedPackageItem',
+        on_delete=models.SET_NULL,
+        related_name='+',
+        null=True,
+        blank=True,
+        help_text='Package credit the front desk plans to apply at checkout.',
+    )
+    planned_subscription_item = models.ForeignKey(
+        'memberships.SubscriptionItem',
+        on_delete=models.SET_NULL,
+        related_name='+',
+        null=True,
+        blank=True,
+        help_text='Membership credit the front desk plans to apply at checkout.',
+    )
+
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.SET_NULL,
@@ -204,6 +231,15 @@ class Appointment(TenantedModel):
             models.CheckConstraint(
                 condition=models.Q(end_time__gt=models.F('start_time')),
                 name='appointments_end_after_start',
+            ),
+            # A booking can plan to draw from a package OR a membership,
+            # never both at once.
+            models.CheckConstraint(
+                condition=(
+                    models.Q(planned_package_item__isnull=True)
+                    | models.Q(planned_subscription_item__isnull=True)
+                ),
+                name='appointments_single_planned_credit',
             ),
         ]
 
