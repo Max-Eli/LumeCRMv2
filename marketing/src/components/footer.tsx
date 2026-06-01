@@ -34,6 +34,7 @@ const FOOTER_GROUPS = [
       { href: '/medspas', label: 'For medspas' },
       { href: '/compare', label: 'Compare alternatives' },
       { href: '/security', label: 'Security' },
+      { href: '/support', label: 'Support' },
       { href: '/blog', label: 'Journal' },
       { href: '/about', label: 'About' },
       { href: '/demo', label: 'Request a demo' },
