@@ -29,6 +29,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import { SearchableSelect } from '@/components/ui/searchable-select';
 import { useServiceCategories, useServices } from '@/lib/services';
 import { type BillingInterval, centsFromDollars } from '@/lib/subscriptions';
 import { cn } from '@/lib/utils';
@@ -457,60 +458,41 @@ function ItemRow({
       </div>
       <div className="col-span-5">
         {isCategory ? (
-          <Select
+          <SearchableSelect
             value={row.category_id}
-            onValueChange={(v) => onChange({ category_id: v ?? '' })}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Pick a category…" />
-            </SelectTrigger>
-            <SelectContent>
-              {categories.length === 0 ? (
-                <div className="px-2 py-2 text-xs text-muted-foreground">
-                  No categories in the catalog.
-                </div>
-              ) : (
-                categories.map((cat) => (
-                  <SelectItem key={cat.id} value={String(cat.id)}>
-                    <span className="flex items-center justify-between gap-3 w-full">
-                      <span className="truncate">{cat.name}</span>
-                      <span className="text-xs text-muted-foreground shrink-0">
-                        {cat.service_count} service
-                        {cat.service_count === 1 ? '' : 's'}
-                      </span>
-                    </span>
-                  </SelectItem>
-                ))
-              )}
-            </SelectContent>
-          </Select>
+            onValueChange={(v) => onChange({ category_id: v })}
+            ariaLabel="Service category"
+            placeholder="Search categories…"
+            emptyText={
+              categories.length === 0
+                ? 'No categories in the catalog.'
+                : 'No matching categories.'
+            }
+            options={categories.map((cat) => ({
+              value: String(cat.id),
+              label: cat.name,
+              meta: `${cat.service_count} service${cat.service_count === 1 ? '' : 's'}`,
+            }))}
+          />
         ) : (
-          <Select
+          <SearchableSelect
             value={row.service_id}
-            onValueChange={(v) => onChange({ service_id: v ?? '' })}
-          >
-            <SelectTrigger>
-              <SelectValue placeholder="Pick a service…" />
-            </SelectTrigger>
-            <SelectContent>
-              {services.length === 0 ? (
-                <div className="px-2 py-2 text-xs text-muted-foreground">
-                  No active services in the catalog.
-                </div>
-              ) : (
-                services.map((svc) => (
-                  <SelectItem key={svc.id} value={String(svc.id)}>
-                    <span className="flex items-center justify-between gap-3 w-full">
-                      <span className="truncate">{svc.name}</span>
-                      <span className="text-xs text-muted-foreground font-mono shrink-0">
-                        {svc.price_dollars}
-                      </span>
-                    </span>
-                  </SelectItem>
-                ))
-              )}
-            </SelectContent>
-          </Select>
+            onValueChange={(v) => onChange({ service_id: v })}
+            ariaLabel="Service"
+            placeholder="Search services…"
+            emptyText={
+              services.length === 0
+                ? 'No active services in the catalog.'
+                : 'No matching services.'
+            }
+            options={services.map((svc) => ({
+              value: String(svc.id),
+              label: svc.name,
+              meta: (
+                <span className="font-mono">{svc.price_dollars}</span>
+              ),
+            }))}
+          />
         )}
       </div>
       <div className="col-span-2">
