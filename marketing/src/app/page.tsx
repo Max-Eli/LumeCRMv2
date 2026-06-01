@@ -279,22 +279,6 @@ const CAPABILITIES: CapabilityRow[] = [
   },
   {
     n: '07',
-    label: 'AI SMS agent',
-    title: 'An AI concierge that answers, books, and never misses a text.',
-    body:
-      "Responds to inbound SMS around the clock. Checks real-time availability, books with the right provider, handles price objections, and escalates to staff the moment a conversation needs a human.",
-    bullets: [
-      'Books from inbound text, any hour',
-      'Real-time availability — not scripted hand-offs',
-      'Escalation alert in the staff inbox',
-      'Staff can pause AI per-conversation anytime',
-    ],
-    href: '/features',
-    url: '/inbox',
-    Mock: AISMSMock,
-  },
-  {
-    n: '08',
     label: 'Marketing',
     title: 'Campaigns that run on live data, not spreadsheet exports.',
     body:
@@ -320,7 +304,7 @@ function Capabilities() {
             eyebrow="The platform"
             headline={
               <>
-                Eight capabilities,{' '}
+                Seven capabilities,{' '}
                 <span className="accent-italic">every one for medspas.</span>
               </>
             }

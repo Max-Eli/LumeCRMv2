@@ -30,7 +30,7 @@ import type { Metadata } from 'next';
 export const metadata: Metadata = {
   title: 'Features',
   description:
-    'Booking, client charts, consent forms, payments, reporting, multi-location, AI SMS agent, and email + SMS marketing. Every capability built for the way a medspa actually runs.',
+    'Booking, client charts, consent forms, payments, reporting, multi-location, and email + SMS marketing. Every capability built for the way a medspa actually runs.',
 };
 
 interface FeatureRow {
@@ -106,16 +106,6 @@ const FEATURES: FeatureRow[] = [
   },
   {
     n: '07',
-    kicker: 'AI SMS agent',
-    title: 'An AI concierge that books appointments around the clock.',
-    standfirst:
-      "Responds to inbound texts, checks real-time availability, books the right service with an eligible provider, and handles objections. Escalates to a staff member when a conversation needs a human — with a full alert in the inbox.",
-    href: '/features',
-    mockUrl: '/inbox',
-    Mock: AISMSMock,
-  },
-  {
-    n: '08',
     kicker: 'Email + SMS marketing',
     title: 'Campaigns that run on live client data, not CSV exports.',
     standfirst:
@@ -133,11 +123,11 @@ export default function FeaturesIndexPage() {
         eyebrow="Platform features"
         headline={
           <>
-            Eight core capabilities,{' '}
+            Seven core capabilities,{' '}
             <span className="accent-italic">built for medspas.</span>
           </>
         }
-        standfirst="Built around the way a medspa actually runs — from the front desk to the treatment room to the marketing inbox. Click into any one for the full breakdown."
+        standfirst="Built around the way a medspa actually runs — from the calendar to the treatment room to the marketing inbox. Click into any one for the full breakdown."
       />
 
       <section>
@@ -147,6 +137,64 @@ export default function FeaturesIndexPage() {
               <FeatureIndexRow key={f.n} feature={f} flip={i % 2 === 1} />
             ))}
           </ol>
+        </div>
+      </section>
+
+      {/* Pro-exclusive feature callout — AI SMS agent */}
+      <section className="border-t border-border bg-foreground/[0.02]">
+        <div className="mx-auto max-w-7xl px-6 lg:px-10 py-20 lg:py-28">
+          <ScrollReveal>
+            <div className="grid items-center gap-10 lg:grid-cols-12 lg:gap-16">
+              <div className="lg:col-span-5">
+                <div className="flex items-baseline gap-3">
+                  <span className="eyebrow text-foreground/60">Pro + Enterprise</span>
+                  <span className="rounded-full border border-accent/40 bg-accent/5 px-2.5 py-0.5 text-[10px] uppercase tracking-wide text-accent font-medium">
+                    Pro plan
+                  </span>
+                </div>
+                <h2 className="mt-4 font-serif text-3xl font-medium text-foreground sm:text-4xl">
+                  AI SMS agent — an always-on front desk.
+                </h2>
+                <p className="mt-5 max-w-xl text-base leading-relaxed text-foreground/75 sm:text-lg">
+                  Responds to inbound texts around the clock. Checks real-time
+                  availability, books the right service with an eligible provider,
+                  handles price objections, and escalates to staff the moment a
+                  conversation needs a human — with a live alert in the inbox.
+                </p>
+                <ul className="mt-6 space-y-2">
+                  {[
+                    'Books from inbound text, any hour of day',
+                    'Real-time schedule data — not scripted hand-offs',
+                    'Handles price objections, upsells packages',
+                    'Escalation alert fires instantly in the staff inbox',
+                    'Staff can pause AI per-conversation at any time',
+                    'HIPAA-eligible — BAA-covered infrastructure',
+                  ].map((b) => (
+                    <li key={b} className="flex items-start gap-2 text-sm text-foreground/75">
+                      <span className="mt-1.5 size-1.5 shrink-0 rounded-full bg-accent" aria-hidden />
+                      {b}
+                    </li>
+                  ))}
+                </ul>
+                <div className="mt-8">
+                  <Link
+                    href="/demo"
+                    className="inline-flex h-10 items-center rounded-full bg-foreground px-6 text-xs font-medium uppercase tracking-[0.16em] text-background hover:bg-foreground/90 transition-colors"
+                  >
+                    See it in a demo
+                  </Link>
+                </div>
+              </div>
+
+              <div className="lg:col-span-7 lg:col-start-6">
+                <div className="relative">
+                  <div className="relative overflow-hidden rounded-lg border border-foreground/10 bg-card shadow-sm aspect-[4/3]">
+                    <AISMSMock />
+                  </div>
+                </div>
+              </div>
+            </div>
+          </ScrollReveal>
         </div>
       </section>
     </>
