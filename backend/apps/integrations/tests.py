@@ -1675,30 +1675,46 @@ class SocialThreadReplyTests(TestCase):
         self.assertEqual(response.status_code, 400)
         self.assertEqual(response.data['code'], 'body_too_long')
 
-    def test_reply_window_expired(self):
-        # Push last_inbound_at >24h into the past — Meta's window has closed.
+    def test_reply_outside_24h_window_is_allowed(self):
+        # The 24h reply-window pre-check was removed (ADR 0033) — Meta
+        # governs send eligibility, and tools like ManyChat reply
+        # beyond 24h. An old last_inbound_at must NO LONGER block; the
+        # send proceeds (and succeeds here with the mocked Meta call).
         self.thread.last_inbound_at = timezone.now() - timezone.timedelta(hours=25)
         self.thread.save()
-        response = self.client_.post(
-            reverse('social-thread-reply', args=[self.thread.pk]),
-            data=_json.dumps({'body': 'hi'}),
-            content_type='application/json',
-            HTTP_X_TENANT_SLUG=self.tenant.slug,
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data['code'], 'reply_window_expired')
+        with _patch_outbound(
+            'apps.integrations.meta.requests.post',
+            return_value=self._meta_response({
+                'recipient_id': 'psid-1', 'message_id': 'mid.late',
+            }),
+        ):
+            response = self.client_.post(
+                reverse('social-thread-reply', args=[self.thread.pk]),
+                data=_json.dumps({'body': 'hi'}),
+                content_type='application/json',
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['status'], 'sent')
 
-    def test_no_inbound_anchor(self):
+    def test_reply_with_no_inbound_anchor_is_allowed(self):
+        # Same: no last_inbound_at no longer blocks the reply.
         self.thread.last_inbound_at = None
         self.thread.save()
-        response = self.client_.post(
-            reverse('social-thread-reply', args=[self.thread.pk]),
-            data=_json.dumps({'body': 'hi'}),
-            content_type='application/json',
-            HTTP_X_TENANT_SLUG=self.tenant.slug,
-        )
-        self.assertEqual(response.status_code, 400)
-        self.assertEqual(response.data['code'], 'no_inbound_anchor')
+        with _patch_outbound(
+            'apps.integrations.meta.requests.post',
+            return_value=self._meta_response({
+                'recipient_id': 'psid-1', 'message_id': 'mid.noanchor',
+            }),
+        ):
+            response = self.client_.post(
+                reverse('social-thread-reply', args=[self.thread.pk]),
+                data=_json.dumps({'body': 'hi'}),
+                content_type='application/json',
+                HTTP_X_TENANT_SLUG=self.tenant.slug,
+            )
+        self.assertEqual(response.status_code, 201)
+        self.assertEqual(response.data['status'], 'sent')
 
     def test_disconnected_connection_rejected(self):
         self.conn.status = Connection.Status.DISCONNECTED
