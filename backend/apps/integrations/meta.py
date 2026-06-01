@@ -1216,6 +1216,13 @@ def _process_messaging_event(
     result.threads_touched += 1
     result.messages_created += 1
 
+    # AI inbox dispatch — guardrail-gated, never raises. For tenants
+    # without the Instagram agent enabled this is a cheap no-op that
+    # returns before any meaningful work. Idempotent per inbound
+    # SocialMessage, so Meta webhook retries can't double-reply.
+    from apps.ai_inbox.services.dispatch import maybe_dispatch_to_ai_instagram
+    maybe_dispatch_to_ai_instagram(message=msg_row, thread=thread, connection=connection)
+
 
 def _resolve_thread_and_customer(
     *, connection: Connection, external_thread_id: str,

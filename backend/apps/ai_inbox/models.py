@@ -164,13 +164,58 @@ class AIConfig(TenantedModel):
             'GLOBAL KILL SWITCH. Settable by platform admins from '
             '/platform/tenants/<id>. Non-null = AI dispatch is fully '
             'blocked regardless of enabled / test_mode / per-conversation '
-            'state. Clear by setting back to null (manual operator action).'
+            'state. Clear by setting back to null (manual operator action). '
+            'Applies to BOTH SMS and Instagram channels.'
         ),
     )
     platform_disabled_reason = models.CharField(
         max_length=500,
         blank=True,
         default='',
+    )
+
+    # ── Instagram channel (separate enable from SMS) ──────────────
+    # Instagram runs through Meta, which is NOT BAA-covered, so the
+    # Instagram agent is booking-only: it never gets the
+    # get_customer_context (PHI) tool. A tenant can run SMS AI and
+    # Instagram AI independently.
+    instagram_enabled = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            'Master switch for the Instagram DM agent. Default False. '
+            'Requires the tenant to also have a connected Instagram '
+            'channel (apps.integrations.Connection) and the '
+            'F_SOCIAL_INTEGRATIONS feature.'
+        ),
+    )
+    instagram_test_mode = models.BooleanField(
+        default=True,
+        help_text=(
+            'When True, only inbound DMs from instagram_test_username '
+            'are answered; all others are audit-logged + dropped. '
+            'Always True at row creation.'
+        ),
+    )
+    instagram_test_username = models.CharField(
+        max_length=120,
+        blank=True,
+        default='',
+        help_text=(
+            'Instagram @handle (without the @) allowed to interact '
+            'with the agent while instagram_test_mode is on.'
+        ),
+    )
+    business_phone = models.CharField(
+        max_length=32,
+        blank=True,
+        default='',
+        help_text=(
+            'Phone number the Instagram agent tells customers to call '
+            'for account questions (which it cannot answer over a '
+            'non-BAA channel). Falls back to the primary Location '
+            'phone when blank.'
+        ),
     )
 
     created_at = models.DateTimeField(auto_now_add=True)
@@ -210,6 +255,10 @@ class AIConversation(TenantedModel):
         ESCALATED = 'escalated', 'Escalated to human'
         CLOSED = 'closed', 'Closed'
 
+    class Channel(models.TextChoices):
+        SMS = 'sms', 'SMS'
+        INSTAGRAM = 'instagram', 'Instagram DM'
+
     tenant = models.ForeignKey(
         'tenants.Tenant',
         on_delete=models.CASCADE,
@@ -223,6 +272,31 @@ class AIConversation(TenantedModel):
             'PROTECT so customer deletion forces the conversation '
             'to be deleted first (purge_tenant_customers handles '
             'the ordering).'
+        ),
+    )
+
+    channel = models.CharField(
+        max_length=12,
+        choices=Channel.choices,
+        default=Channel.SMS,
+        db_index=True,
+        help_text=(
+            'Which transport this conversation runs over. SMS goes '
+            'through Twilio (BAA-covered, PHI-safe); Instagram goes '
+            'through Meta (NOT BAA-covered — booking-only, no PHI '
+            'tools). Part of the conversation identity so the same '
+            'customer can have separate AI state per channel.'
+        ),
+    )
+    social_thread = models.ForeignKey(
+        'integrations.SocialThread',
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='ai_conversations',
+        help_text=(
+            'The Instagram/social thread this conversation replies '
+            'into. Null for SMS conversations. SET_NULL so deleting '
+            'a thread does not cascade away the AI audit trail.'
         ),
     )
 
@@ -284,8 +358,8 @@ class AIConversation(TenantedModel):
     class Meta:
         constraints = [
             models.UniqueConstraint(
-                fields=['tenant', 'customer'],
-                name='aiconversation_tenant_customer_unique',
+                fields=['tenant', 'customer', 'channel'],
+                name='aiconversation_tenant_customer_channel_unique',
             ),
         ]
         indexes = [
@@ -293,7 +367,7 @@ class AIConversation(TenantedModel):
         ]
 
     def __str__(self) -> str:
-        return f'AIConversation({self.tenant.slug}/{self.customer_id}: {self.status})'
+        return f'AIConversation({self.tenant.slug}/{self.customer_id}/{self.channel}: {self.status})'
 
 
 class AIToolCall(TenantedModel):

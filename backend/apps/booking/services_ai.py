@@ -45,6 +45,7 @@ def book_appointment_for_ai(
     location: 'Location',
     start_time: 'dt.datetime',
     end_time: 'dt.datetime',
+    channel: str = 'sms',
 ) -> Appointment:
     """Create the appointment for an AI-driven booking.
 
@@ -55,12 +56,16 @@ def book_appointment_for_ai(
         constraints to catch races at INSERT time.
       - clearing the AIConversation.pending_proposal on success.
 
-    Source string is 'sms_ai' so reporting can split AI-driven
-    bookings from operator-typed ones and from public-form
-    bookings. `created_by` is null (no authenticated User in this
-    flow) — the actor is the AI agent, surfaced via the audit log
-    metadata below.
+    ``channel`` selects the source string: 'sms' → 'sms_ai',
+    'instagram' → 'instagram_ai'. The source drives confirmation
+    routing — SMS bookings get a deferred SMS confirmation; Instagram
+    bookings are confirmed in-channel by the agent and SKIP the SMS
+    signal (apps/appointments/signals.py). `created_by` is null (no
+    authenticated User); the AI-agent attribution lives in the audit
+    metadata so the /logs page renders "Booked by AI agent".
     """
+    source = 'instagram_ai' if channel == 'instagram' else 'sms_ai'
+
     appointment = Appointment.objects.create(
         tenant=tenant,
         customer=customer,
@@ -70,7 +75,7 @@ def book_appointment_for_ai(
         start_time=start_time,
         end_time=end_time,
         status=Appointment.Status.BOOKED,
-        source='sms_ai',
+        source=source,
         booking_token=generate_booking_token(),
         quoted_price_cents=service.price_cents,
     )
@@ -87,7 +92,8 @@ def book_appointment_for_ai(
         user=None,
         metadata={
             'created_by': 'AI agent',
-            'source': 'sms_ai',
+            'source': source,
+            'channel': channel,
             'customer_id': customer.id,
             'service_id': service.id,
             'service_name': service.name,
@@ -100,7 +106,7 @@ def book_appointment_for_ai(
     )
 
     logger.info(
-        'ai_inbox.booked tenant=%s appointment_id=%s customer_id=%s service_id=%s',
-        tenant.slug, appointment.id, customer.id, service.id,
+        'ai_inbox.booked tenant=%s appointment_id=%s customer_id=%s service_id=%s channel=%s',
+        tenant.slug, appointment.id, customer.id, service.id, channel,
     )
     return appointment

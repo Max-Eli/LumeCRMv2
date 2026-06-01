@@ -60,6 +60,14 @@ def send_confirmation_sms_on_create(sender, instance: Appointment, created: bool
     if (instance.source or '').endswith('_import'):
         return
 
+    # Instagram AI bookings: the customer is a social guest reached
+    # over Instagram DM — they typically have no phone / no SMS
+    # opt-in, and Instagram is not a HIPAA-secure channel for a
+    # confirmation anyway. The Instagram agent confirms IN-CHANNEL
+    # (via DM) at booking time, so we must NOT fire an SMS here.
+    if (instance.source or '') == 'instagram_ai':
+        return
+
     # AI-driven bookings: send the formal confirmation with a 60-second
     # delay so the customer perceives the AI's instant "got it" ack
     # and the platform's official confirmation as two clean touches

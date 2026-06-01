@@ -1031,6 +1031,10 @@ def _serialise_message(msg: SocialMessage) -> dict:
         'media_urls': _resolve_media_urls(msg),
         'status': msg.status,
         'sent_by_id': msg.sent_by_id,
+        # AI-agent fields — drive the violet "AI" bubble in the social
+        # inbox so staff can tell an AI reply from a staff reply.
+        'generated_by_ai': msg.generated_by_ai,
+        'ai_conversation_id': msg.ai_conversation_id,
         'received_at': msg.received_at.isoformat() if msg.received_at else None,
         'created_at': msg.created_at.isoformat(),
     }
@@ -1126,35 +1130,12 @@ class SocialThreadReplyView(APIView):
                 status=status.HTTP_400_BAD_REQUEST,
             )
 
-        # 24-hour reply window (Meta enforces; we pre-check for a
-        # clearer error message).
-        if thread.last_inbound_at is None:
-            return Response(
-                {
-                    'detail': (
-                        'Cannot reply yet — this thread has no inbound '
-                        'message to anchor the 24h reply window.'
-                    ),
-                    'code': 'no_inbound_anchor',
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
-        window_age = timezone.now() - thread.last_inbound_at
-        from datetime import timedelta
-        if window_age > timedelta(hours=meta_oauth.META_REPLY_WINDOW_HOURS):
-            return Response(
-                {
-                    'detail': (
-                        f'Cannot reply — it has been more than '
-                        f'{meta_oauth.META_REPLY_WINDOW_HOURS} hours since '
-                        'the last message from this client. Instagram only '
-                        'allows replies within that window. Wait for them '
-                        'to message again first.'
-                    ),
-                    'code': 'reply_window_expired',
-                },
-                status=status.HTTP_400_BAD_REQUEST,
-            )
+        # NOTE: the 24-hour reply-window pre-check was removed per
+        # product decision (2026-06). Meta itself governs send
+        # eligibility (and tools like ManyChat send beyond 24h via
+        # human-agent / message-tag mechanisms); if Meta rejects a
+        # late send, send_instagram_dm surfaces that error to the
+        # operator. We no longer block the attempt client-side.
 
         # Create the SocialMessage row up-front in QUEUED state so we
         # have a stable ID for the audit log + frontend optimistic

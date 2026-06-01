@@ -43,7 +43,11 @@ from typing import TYPE_CHECKING
 
 from django.utils import timezone as djtz
 
-from apps.tenants.plans import F_AI_INBOX, tenant_has_feature
+from apps.tenants.plans import (
+    F_AI_INBOX,
+    F_SOCIAL_INTEGRATIONS,
+    tenant_has_feature,
+)
 
 if TYPE_CHECKING:
     from apps.customers.models import Customer
@@ -51,6 +55,7 @@ if TYPE_CHECKING:
     from apps.tenants.models import Tenant
 
     from apps.ai_inbox.models import AIConfig, AIConversation
+    from apps.integrations.models import SocialMessage, SocialThread
 
 
 logger = logging.getLogger(__name__)
@@ -137,8 +142,10 @@ def evaluate(
     if not customer.sms_opt_in:
         return GuardrailDecision(False, 'customer_sms_opt_out')
 
-    # Per-conversation gates.
-    conversation = _get_conversation(tenant, customer)
+    # Per-conversation gates. SMS path → the customer's SMS
+    # conversation specifically (a customer can also have a separate
+    # Instagram conversation now).
+    conversation = _get_conversation(tenant, customer, channel='sms')
     if conversation is not None:
         if conversation.status in ('paused', 'escalated', 'closed'):
             return GuardrailDecision(False, f'conversation_{conversation.status}')
@@ -171,9 +178,13 @@ def _get_config(tenant: 'Tenant') -> 'AIConfig | None':
     return AIConfig.objects.filter(tenant=tenant).first()
 
 
-def _get_conversation(tenant: 'Tenant', customer: 'Customer') -> 'AIConversation | None':
+def _get_conversation(
+    tenant: 'Tenant', customer: 'Customer', *, channel: str = 'sms',
+) -> 'AIConversation | None':
     from apps.ai_inbox.models import AIConversation
-    return AIConversation.objects.filter(tenant=tenant, customer=customer).first()
+    return AIConversation.objects.filter(
+        tenant=tenant, customer=customer, channel=channel,
+    ).first()
 
 
 def _under_daily_cap(tenant: 'Tenant', config: 'AIConfig') -> bool:
@@ -188,6 +199,80 @@ def _under_daily_cap(tenant: 'Tenant', config: 'AIConfig') -> bool:
 def _already_replied_to(inbound: 'Message') -> bool:
     from apps.messaging.models import Message
     return Message.objects.filter(
+        tenant=inbound.tenant,
+        parent_inbound_message_id=inbound.id,
+    ).exists()
+
+
+# ── Instagram guardrails ─────────────────────────────────────────
+
+
+def evaluate_instagram(
+    *,
+    tenant: 'Tenant',
+    customer: 'Customer | None',
+    thread: 'SocialThread',
+    inbound_message: 'SocialMessage',
+) -> GuardrailDecision:
+    """Instagram variant of evaluate(). No DB writes.
+
+    Differs from SMS:
+      - requires BOTH F_AI_INBOX and F_SOCIAL_INTEGRATIONS
+      - gated on AIConfig.instagram_enabled (separate from SMS enabled)
+      - sandbox match is on the thread's IG username, not a phone number
+      - no sms_opt_in check (IG consent is implied by the DM; Meta
+        policy governs)
+      - enforces Meta's 24h reply window (can't free-form reply past it)
+    """
+    if not tenant_has_feature(tenant, F_AI_INBOX):
+        return GuardrailDecision(False, 'feature_not_on_plan')
+    if not tenant_has_feature(tenant, F_SOCIAL_INTEGRATIONS):
+        return GuardrailDecision(False, 'social_not_on_plan')
+
+    config = _get_config(tenant)
+    if config is None:
+        return GuardrailDecision(False, 'no_ai_config')
+    if not config.instagram_enabled:
+        return GuardrailDecision(False, 'instagram_not_enabled')
+    if config.platform_disabled_at is not None:
+        return GuardrailDecision(False, 'platform_kill_switch_engaged')
+
+    if config.instagram_test_mode:
+        allowed = (config.instagram_test_username or '').strip().lstrip('@').lower()
+        sender = (getattr(thread, 'external_username', '') or '').strip().lstrip('@').lower()
+        if not allowed or sender != allowed:
+            return GuardrailDecision(False, 'instagram_test_username_mismatch')
+
+    if customer is None:
+        return GuardrailDecision(False, 'unknown_sender_no_customer_row')
+    if customer.status == 'blocked':
+        return GuardrailDecision(False, 'customer_blocked')
+
+    # Per-conversation gates (Instagram conversation specifically).
+    conversation = _get_conversation(tenant, customer, channel='instagram')
+    if conversation is not None:
+        if conversation.status in ('paused', 'escalated', 'closed'):
+            return GuardrailDecision(False, f'conversation_{conversation.status}')
+        if conversation.last_ai_at is not None:
+            gap = djtz.now() - conversation.last_ai_at
+            if gap < dt.timedelta(seconds=PER_CONVERSATION_REPLY_GAP_SECONDS):
+                return GuardrailDecision(
+                    False, 'rate_limited',
+                    metadata={'seconds_since_last_ai': gap.total_seconds()},
+                )
+
+    if not _under_daily_cap(tenant, config):
+        return GuardrailDecision(False, 'daily_cap_exceeded')
+
+    if _already_replied_to_social(inbound_message):
+        return GuardrailDecision(False, 'idempotency_already_replied')
+
+    return PROCEED
+
+
+def _already_replied_to_social(inbound: 'SocialMessage') -> bool:
+    from apps.integrations.models import SocialMessage
+    return SocialMessage.objects.filter(
         tenant=inbound.tenant,
         parent_inbound_message_id=inbound.id,
     ).exists()

@@ -626,3 +626,239 @@ class LLMClientFactoryTests(TestCase):
             from apps.ai_inbox.llm import get_llm_client
             with self.assertRaises(ValueError):
                 get_llm_client()
+
+
+# ── Instagram channel ─────────────────────────────────────────────
+
+
+def _make_ig_connection(tenant):
+    from apps.integrations.models import Connection
+    return Connection.objects.create(
+        tenant=tenant, provider='instagram', status='connected',
+        external_id='ig-page-123', external_name='@demo_spa',
+    )
+
+
+def _make_ig_thread(tenant, connection, customer, username='lead_handle'):
+    from apps.integrations.models import SocialThread
+    return SocialThread.objects.create(
+        tenant=tenant, connection=connection, customer=customer,
+        provider='instagram', external_thread_id='psid-abc-123',
+        external_username=username,
+        last_inbound_at=djtz.now(),
+        last_message_at=djtz.now(),
+    )
+
+
+def _make_ig_inbound(tenant, thread, body='hi', mid='mid-1'):
+    from apps.integrations.models import SocialMessage
+    return SocialMessage.objects.create(
+        tenant=tenant, thread=thread,
+        direction=SocialMessage.Direction.INBOUND,
+        body=body, external_message_id=mid,
+        status=SocialMessage.Status.RECEIVED,
+        received_at=djtz.now(),
+    )
+
+
+class InstagramGuardrailsTests(TestCase):
+    def setUp(self):
+        # Grandfathered tenant → has F_AI_INBOX + F_SOCIAL_INTEGRATIONS.
+        self.tenant, _ = _make_tenant(slug='ig-guard')
+        self.customer = _make_customer(self.tenant, phone='')
+        self.customer.is_social_guest = True
+        self.customer.save(update_fields=['is_social_guest'])
+        self.conn = _make_ig_connection(self.tenant)
+        self.thread = _make_ig_thread(self.tenant, self.conn, self.customer, username='lead_handle')
+        self.msg = _make_ig_inbound(self.tenant, self.thread)
+
+    def _eval(self):
+        from apps.ai_inbox.services import guardrails
+        return guardrails.evaluate_instagram(
+            tenant=self.tenant, customer=self.customer,
+            thread=self.thread, inbound_message=self.msg,
+        )
+
+    def test_no_config_blocks(self):
+        self.assertEqual(self._eval().reason, 'no_ai_config')
+
+    def test_instagram_not_enabled_blocks(self):
+        _make_config(self.tenant, instagram_enabled=False)
+        self.assertEqual(self._eval().reason, 'instagram_not_enabled')
+
+    def test_platform_kill_blocks(self):
+        _make_config(self.tenant, instagram_enabled=True,
+                     instagram_test_username='lead_handle',
+                     platform_disabled_at=djtz.now())
+        self.assertEqual(self._eval().reason, 'platform_kill_switch_engaged')
+
+    def test_test_username_mismatch_blocks(self):
+        _make_config(self.tenant, instagram_enabled=True,
+                     instagram_test_mode=True,
+                     instagram_test_username='someone_else')
+        self.assertEqual(self._eval().reason, 'instagram_test_username_mismatch')
+
+    def test_test_username_match_proceeds(self):
+        _make_config(self.tenant, instagram_enabled=True,
+                     instagram_test_mode=True,
+                     instagram_test_username='lead_handle')
+        self.assertTrue(self._eval().proceed)
+
+    def test_at_prefix_and_case_insensitive_match(self):
+        _make_config(self.tenant, instagram_enabled=True,
+                     instagram_test_mode=True,
+                     instagram_test_username='@Lead_Handle')
+        self.assertTrue(self._eval().proceed)
+
+    def test_blocked_customer_blocks(self):
+        _make_config(self.tenant, instagram_enabled=True, instagram_test_mode=False)
+        self.customer.status = Customer.Status.BLOCKED
+        self.customer.save(update_fields=['status'])
+        self.assertEqual(self._eval().reason, 'customer_blocked')
+
+    def test_paused_conversation_blocks(self):
+        _make_config(self.tenant, instagram_enabled=True, instagram_test_mode=False)
+        AIConversation.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            channel=AIConversation.Channel.INSTAGRAM,
+            status=AIConversation.Status.PAUSED,
+        )
+        self.assertEqual(self._eval().reason, 'conversation_paused')
+
+    def test_idempotency_blocks_duplicate(self):
+        from apps.integrations.models import SocialMessage
+        _make_config(self.tenant, instagram_enabled=True, instagram_test_mode=False)
+        SocialMessage.objects.create(
+            tenant=self.tenant, thread=self.thread,
+            direction=SocialMessage.Direction.OUTBOUND,
+            body='already replied', external_message_id='mid-out-1',
+            status=SocialMessage.Status.SENT,
+            parent_inbound_message_id=self.msg.id,
+        )
+        self.assertEqual(self._eval().reason, 'idempotency_already_replied')
+
+    def test_no_24h_window_block(self):
+        # 24h window removed — an old last_inbound_at must NOT block.
+        import datetime as _dt
+        self.thread.last_inbound_at = djtz.now() - _dt.timedelta(days=10)
+        self.thread.save(update_fields=['last_inbound_at'])
+        _make_config(self.tenant, instagram_enabled=True, instagram_test_mode=False)
+        self.assertTrue(self._eval().proceed)
+
+    def test_sms_enabled_does_not_enable_instagram(self):
+        # SMS enabled but instagram_enabled False → IG still blocked.
+        _make_config(self.tenant, enabled=True, instagram_enabled=False)
+        self.assertEqual(self._eval().reason, 'instagram_not_enabled')
+
+
+class InstagramToolSetTests(TestCase):
+    def test_excludes_get_customer_context(self):
+        from apps.ai_inbox.agents import tools
+        names = {s['name'] for s in tools.TOOL_SCHEMAS_INSTAGRAM}
+        self.assertNotIn('get_customer_context', names)
+
+    def test_includes_capture_lead_info_and_booking_tools(self):
+        from apps.ai_inbox.agents import tools
+        names = {s['name'] for s in tools.TOOL_SCHEMAS_INSTAGRAM}
+        self.assertIn('capture_lead_info', names)
+        self.assertIn('find_service', names)
+        self.assertIn('check_availability', names)
+        self.assertIn('confirm_booking', names)
+        self.assertIn('escalate_to_human', names)
+
+    def test_sms_set_still_has_context(self):
+        from apps.ai_inbox.agents import tools
+        names = {s['name'] for s in tools.TOOL_SCHEMAS}
+        self.assertIn('get_customer_context', names)
+        self.assertNotIn('capture_lead_info', names)
+
+
+class CaptureLeadInfoTests(TestCase):
+    def setUp(self):
+        self.tenant, _ = _make_tenant(slug='ig-lead')
+        self.customer = _make_customer(self.tenant, phone='')
+        self.customer.is_social_guest = True
+        self.customer.acquisition_source = Customer.AcquisitionSource.INSTAGRAM
+        self.customer.save(update_fields=['is_social_guest', 'acquisition_source'])
+        self.conv = AIConversation.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            channel=AIConversation.Channel.INSTAGRAM,
+        )
+
+    def _capture(self, **inp):
+        from apps.ai_inbox.agents import tools
+        return tools._tool_capture_lead_info(
+            tool_input=inp, tenant=self.tenant,
+            customer=self.customer, conversation=self.conv,
+        )
+
+    def test_captures_name_phone_email_and_promotes(self):
+        result = self._capture(first_name='Mia', last_name='Lee',
+                               phone='+13474443333', email='mia@x.com')
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.first_name, 'Mia')
+        self.assertEqual(self.customer.phone, '+13474443333')
+        self.assertEqual(self.customer.email, 'mia@x.com')
+        self.assertFalse(self.customer.is_social_guest)
+        # acquisition_source stays INSTAGRAM (immutable, set by webhook)
+        self.assertEqual(self.customer.acquisition_source,
+                         Customer.AcquisitionSource.INSTAGRAM)
+        self.assertIn('phone', result['captured'])
+
+    def test_does_not_overwrite_existing_phone(self):
+        self.customer.phone = '+15550001111'
+        self.customer.save(update_fields=['phone'])
+        self._capture(first_name='Mia', phone='+19999999999')
+        self.customer.refresh_from_db()
+        self.assertEqual(self.customer.phone, '+15550001111')
+
+
+class InstagramBookingChannelTests(TestCase):
+    def test_book_appointment_for_ai_instagram_source(self):
+        from apps.booking.services_ai import book_appointment_for_ai
+        from apps.appointments.models import Appointment
+        import datetime as _dt
+        from apps.tenants.models import Location, TenantMembership
+        from apps.services.models import Service
+
+        tenant, owner = _make_tenant(slug='ig-book')
+        customer = _make_customer(tenant, phone='')
+        location = Location.objects.filter(tenant=tenant).first()
+        provider = TenantMembership.objects.filter(tenant=tenant).first()
+        service = Service.objects.create(
+            tenant=tenant, name='Facial', duration_minutes=60,
+            price_cents=10000, is_bookable_online=True,
+        )
+        start = djtz.now() + _dt.timedelta(days=1)
+        appt = book_appointment_for_ai(
+            tenant=tenant, customer=customer, service=service,
+            provider=provider, location=location,
+            start_time=start, end_time=start + _dt.timedelta(minutes=60),
+            channel='instagram',
+        )
+        self.assertEqual(appt.source, 'instagram_ai')
+
+    def test_instagram_booking_skips_sms_confirmation(self):
+        # The appointment signal must NOT send an SMS for instagram_ai.
+        from apps.appointments.models import Appointment
+        import datetime as _dt
+        from apps.tenants.models import Location, TenantMembership
+        from apps.services.models import Service
+
+        tenant, _ = _make_tenant(slug='ig-nosms')
+        customer = _make_customer(tenant, phone='+15551234567')
+        location = Location.objects.filter(tenant=tenant).first()
+        provider = TenantMembership.objects.filter(tenant=tenant).first()
+        service = Service.objects.create(
+            tenant=tenant, name='Laser', duration_minutes=30,
+            price_cents=20000, is_bookable_online=True,
+        )
+        start = djtz.now() + _dt.timedelta(days=2)
+        with patch('apps.appointments.sms.send_confirmation_sms') as mock_send:
+            Appointment.objects.create(
+                tenant=tenant, customer=customer, provider=provider,
+                service=service, location=location,
+                start_time=start, end_time=start + _dt.timedelta(minutes=30),
+                status=Appointment.Status.BOOKED, source='instagram_ai',
+            )
+        mock_send.assert_not_called()

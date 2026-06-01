@@ -66,24 +66,44 @@ class AIConversationViewSet(ViewSet):
     permission_classes = [IsTenantStaff, _AI_GATE]
     lookup_value_regex = r'\d+'
 
+    def _channel(self, request) -> str:
+        """Which channel's conversation this request targets. Defaults
+        to SMS for back-compat with the original (channel-less) inbox
+        calls. The /social inbox passes ?channel=instagram."""
+        raw = (request.query_params.get('channel') or 'sms').strip().lower()
+        return raw if raw in {c.value for c in AIConversation.Channel} else 'sms'
+
     def _get_conversation(self, request, customer_id: int) -> AIConversation:
-        """Resolve the AIConversation for (current tenant, customer).
+        """Resolve the AIConversation for (current tenant, customer, channel).
 
         Auto-creates the conversation row if it doesn't exist yet —
         the operator clicked a thread for a customer the AI hasn't
         engaged with, but it could be enabled mid-flight. Returns
-        the row in ACTIVE state.
+        the row in ACTIVE state. For Instagram, links the customer's
+        social thread when one exists.
         """
         tenant = request.tenant
+        channel = self._channel(request)
         # Customer must belong to this tenant (defense in depth — the
         # IsTenantStaff permission scopes the user to the tenant but
         # explicit Customer lookup prevents URL-fuzzing across tenants).
         customer = get_object_or_404(
             Customer, tenant=tenant, id=customer_id,
         )
+        defaults = {'status': AIConversation.Status.ACTIVE}
+        if channel == AIConversation.Channel.INSTAGRAM:
+            from apps.integrations.models import SocialThread
+            thread = (
+                SocialThread.objects
+                .filter(tenant=tenant, customer=customer, provider='instagram')
+                .order_by('-last_message_at')
+                .first()
+            )
+            if thread is not None:
+                defaults['social_thread'] = thread
         conversation, _ = AIConversation.objects.get_or_create(
-            tenant=tenant, customer=customer,
-            defaults={'status': AIConversation.Status.ACTIVE},
+            tenant=tenant, customer=customer, channel=channel,
+            defaults=defaults,
         )
         return conversation
 

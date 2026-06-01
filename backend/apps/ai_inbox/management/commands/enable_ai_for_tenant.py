@@ -50,11 +50,22 @@ class Command(BaseCommand):
             '--no-test-mode', action='store_true',
             help='Flip test_mode=False. Only allowed with --enable + an explicit confirmation prompt.',
         )
-        parser.add_argument('--test-mode-number', help='E.164 phone allowed in sandbox.')
+        parser.add_argument('--test-mode-number', help='E.164 phone allowed in sandbox (SMS).')
         parser.add_argument('--persona', help='Free-text persona for the system prompt.')
         parser.add_argument('--daily-send-cap', type=int)
         parser.add_argument('--monthly-exchange-cap', type=int)
         parser.add_argument('--booking-lead-minutes', type=int)
+        # ── Instagram channel ──
+        parser.add_argument(
+            '--enable-instagram', action='store_true',
+            help='Flip instagram_enabled=True. Requires --instagram-test-username unless --instagram-no-test-mode.',
+        )
+        parser.add_argument(
+            '--instagram-no-test-mode', action='store_true',
+            help='Flip instagram_test_mode=False (answer ALL inbound IG DMs, not just the test handle).',
+        )
+        parser.add_argument('--instagram-test-username', help='IG @handle (no @) allowed in IG sandbox.')
+        parser.add_argument('--business-phone', help='Phone the IG agent tells people to call for account questions.')
 
     def handle(self, *args, **options):
         slug = options['tenant']
@@ -100,10 +111,6 @@ class Command(BaseCommand):
             config.test_mode = False
             fields_changed.append('test_mode')
         if enabling:
-            if not config.test_mode and not no_test_mode:
-                # test_mode was already off and we're not explicitly
-                # leaving it off — that's fine, just record it.
-                pass
             if config.test_mode and not config.test_mode_number:
                 raise CommandError(
                     'Cannot enable in test mode without test_mode_number. '
@@ -111,6 +118,27 @@ class Command(BaseCommand):
                 )
             config.enabled = True
             fields_changed.append('enabled')
+
+        # ── Instagram channel ──
+        ig_username = options.get('instagram_test_username')
+        if ig_username:
+            config.instagram_test_username = ig_username.strip().lstrip('@')
+            fields_changed.append('instagram_test_username')
+        if options.get('business_phone'):
+            config.business_phone = options['business_phone']
+            fields_changed.append('business_phone')
+        if options.get('instagram_no_test_mode') and options.get('enable_instagram'):
+            config.instagram_test_mode = False
+            fields_changed.append('instagram_test_mode')
+        if options.get('enable_instagram'):
+            if config.instagram_test_mode and not config.instagram_test_username:
+                raise CommandError(
+                    'Cannot enable Instagram in test mode without '
+                    '--instagram-test-username <handle>.',
+                )
+            config.instagram_enabled = True
+            fields_changed.append('instagram_enabled')
+
         if fields_changed:
             fields_changed.append('updated_at')
             config.save(update_fields=fields_changed)
@@ -123,12 +151,27 @@ class Command(BaseCommand):
         for k in (
             'enabled', 'test_mode', 'test_mode_number', 'persona',
             'daily_send_cap', 'monthly_exchange_cap', 'booking_lead_minutes',
-            'platform_disabled_at',
+            'instagram_enabled', 'instagram_test_mode', 'instagram_test_username',
+            'business_phone', 'platform_disabled_at',
         ):
             val = getattr(config, k)
             if k == 'persona' and val:
                 val = (val[:60] + '…') if len(val) > 60 else val
-            self.stdout.write(f'  {k:24s} {val}')
+            self.stdout.write(f'  {k:26s} {val}')
+
+        if config.instagram_enabled and config.instagram_test_mode:
+            self.stdout.write('')
+            self.stdout.write(self.style.WARNING(
+                'Instagram AI is ENABLED in test mode. Only DMs from '
+                f'@{config.instagram_test_username} will be answered; all '
+                'other inbound DMs are audit-logged + dropped.'
+            ))
+        elif config.instagram_enabled and not config.instagram_test_mode:
+            self.stdout.write('')
+            self.stdout.write(self.style.WARNING(
+                'Instagram AI is ENABLED in LIVE mode — every inbound DM to '
+                'the connected Instagram account will be answered by the AI.'
+            ))
 
         if config.enabled and config.test_mode:
             self.stdout.write('')

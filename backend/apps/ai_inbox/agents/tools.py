@@ -218,6 +218,45 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
 ]
 
 
+# Instagram-only tool: capture a new lead's contact info. Write-only
+# (no PHI read), so it's HIPAA-safe over a non-BAA channel. The Meta
+# webhook auto-creates a social-guest Customer with only the IG
+# display name; this fleshes it out (name + phone + email) and
+# promotes it to a real Instagram-sourced lead.
+_CAPTURE_LEAD_SCHEMA: dict[str, Any] = {
+    'name': 'capture_lead_info',
+    'description': (
+        'Record a NEW customer\'s contact details when they tell you '
+        "they're not an existing client. Collects name, phone, and "
+        'email and creates them as a customer marked as Instagram-'
+        'sourced. Use this once the person has shared their info '
+        '(ideally before or right as you book). Write-only — it does '
+        'NOT and cannot read any existing account data. Always try to '
+        'get at least a first name + a phone number so the spa can '
+        'reach them.'
+    ),
+    'input_schema': {
+        'type': 'object',
+        'properties': {
+            'first_name': {'type': 'string', 'maxLength': 60},
+            'last_name': {'type': 'string', 'maxLength': 60},
+            'phone': {'type': 'string', 'maxLength': 32},
+            'email': {'type': 'string', 'maxLength': 200},
+        },
+        'required': ['first_name'],
+    },
+}
+
+# Instagram tool set = the full set MINUS get_customer_context (the
+# PHI read tool — Meta is NOT BAA-covered, so the agent must have no
+# mechanism to read PHI; the safety is structural, not just
+# prompt-level, see ADR 0033) PLUS the capture_lead_info write tool.
+TOOL_SCHEMAS_INSTAGRAM: list[dict[str, Any]] = [
+    schema for schema in TOOL_SCHEMAS
+    if schema['name'] != 'get_customer_context'
+] + [_CAPTURE_LEAD_SCHEMA]
+
+
 # ── Dispatcher ───────────────────────────────────────────────────
 
 
@@ -809,6 +848,7 @@ def run_confirm_booking(
             tenant=tenant, customer=customer, service=service,
             provider=provider, location=location,
             start_time=start, end_time=end,
+            channel=getattr(conversation, 'channel', 'sms'),
         )
     except Exception as exc:  # noqa: BLE001
         return {'error': f'booking_failed:{type(exc).__name__}', 'detail': str(exc)[:200]}
@@ -840,6 +880,58 @@ def _tool_update_customer_profile(
         setattr(customer, k, v[:200].strip())
     customer.save(update_fields=list(updates.keys()) + ['updated_at'])
     return {'updated': list(updates.keys())}
+
+
+def _tool_capture_lead_info(
+    *,
+    tool_input: dict, tenant: 'Tenant', customer: 'Customer',
+    conversation: AIConversation,
+) -> dict:
+    """Instagram-only: record a new lead's contact info + promote the
+    social guest to a confirmed Instagram-sourced customer.
+
+    Write-only — never reads existing account data. acquisition_source
+    is immutable after create and was already set to INSTAGRAM by the
+    Meta webhook when the social guest was auto-created, so we leave it
+    alone. We flip is_social_guest → False (the person has now given
+    real contact info, so they belong in the main customer list).
+    """
+    from apps.customers.models import Customer as CustomerModel
+
+    fields = []
+    fn = (tool_input.get('first_name') or '').strip()
+    ln = (tool_input.get('last_name') or '').strip()
+    phone = (tool_input.get('phone') or '').strip()
+    email = (tool_input.get('email') or '').strip()
+
+    if fn:
+        customer.first_name = fn[:100]
+        fields.append('first_name')
+    if ln:
+        customer.last_name = ln[:100]
+        fields.append('last_name')
+    if phone and not (customer.phone or '').strip():
+        # Only fill phone if we don't already have one — never
+        # overwrite a real number with something typed in a DM.
+        customer.phone = phone[:20]
+        fields.append('phone')
+    if email and not (customer.email or '').strip():
+        customer.email = email[:200]
+        fields.append('email')
+
+    # Promote the social guest now that they've shared real info.
+    if getattr(customer, 'is_social_guest', False):
+        customer.is_social_guest = False
+        fields.append('is_social_guest')
+
+    if not fields:
+        return {'captured': []}
+
+    customer.save(update_fields=fields + ['updated_at'])
+    return {
+        'captured': fields,
+        'acquisition_source': getattr(customer, 'acquisition_source', None),
+    }
 
 
 def _tool_escalate_to_human(
@@ -876,6 +968,7 @@ TOOL_FUNCS: dict[str, Callable[..., dict]] = {
     'propose_slots': _tool_propose_slots,
     'confirm_booking': _tool_confirm_booking,
     'update_customer_profile': _tool_update_customer_profile,
+    'capture_lead_info': _tool_capture_lead_info,
     'escalate_to_human': _tool_escalate_to_human,
 }
 

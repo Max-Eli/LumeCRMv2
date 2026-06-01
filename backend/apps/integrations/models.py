@@ -389,6 +389,38 @@ class SocialMessage(TenantedModel):
         help_text='Provider-reported read receipt (NOT operator-marked read).',
     )
 
+    # ── AI-inbox fields (Instagram agent). All optional / default-
+    # falsy so rows the AI never touched keep their original shape. ──
+    generated_by_ai = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text=(
+            'True for outbound rows the Instagram AI agent wrote. '
+            'Drives the AI bubble + pill in the /social inbox. Never '
+            'True on inbound rows.'
+        ),
+    )
+    ai_conversation = models.ForeignKey(
+        'ai_inbox.AIConversation',
+        null=True, blank=True,
+        on_delete=models.SET_NULL,
+        related_name='social_messages',
+        help_text=(
+            'Links the message to its AI-agent conversation row. Set '
+            'on inbound (when dispatched to the AI) and outbound (when '
+            'the AI wrote it). SET_NULL so closing an AIConversation '
+            'never breaks the social audit trail.'
+        ),
+    )
+    parent_inbound_message_id = models.PositiveBigIntegerField(
+        null=True, blank=True, db_index=True,
+        help_text=(
+            'For outbound AI replies: the id of the inbound '
+            'SocialMessage that triggered this turn. Drives per-inbound '
+            'idempotency so a retried Meta webhook cannot double-reply.'
+        ),
+    )
+
     created_at = models.DateTimeField(auto_now_add=True, db_index=True)
     updated_at = models.DateTimeField(auto_now=True)
 

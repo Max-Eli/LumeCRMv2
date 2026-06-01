@@ -27,11 +27,12 @@ from typing import TYPE_CHECKING
 from apps.audit.models import AuditLog
 from apps.audit.services import record
 
-from .guardrails import PROCEED, evaluate
+from .guardrails import evaluate, evaluate_instagram
 
 if TYPE_CHECKING:
     from rest_framework.request import Request
 
+    from apps.integrations.models import Connection, SocialMessage, SocialThread
     from apps.messaging.models import Message
 
 
@@ -125,3 +126,90 @@ def _audit_skip(
             **(metadata or {}),
         },
     )
+
+
+# ── Instagram dispatch ───────────────────────────────────────────
+
+
+def maybe_dispatch_to_ai_instagram(
+    *,
+    message: 'SocialMessage',
+    thread: 'SocialThread',
+    connection: 'Connection',
+) -> None:
+    """Run guardrails on an inbound Instagram DM; hand off to the agent
+    if all pass. Called from the Meta webhook ingestion.
+
+    NEVER raises — the webhook must return 200 to Meta regardless, and
+    a slow/failed agent run must not fail message ingestion. Idempotent
+    per inbound SocialMessage (parent_inbound_message_id), so a retried
+    Meta delivery can't double-reply or double-book.
+    """
+    try:
+        _dispatch_instagram_inner(message=message, thread=thread, connection=connection)
+    except Exception:  # noqa: BLE001 — defensive at the webhook boundary
+        logger.exception(
+            'ai_inbox.instagram_dispatch_failed tenant=%s social_message_id=%s',
+            getattr(message.tenant, 'slug', '?'),
+            getattr(message, 'id', '?'),
+        )
+
+
+def _dispatch_instagram_inner(
+    *,
+    message: 'SocialMessage',
+    thread: 'SocialThread',
+    connection: 'Connection',
+) -> None:
+    from apps.integrations.models import SocialMessage
+
+    # Only inbound DMs dispatch. Outbound rows are our own replies.
+    if message.direction != SocialMessage.Direction.INBOUND:
+        return
+    # Empty-body events (a like, a story reply with no text, an
+    # attachment-only message) have nothing for the agent to act on.
+    if not (message.body or '').strip():
+        return
+
+    tenant = message.tenant
+    customer = thread.customer
+
+    decision = evaluate_instagram(
+        tenant=tenant, customer=customer, thread=thread, inbound_message=message,
+    )
+
+    if not decision.proceed:
+        record(
+            action=AuditLog.Action.READ,
+            resource_type='ai_dispatch',
+            resource_id=message.id,
+            tenant=tenant,
+            metadata={
+                'event': 'ai_dispatch_skipped',
+                'channel': 'instagram',
+                'reason': decision.reason,
+                'social_message_id': message.id,
+                'thread_id': thread.id,
+                'customer_id': thread.customer_id,
+                **(decision.metadata or {}),
+            },
+        )
+        return
+
+    record(
+        action=AuditLog.Action.READ,
+        resource_type='ai_dispatch',
+        resource_id=message.id,
+        tenant=tenant,
+        metadata={
+            'event': 'ai_dispatch_run',
+            'channel': 'instagram',
+            'social_message_id': message.id,
+            'thread_id': thread.id,
+            'customer_id': thread.customer_id,
+        },
+    )
+
+    from apps.ai_inbox.agents.runner import run_agent
+    from apps.ai_inbox.channels.instagram import InstagramAdapter
+    run_agent(adapter=InstagramAdapter(message, thread, connection))

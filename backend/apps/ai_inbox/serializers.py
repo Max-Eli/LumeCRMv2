@@ -34,6 +34,8 @@ class AIConversationStatusSerializer(serializers.ModelSerializer):
         fields = [
             'id',
             'customer_id',
+            'channel',
+            'social_thread_id',
             'status',
             'paused_at',
             'paused_by_email',
@@ -77,6 +79,10 @@ class AIConfigSerializer(serializers.ModelSerializer):
             'escalation_keywords',
             'platform_disabled_at',
             'platform_disabled_reason',
+            'instagram_enabled',
+            'instagram_test_mode',
+            'instagram_test_username',
+            'business_phone',
             'created_at',
             'updated_at',
         ]
@@ -126,6 +132,30 @@ class AIConfigSerializer(serializers.ModelSerializer):
                 'daily_send_cap': 'Must be at least 1.',
             })
 
+        # Instagram enable gates: needs a connected IG channel and,
+        # in sandbox, a test username.
+        if merged.get('instagram_enabled'):
+            from apps.integrations.models import Connection
+            has_ig = Connection.objects.filter(
+                tenant=tenant, provider='instagram', status='connected',
+            ).exists() if tenant else False
+            if not has_ig:
+                raise serializers.ValidationError({
+                    'instagram_enabled': (
+                        'Connect an Instagram account first '
+                        '(Organization → Integrations) before enabling '
+                        'the Instagram agent.'
+                    ),
+                })
+            if merged.get('instagram_test_mode'):
+                if not (merged.get('instagram_test_username') or '').strip():
+                    raise serializers.ValidationError({
+                        'instagram_test_username': (
+                            'Required when enabling the Instagram agent in '
+                            'test mode — only this @handle will be answered.'
+                        ),
+                    })
+
         return attrs
 
     def _instance_dict(self) -> dict:
@@ -151,6 +181,15 @@ class EscalationAlertSerializer(serializers.ModelSerializer):
     acknowledged_by_email = serializers.CharField(
         source='acknowledged_by.email', read_only=True, default=None,
     )
+    # Channel + social thread drive the notifier's deep-link: SMS
+    # escalations open /inbox?customer=, Instagram escalations open
+    # /social?thread=.
+    channel = serializers.CharField(
+        source='conversation.channel', read_only=True, default='sms',
+    )
+    social_thread_id = serializers.IntegerField(
+        source='conversation.social_thread_id', read_only=True, default=None,
+    )
 
     class Meta:
         model = EscalationAlert
@@ -160,6 +199,8 @@ class EscalationAlertSerializer(serializers.ModelSerializer):
             'customer_first_name',
             'customer_last_name',
             'customer_phone',
+            'channel',
+            'social_thread_id',
             'reason',
             'reason_detail',
             'acknowledged_at',
