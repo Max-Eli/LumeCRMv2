@@ -52,6 +52,19 @@ _MAX_SLOTS_RETURNED = 8
 _MAX_SLOTS_RETURNED_WITH_WINDOW = 12
 
 
+def _localize(when, tz_name: str):
+    """Convert a tz-aware (UTC) datetime to the given IANA timezone.
+    The agent reports appointment times to customers, so they MUST be in
+    the spa's local zone — formatting the raw UTC value tells a customer
+    their 3pm booking is at 7pm."""
+    import zoneinfo
+    try:
+        tz = zoneinfo.ZoneInfo(tz_name or 'America/New_York')
+    except Exception:  # noqa: BLE001 — bad/blank tz string
+        tz = zoneinfo.ZoneInfo('America/New_York')
+    return when.astimezone(tz)
+
+
 def _provider_display_name(membership) -> str:
     """Short, customer-facing name for a provider so the agent can say
     "2pm with Sarah" instead of an opaque id. First name when we have
@@ -454,43 +467,47 @@ def _tool_get_customer_context(
         rows = (
             Appointment.objects
             .filter(tenant=tenant, customer=customer, start_time__lt=djtz.now())
-            .select_related('service', 'provider__user')
+            .select_related('service', 'provider__user', 'location')
             .order_by('-start_time')[:12]
         )
-        out['recent_appointments'] = [
-            {
-                'date': r.start_time.date().isoformat(),
+        out['recent_appointments'] = []
+        for r in rows:
+            local = _localize(r.start_time, r.location.timezone if r.location_id else '')
+            out['recent_appointments'].append({
+                'date': local.date().isoformat(),
                 'service': r.service.name if r.service else None,
                 'provider_first_name': (
                     r.provider.user.first_name if r.provider and r.provider.user else None
                 ),
                 'status': r.status,
-            }
-            for r in rows
-        ]
+            })
 
     if 'upcoming_appointments' in requested:
         rows = (
             Appointment.objects
             .filter(tenant=tenant, customer=customer, start_time__gte=djtz.now())
-            .select_related('service', 'provider__user')
+            .select_related('service', 'provider__user', 'location')
             .order_by('start_time')[:12]
         )
-        out['upcoming_appointments'] = [
-            {
+        out['upcoming_appointments'] = []
+        for r in rows:
+            # Times MUST be in the spa's local zone — the start_time is
+            # stored UTC, and a raw strftime told a customer their 3pm
+            # booking was at 7pm.
+            local = _localize(r.start_time, r.location.timezone if r.location_id else '')
+            out['upcoming_appointments'].append({
                 # `id` is required to reschedule a specific appointment —
                 # the agent passes it to reschedule_appointment.
                 'id': r.id,
-                'date': r.start_time.date().isoformat(),
-                'time_local': r.start_time.strftime('%H:%M'),
+                'date': local.date().isoformat(),
+                # 12h, e.g. "3:00pm" — matches how slots are presented.
+                'time_local': local.strftime('%-I:%M%p').lower(),
                 'service': r.service.name if r.service else None,
                 'provider_first_name': (
                     r.provider.user.first_name if r.provider and r.provider.user else None
                 ),
                 'status': r.status,
-            }
-            for r in rows
-        ]
+            })
 
     if 'active_packages' in requested:
         # Filter to packages the customer can ACTUALLY redeem against:
