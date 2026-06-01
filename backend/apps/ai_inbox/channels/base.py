@@ -93,6 +93,21 @@ class ChannelAdapter(ABC):
         Instagram has no deferred channel, so its ack IS the
         confirmation and includes the date/time."""
 
+    def post_reschedule_ack(self, result: dict) -> str:
+        """Message sent after a successful digit-fast-path RESCHEDULE.
+        Unlike a new booking, a reschedule fires NO deferred confirmation
+        signal — so this message IS the confirmation and must carry the
+        new date/time. Concrete (not abstract): every channel gets a sane
+        default; override only for channel-specific phrasing."""
+        service = result.get('service')
+        label = result.get('human_label')
+        if service and label:
+            return (
+                f"All set — your {service} is moved to {label}. See you then! "
+                f"Reply here if you need anything else."
+            )
+        return "All set — your appointment has been rescheduled. See you then!"
+
     @abstractmethod
     def handoff_message(self) -> str:
         """The 'a teammate will follow up' message sent on escalation."""

@@ -52,6 +52,23 @@ _MAX_SLOTS_RETURNED = 8
 _MAX_SLOTS_RETURNED_WITH_WINDOW = 12
 
 
+def _provider_display_name(membership) -> str:
+    """Short, customer-facing name for a provider so the agent can say
+    "2pm with Sarah" instead of an opaque id. First name when we have
+    it, then "First L.", then the email local-part as a last resort."""
+    user = getattr(membership, 'user', None)
+    if user is None:
+        return 'a provider'
+    first = (getattr(user, 'first_name', '') or '').strip()
+    last = (getattr(user, 'last_name', '') or '').strip()
+    if first and last:
+        return f'{first} {last[0]}.'
+    if first:
+        return first
+    email = getattr(user, 'email', '') or ''
+    return email.split('@')[0] or 'a provider'
+
+
 # ── Tool schemas (Anthropic / Bedrock Messages-API format) ───────
 
 
@@ -152,6 +169,43 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                     'description': '24h HH:MM upper bound on the slot start time (exclusive). E.g. "15:00" for 3pm.',
                 },
                 'location_id': {'type': 'integer'},
+                'appointment_id': {
+                    'type': 'integer',
+                    'description': (
+                        'ONLY when rescheduling: the id of the existing '
+                        'appointment being moved (from upcoming_appointments). '
+                        'Pass it so the slots are staged as a RESCHEDULE — the '
+                        "customer's digit reply then moves that appointment "
+                        'instead of booking a new one. Defaults the provider '
+                        'to the appointment\'s current technician unless you '
+                        'also pass provider_id.'
+                    ),
+                },
+            },
+            'required': ['service_id'],
+        },
+    },
+    {
+        'name': 'list_providers',
+        'description': (
+            'List the technicians/providers who can perform a service, so '
+            'you can offer the customer a choice or honor a request for a '
+            'specific person. ALWAYS call this (after find_service) when the '
+            'customer names a technician ("can I see Sarah?") OR proactively '
+            'offer a choice when there is more than one option. To book with '
+            'a chosen technician, pass that person\'s id as provider_id to '
+            'check_availability.\n\n'
+            'Returns: {providers: [{id, name}, ...]} — already filtered to '
+            'those eligible for THIS service. If only one provider comes '
+            "back, there's no real choice — just proceed. If zero, the "
+            'service has no bookable provider; offer to have someone follow '
+            'up (escalate).'
+        ),
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'service_id': {'type': 'integer'},
+                'location_id': {'type': 'integer'},
             },
             'required': ['service_id'],
         },
@@ -170,6 +224,37 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
                 'slot_index': {'type': 'integer', 'minimum': 1, 'maximum': 9},
             },
             'required': ['slot_index'],
+        },
+    },
+    {
+        'name': 'reschedule_appointment',
+        'description': (
+            'Move an EXISTING upcoming appointment to a new time (and, if '
+            'the customer asks for a different technician, a new provider). '
+            'Do NOT book a second appointment for a reschedule — that '
+            'double-books the customer.\n\n'
+            'Flow:\n'
+            '1. Call get_customer_context(fields=["upcoming_appointments"]) '
+            'to get the appointment and its id. If there are several, ask '
+            'which one.\n'
+            '2. Call check_availability for the SAME service and pass '
+            'appointment_id=<that id> (this stages the slots as a '
+            "RESCHEDULE so the customer's digit reply moves the existing "
+            'appointment, not a new booking). Add provider_id if they '
+            'want a different tech, plus any time window.\n'
+            '3. The digit reply usually completes the move automatically. '
+            "Only call reschedule_appointment yourself if the customer's "
+            'choice is fuzzy ("the first one"). After a reschedule '
+            'succeeds, confirm the NEW date/time back to the customer — '
+            'unlike a new booking, no separate confirmation text is sent.'
+        ),
+        'input_schema': {
+            'type': 'object',
+            'properties': {
+                'appointment_id': {'type': 'integer'},
+                'slot_index': {'type': 'integer', 'minimum': 1, 'maximum': 9},
+            },
+            'required': ['appointment_id', 'slot_index'],
         },
     },
     {
@@ -250,10 +335,13 @@ _CAPTURE_LEAD_SCHEMA: dict[str, Any] = {
 # Instagram tool set = the full set MINUS get_customer_context (the
 # PHI read tool — Meta is NOT BAA-covered, so the agent must have no
 # mechanism to read PHI; the safety is structural, not just
-# prompt-level, see ADR 0033) PLUS the capture_lead_info write tool.
+# prompt-level, see ADR 0033) MINUS reschedule_appointment (it relies
+# on reading the customer's existing appointments, which is PHI we
+# can't surface over Instagram) PLUS the capture_lead_info write tool.
+_INSTAGRAM_EXCLUDED_TOOLS = {'get_customer_context', 'reschedule_appointment'}
 TOOL_SCHEMAS_INSTAGRAM: list[dict[str, Any]] = [
     schema for schema in TOOL_SCHEMAS
-    if schema['name'] != 'get_customer_context'
+    if schema['name'] not in _INSTAGRAM_EXCLUDED_TOOLS
 ] + [_CAPTURE_LEAD_SCHEMA]
 
 
@@ -390,6 +478,9 @@ def _tool_get_customer_context(
         )
         out['upcoming_appointments'] = [
             {
+                # `id` is required to reschedule a specific appointment —
+                # the agent passes it to reschedule_appointment.
+                'id': r.id,
                 'date': r.start_time.date().isoformat(),
                 'time_local': r.start_time.strftime('%H:%M'),
                 'service': r.service.name if r.service else None,
@@ -611,7 +702,29 @@ def _tool_check_availability(
     except zoneinfo.ZoneInfoNotFoundError:
         location_tz = zoneinfo.ZoneInfo('America/New_York')
 
+    # Reschedule mode — the agent passes the existing appointment's id so
+    # these slots move it instead of booking a new one. We exclude that
+    # appointment from its own conflict set (so a small shift near its
+    # current time isn't blocked) and default the provider to whoever is
+    # currently booked unless the customer asked for someone else.
+    reschedule_appt = None
+    exclude_appointment_id = None
+    appointment_id = tool_input.get('appointment_id')
+    if appointment_id:
+        from apps.appointments.models import Appointment
+        reschedule_appt = (
+            Appointment.objects
+            .filter(tenant=tenant, customer=customer, id=appointment_id)
+            .first()
+        )
+        if reschedule_appt is None:
+            return {'error': 'appointment_not_found'}
+        exclude_appointment_id = reschedule_appt.id
+
     provider_id = tool_input.get('provider_id')
+    if not provider_id and reschedule_appt is not None:
+        # Keep the same technician on a reschedule by default.
+        provider_id = reschedule_appt.provider_id
     if provider_id:
         # Caller asked for a specific provider — verify the provider is
         # actually eligible for THIS service (not just generally bookable).
@@ -649,6 +762,7 @@ def _tool_check_availability(
                 for s in compute_provider_slots(
                     provider=providers[0], service=service,
                     location=location, on_date=cur,
+                    exclude_appointment_id=exclude_appointment_id,
                 )
                 if s.available
             ]
@@ -704,12 +818,16 @@ def _tool_check_availability(
     # customer to chew on it, short enough to avoid stale booking
     # races against staff edits to the calendar.
     if final:
+        # Map provider id → display name so the agent can say "with
+        # Sarah" and the customer can pick a person they recognise.
+        provider_names = {p.id: _provider_display_name(p) for p in providers}
         indexed = [
             {
                 'index': i + 1,
                 'start_iso': s['start_iso'],
                 'end_iso': s['end_iso'],
                 'provider_id': s.get('provider_id'),
+                'provider_name': provider_names.get(s.get('provider_id')),
                 'service_id': s['service_id'],
                 'location_id': s['location_id'],
                 'label': s['label'],
@@ -720,6 +838,12 @@ def _tool_check_availability(
             'service_id': service.id,
             'location_id': location.id,
             'provider_id': final[0].get('provider_id'),
+            # Set on a reschedule so the digit fast-path MOVES this
+            # appointment instead of booking a new one (the bug that
+            # double-booked customers). Absent for normal bookings.
+            'reschedule_appointment_id': (
+                reschedule_appt.id if reschedule_appt is not None else None
+            ),
             'proposed_at': djtz.now().isoformat(),
             'slots': indexed,
         }
@@ -867,6 +991,181 @@ def run_confirm_booking(
     }
 
 
+def _tool_list_providers(
+    *,
+    tool_input: dict, tenant: 'Tenant', customer: 'Customer',
+    conversation: AIConversation,
+) -> dict:
+    """Eligible technicians for a service, so the agent can offer a
+    choice or honor a requested person. Reuses the public-booking
+    eligibility logic (bookable + assigned to location + job-title
+    matches the service category)."""
+    from apps.booking.views import _eligible_providers
+    from apps.services.models import Service
+    from apps.tenants.models import Location
+
+    service = Service.objects.filter(
+        tenant=tenant, id=tool_input.get('service_id'), is_bookable_online=True,
+    ).select_related('category').first()
+    if service is None:
+        return {'error': 'service_not_found_or_not_bookable_online'}
+
+    location_id = tool_input.get('location_id')
+    if location_id:
+        location = Location.objects.filter(tenant=tenant, id=location_id).first()
+    else:
+        location = Location.objects.filter(tenant=tenant).order_by('id').first()
+    if location is None:
+        return {'error': 'no_location'}
+
+    providers = _eligible_providers(tenant=tenant, service=service, location=location)
+    return {
+        'providers': [
+            {'id': p.id, 'name': _provider_display_name(p)}
+            for p in providers
+        ],
+    }
+
+
+def _tool_reschedule_appointment(
+    *,
+    tool_input: dict, tenant: 'Tenant', customer: 'Customer',
+    conversation: AIConversation,
+) -> dict:
+    return run_reschedule(
+        appointment_id=int(tool_input.get('appointment_id', 0)),
+        slot_index=int(tool_input.get('slot_index', 0)),
+        tenant=tenant, customer=customer, conversation=conversation,
+    )
+
+
+def run_reschedule(
+    *,
+    appointment_id: int,
+    slot_index: int,
+    tenant: 'Tenant',
+    customer: 'Customer',
+    conversation: AIConversation,
+) -> dict:
+    """Move an existing upcoming appointment to a slot from the pending
+    proposal. Mirrors run_confirm_booking but UPDATES the appointment
+    instead of creating one — so a reschedule never double-books. Service
+    stays the same; the time (and the technician, if the chosen slot uses
+    a different one) moves. The new time is re-validated against the live
+    slot calculator with this appointment excluded from its own conflict
+    set. Also used directly by the digit fast-path."""
+    from django.db import transaction
+
+    from apps.appointments.models import Appointment
+    from apps.audit.models import AuditLog
+    from apps.audit.services import record
+    from apps.booking.availability import compute_provider_slots
+    from apps.tenants.models import Location, TenantMembership
+
+    proposal = conversation.pending_proposal or {}
+    expires_at = conversation.pending_proposal_expires_at
+    if not proposal or expires_at is None or expires_at < djtz.now():
+        return {'error': 'no_active_proposal'}
+    slots = proposal.get('slots') or []
+    chosen = next((s for s in slots if s.get('index') == slot_index), None)
+    if chosen is None:
+        return {'error': 'slot_index_out_of_range'}
+
+    with transaction.atomic():
+        try:
+            appt = (
+                Appointment.objects
+                .select_for_update(of=('self',))
+                .select_related('service', 'provider', 'location')
+                .get(pk=appointment_id, tenant=tenant, customer=customer)
+            )
+        except Appointment.DoesNotExist:
+            return {'error': 'appointment_not_found'}
+
+        if appt.start_time <= djtz.now():
+            return {'error': 'appointment_in_past'}
+        if appt.status not in (
+            Appointment.Status.BOOKED, Appointment.Status.CONFIRMED,
+        ):
+            return {'error': f'appointment_not_reschedulable:{appt.status}'}
+
+        # A reschedule keeps the same service — changing service is a new
+        # booking, not a move.
+        if int(chosen.get('service_id') or 0) != appt.service_id:
+            return {'error': 'service_mismatch'}
+
+        location = (
+            Location.objects.filter(tenant=tenant, id=chosen.get('location_id')).first()
+            or appt.location
+        )
+        provider_id = chosen.get('provider_id')
+        provider = (
+            TenantMembership.objects.filter(
+                tenant=tenant, id=provider_id, is_bookable=True, is_active=True,
+            ).first()
+            if provider_id else None
+        )
+        if provider is None:
+            return {'error': 'provider_no_longer_bookable'}
+
+        try:
+            new_start = dt.datetime.fromisoformat(chosen['start_iso'])
+            new_end = dt.datetime.fromisoformat(chosen['end_iso'])
+        except (KeyError, TypeError, ValueError):
+            return {'error': 'proposal_resolution_failed'}
+
+        # Re-validate against the live calculator, excluding this
+        # appointment so its own current slot doesn't block the move.
+        available = compute_provider_slots(
+            provider=provider, service=appt.service, location=location,
+            on_date=djtz.localtime(new_start).date(),
+            exclude_appointment_id=appt.id,
+        )
+        if not any(s.start == new_start and s.available for s in available):
+            return {'error': 'slot_no_longer_available'}
+
+        previous_start = appt.start_time
+        update_fields = ['start_time', 'end_time', 'updated_at']
+        appt.start_time = new_start
+        appt.end_time = new_end
+        if provider.id != appt.provider_id:
+            appt.provider = provider
+            update_fields.insert(0, 'provider')
+        appt.save(update_fields=update_fields)
+
+    conversation.pending_proposal = None
+    conversation.pending_proposal_expires_at = None
+    conversation.save(update_fields=[
+        'pending_proposal', 'pending_proposal_expires_at', 'updated_at',
+    ])
+
+    try:
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='appointment',
+            resource_id=appt.id,
+            tenant=tenant,
+            metadata={
+                'event': 'ai_reschedule',
+                'channel': getattr(conversation, 'channel', 'sms'),
+                'customer_id': customer.id,
+                'from_start': previous_start.isoformat(),
+                'to_start': new_start.isoformat(),
+                'provider_id': appt.provider_id,
+            },
+        )
+    except Exception:  # noqa: BLE001 — audit must never break the turn
+        logger.exception('ai_inbox.reschedule_audit_failed tenant=%s', tenant.slug)
+
+    return {
+        'appointment_id': appt.id,
+        'starts_at': new_start.isoformat(),
+        'service': appt.service.name,
+        'human_label': _human_label(chosen['start_iso']),
+        'rescheduled': True,
+    }
+
+
 def _tool_update_customer_profile(
     *,
     tool_input: dict, tenant: 'Tenant', customer: 'Customer',
@@ -964,9 +1263,11 @@ def _tool_escalate_to_human(
 TOOL_FUNCS: dict[str, Callable[..., dict]] = {
     'get_customer_context': _tool_get_customer_context,
     'find_service': _tool_find_service,
+    'list_providers': _tool_list_providers,
     'check_availability': _tool_check_availability,
     'propose_slots': _tool_propose_slots,
     'confirm_booking': _tool_confirm_booking,
+    'reschedule_appointment': _tool_reschedule_appointment,
     'update_customer_profile': _tool_update_customer_profile,
     'capture_lead_info': _tool_capture_lead_info,
     'escalate_to_human': _tool_escalate_to_human,

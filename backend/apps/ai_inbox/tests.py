@@ -862,3 +862,159 @@ class InstagramBookingChannelTests(TestCase):
                 status=Appointment.Status.BOOKED, source='instagram_ai',
             )
         mock_send.assert_not_called()
+
+
+class RescheduleAndProviderToolTests(TestCase):
+    """SMS agent reschedule (must MOVE, never duplicate) + the
+    list_providers / technician-selection tooling."""
+
+    def setUp(self):
+        from apps.services.models import Service
+        from apps.tenants.models import Location, TenantMembership
+
+        self.tenant, self.owner = _make_tenant(slug='ai-resched')
+        self.customer = _make_customer(self.tenant)
+        self.location = Location.objects.filter(tenant=self.tenant).first()
+        self.provider = TenantMembership.objects.filter(tenant=self.tenant).first()
+        self.service = Service.objects.create(
+            tenant=self.tenant, name='Facial', duration_minutes=60,
+            price_cents=10000, is_bookable_online=True,
+        )
+        self.conv = AIConversation.objects.create(
+            tenant=self.tenant, customer=self.customer,
+            channel=AIConversation.Channel.SMS,
+        )
+
+    # ── schema + registry wiring ──────────────────────────────────
+    def test_schemas_expose_new_tools(self):
+        from apps.ai_inbox.agents import tools
+        sms = {s['name'] for s in tools.TOOL_SCHEMAS}
+        self.assertIn('list_providers', sms)
+        self.assertIn('reschedule_appointment', sms)
+        ig = {s['name'] for s in tools.TOOL_SCHEMAS_INSTAGRAM}
+        self.assertIn('list_providers', ig)
+        # Reschedule needs to read existing appointments (PHI) → never IG.
+        self.assertNotIn('reschedule_appointment', ig)
+        self.assertIn('reschedule_appointment', tools.TOOL_FUNCS)
+        self.assertIn('list_providers', tools.TOOL_FUNCS)
+
+    # ── helpers ───────────────────────────────────────────────────
+    def _make_appt(self, *, start, status=None):
+        from apps.appointments.models import Appointment
+        return Appointment.objects.create(
+            tenant=self.tenant, customer=self.customer, provider=self.provider,
+            service=self.service, location=self.location,
+            start_time=start, end_time=start + dt.timedelta(minutes=60),
+            status=status or Appointment.Status.BOOKED,
+            quoted_price_cents=self.service.price_cents,
+        )
+
+    def _set_proposal(self, *, appt_id, service_id, start):
+        self.conv.pending_proposal = {
+            'service_id': service_id,
+            'location_id': self.location.id,
+            'provider_id': self.provider.id,
+            'reschedule_appointment_id': appt_id,
+            'proposed_at': djtz.now().isoformat(),
+            'slots': [{
+                'index': 1,
+                'start_iso': start.isoformat(),
+                'end_iso': (start + dt.timedelta(minutes=60)).isoformat(),
+                'provider_id': self.provider.id,
+                'service_id': service_id,
+                'location_id': self.location.id,
+                'label': 'slot',
+            }],
+        }
+        self.conv.pending_proposal_expires_at = djtz.now() + dt.timedelta(hours=1)
+        self.conv.save()
+
+    def _resched(self, appt_id, idx=1):
+        from apps.ai_inbox.agents import tools
+        return tools.run_reschedule(
+            appointment_id=appt_id, slot_index=idx,
+            tenant=self.tenant, customer=self.customer, conversation=self.conv,
+        )
+
+    # ── guard behaviour ───────────────────────────────────────────
+    def test_reschedule_no_proposal(self):
+        appt = self._make_appt(start=djtz.now() + dt.timedelta(days=1))
+        self.assertEqual(self._resched(appt.id).get('error'), 'no_active_proposal')
+
+    def test_reschedule_appointment_not_found(self):
+        self._set_proposal(appt_id=999999, service_id=self.service.id,
+                           start=djtz.now() + dt.timedelta(days=1))
+        self.assertEqual(self._resched(999999).get('error'), 'appointment_not_found')
+
+    def test_reschedule_service_mismatch(self):
+        from apps.services.models import Service
+        other = Service.objects.create(
+            tenant=self.tenant, name='Laser', duration_minutes=30,
+            price_cents=5000, is_bookable_online=True,
+        )
+        appt = self._make_appt(start=djtz.now() + dt.timedelta(days=1))
+        self._set_proposal(appt_id=appt.id, service_id=other.id,
+                           start=djtz.now() + dt.timedelta(days=2))
+        self.assertEqual(self._resched(appt.id).get('error'), 'service_mismatch')
+
+    def test_reschedule_past_appointment(self):
+        appt = self._make_appt(start=djtz.now() - dt.timedelta(days=1))
+        self._set_proposal(appt_id=appt.id, service_id=self.service.id,
+                           start=djtz.now() + dt.timedelta(days=1))
+        self.assertEqual(self._resched(appt.id).get('error'), 'appointment_in_past')
+
+    def test_reschedule_moves_and_does_not_duplicate(self):
+        # The core bug fix: a reschedule MOVES the one appointment; it
+        # must never leave the customer with two.
+        from apps.appointments.models import Appointment
+        from apps.booking.availability import compute_provider_slots
+
+        appt = self._make_appt(start=djtz.now() + dt.timedelta(days=1))
+        chosen = None
+        for d in range(2, 9):
+            on = (djtz.now() + dt.timedelta(days=d)).date()
+            avail = [
+                s for s in compute_provider_slots(
+                    provider=self.provider, service=self.service,
+                    location=self.location, on_date=on,
+                    exclude_appointment_id=appt.id,
+                ) if s.available
+            ]
+            if avail:
+                chosen = avail[0]
+                break
+        if chosen is None:
+            self.skipTest('no provider availability in this test environment')
+
+        self._set_proposal(appt_id=appt.id, service_id=self.service.id,
+                           start=chosen.start)
+        result = self._resched(appt.id)
+        self.assertTrue(result.get('rescheduled'), result)
+        self.assertEqual(
+            Appointment.objects.filter(
+                tenant=self.tenant, customer=self.customer,
+            ).count(),
+            1,
+        )
+        appt.refresh_from_db()
+        self.assertEqual(appt.start_time, chosen.start)
+        self.conv.refresh_from_db()
+        self.assertIsNone(self.conv.pending_proposal)
+
+    # ── list_providers ────────────────────────────────────────────
+    def test_list_providers_returns_list(self):
+        from apps.ai_inbox.agents import tools
+        res = tools._tool_list_providers(
+            tool_input={'service_id': self.service.id},
+            tenant=self.tenant, customer=self.customer, conversation=self.conv,
+        )
+        self.assertIn('providers', res)
+        self.assertIsInstance(res['providers'], list)
+
+    def test_list_providers_bad_service(self):
+        from apps.ai_inbox.agents import tools
+        res = tools._tool_list_providers(
+            tool_input={'service_id': 999999},
+            tenant=self.tenant, customer=self.customer, conversation=self.conv,
+        )
+        self.assertIn('error', res)

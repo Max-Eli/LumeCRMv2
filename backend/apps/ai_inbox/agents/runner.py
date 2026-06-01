@@ -180,8 +180,29 @@ def _try_digit_fast_path(adapter: 'ChannelAdapter', conversation: AIConversation
     if expires_at is None or expires_at < djtz.now():
         return False
 
+    slot_index = int(match.group(1))
+    # A reschedule proposal carries the appointment being moved. Without
+    # this branch the digit reply would book a SECOND appointment instead
+    # of moving the existing one (the double-booking bug).
+    reschedule_id = (conversation.pending_proposal or {}).get('reschedule_appointment_id')
+    if reschedule_id:
+        result = tools.run_reschedule(
+            appointment_id=int(reschedule_id),
+            slot_index=slot_index,
+            tenant=adapter.tenant, customer=adapter.customer,
+            conversation=conversation,
+        )
+        if 'error' in result:
+            # Let Claude handle recovery instead of a canned error.
+            return False
+        adapter.send(
+            conversation, adapter.post_reschedule_ack(result),
+            model_used='fast_path_digit',
+        )
+        return True
+
     result = tools.run_confirm_booking(
-        slot_index=int(match.group(1)),
+        slot_index=slot_index,
         tenant=adapter.tenant, customer=adapter.customer,
         conversation=conversation,
     )
