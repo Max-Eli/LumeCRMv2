@@ -350,7 +350,7 @@ export default function Post() {
         </li>
         <li>
           <strong>The metrics above</strong> are part of the
-          twenty-two reports — no-show rate by provider, late-cancel
+          Lumè's built-in reports — no-show rate by provider, late-cancel
           rate, booking lead time, all running against live data.
         </li>
       </ul>

@@ -103,7 +103,7 @@ const TIERS: Tier[] = [
       'Everything in Starter, plus:',
       '3 locations · 10 staff seats (add more for $20/mo each)',
       'Multi-provider day view + per-provider weekly schedules',
-      'All 23+ reports across Financial / Staff / Guests / Operations',
+      'Full reporting suite — Financial, Staff, Guests, and Operations',
       'AI SMS agent — books appointments from inbound texts, around the clock',
       '2-way SMS inbox with saved replies + automated templates',
       'Email + SMS marketing — campaigns, audiences, automations',
