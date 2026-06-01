@@ -1,24 +1,23 @@
 /**
  * Marketing top navigation.
  *
- * Editorial / luxury approach: thin top rule (no shadow, no glass),
- * the brand mark on the left at restrained size, a small set of nav
- * links in the center-right, and the "Get a demo" CTA on the far
- * right. No mega-menu, no submenus. Nav links are small caps +
- * tracked; the eye reads them as section markers, not buttons.
+ * Desktop: thin bordered bar — brand mark left, nav links center-right,
+ * "Get a demo" CTA far right. No shadow, no glass. Nav links are
+ * small-caps + tracked; they read as section markers, not buttons.
  *
- * The mobile breakpoint hides the inline nav and surfaces a simple
- * "Menu" disclosure — done with the native `<details>` so we don't
- * pull a JS dependency in for a 5-link menu.
- *
- * No Sign-in link: Lumè is sales-led right now. Every customer goes
- * through a demo and signed contract before a tenant subdomain is
- * provisioned, so a public Sign-in button would mislead visitors and
- * generate support load. When self-serve sign-up lands, restore the
- * link pointing at `APP_URL` from `lib/utils`.
+ * Mobile: hamburger button opens a full-screen overlay panel with a
+ * solid background, large touch-target links, and a close button.
+ * Closes automatically when any link is tapped (via the onClick
+ * handler + useState) so the user lands on the right page. Using
+ * React state instead of <details> so we can: (a) lock body scroll
+ * while the panel is open, (b) render a proper close × button, and
+ * (c) close on link tap without a separate JS workaround.
  */
 
+'use client';
+
 import Link from 'next/link';
+import { useEffect, useState } from 'react';
 
 import { BrandMark } from './brand-mark';
 
@@ -32,57 +31,140 @@ const NAV_LINKS = [
 ] as const;
 
 export function TopNav() {
+  const [open, setOpen] = useState(false);
+
+  // Lock body scroll while the mobile menu is open — prevents the
+  // page from scrolling behind the overlay.
+  useEffect(() => {
+    if (open) {
+      document.body.style.overflow = 'hidden';
+    } else {
+      document.body.style.overflow = '';
+    }
+    return () => {
+      document.body.style.overflow = '';
+    };
+  }, [open]);
+
   return (
-    <header className="border-b border-border bg-background">
-      <div className="mx-auto max-w-7xl px-6 lg:px-10">
-        <div className="flex h-28 items-center justify-between gap-8">
-          <Link href="/" className="inline-flex shrink-0" aria-label="Lumè home">
-            <BrandMark variant="lockup" size={64} />
-          </Link>
-
-          <nav className="hidden items-center gap-8 lg:flex" aria-label="Primary">
-            {NAV_LINKS.map((link) => (
-              <Link
-                key={link.href}
-                href={link.href}
-                className="eyebrow text-foreground/70 hover:text-foreground transition-colors"
-              >
-                {link.label}
-              </Link>
-            ))}
-          </nav>
-
-          <div className="hidden items-center gap-3 lg:flex">
+    <>
+      <header className="sticky top-0 z-40 border-b border-border bg-background">
+        <div className="mx-auto max-w-7xl px-6 lg:px-10">
+          <div className="flex h-20 items-center justify-between gap-8 lg:h-28">
             <Link
-              href="/demo"
-              className="inline-flex h-9 items-center rounded-full border border-foreground bg-foreground px-4 text-xs font-medium uppercase tracking-[0.16em] text-background hover:bg-foreground/90 transition-colors"
+              href="/"
+              className="inline-flex shrink-0"
+              aria-label="Lumè home"
+              onClick={() => setOpen(false)}
             >
-              Get a demo
+              <BrandMark variant="lockup" size={56} />
             </Link>
-          </div>
 
-          <details className="lg:hidden relative">
-            <summary className="eyebrow cursor-pointer list-none text-foreground/80">
-              Menu
-            </summary>
-            <div className="absolute right-0 top-full mt-2 w-56 rounded-md border border-border bg-background py-2 shadow-sm">
+            {/* Desktop nav */}
+            <nav className="hidden items-center gap-8 lg:flex" aria-label="Primary">
               {NAV_LINKS.map((link) => (
                 <Link
                   key={link.href}
                   href={link.href}
-                  className="block px-4 py-2 text-sm text-foreground hover:bg-muted/40"
+                  className="eyebrow text-foreground/70 hover:text-foreground transition-colors"
                 >
                   {link.label}
                 </Link>
               ))}
-              <div className="my-1 h-px bg-border" />
-              <Link href="/demo" className="block px-4 py-2 text-sm font-medium text-accent hover:bg-muted/40">
+            </nav>
+
+            <div className="hidden items-center gap-3 lg:flex">
+              <Link
+                href="/demo"
+                className="inline-flex h-9 items-center rounded-full border border-foreground bg-foreground px-4 text-xs font-medium uppercase tracking-[0.16em] text-background hover:bg-foreground/90 transition-colors"
+              >
                 Get a demo
               </Link>
             </div>
-          </details>
+
+            {/* Mobile hamburger */}
+            <button
+              type="button"
+              onClick={() => setOpen((v) => !v)}
+              aria-label={open ? 'Close menu' : 'Open menu'}
+              aria-expanded={open}
+              className="lg:hidden inline-flex size-10 items-center justify-center rounded-md text-foreground/80 hover:bg-muted/50 transition-colors"
+            >
+              {open ? (
+                /* × close icon */
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+                  <path d="M4 4l12 12M16 4L4 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              ) : (
+                /* hamburger */
+                <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+                  <path d="M3 5h14M3 10h14M3 15h14" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+                </svg>
+              )}
+            </button>
+          </div>
         </div>
-      </div>
-    </header>
+      </header>
+
+      {/* Mobile nav overlay — full-screen, solid background, above everything */}
+      {open && (
+        <div
+          className="fixed inset-0 z-50 flex flex-col bg-background lg:hidden"
+          aria-label="Mobile navigation"
+        >
+          {/* Overlay header — mirrors the main header height + brand */}
+          <div className="flex h-20 items-center justify-between border-b border-border px-6">
+            <Link
+              href="/"
+              aria-label="Lumè home"
+              onClick={() => setOpen(false)}
+            >
+              <BrandMark variant="lockup" size={56} />
+            </Link>
+            <button
+              type="button"
+              onClick={() => setOpen(false)}
+              aria-label="Close menu"
+              className="inline-flex size-10 items-center justify-center rounded-md text-foreground/80 hover:bg-muted/50 transition-colors"
+            >
+              <svg width="20" height="20" viewBox="0 0 20 20" fill="none" aria-hidden>
+                <path d="M4 4l12 12M16 4L4 16" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+              </svg>
+            </button>
+          </div>
+
+          {/* Nav links — large touch targets */}
+          <nav className="flex flex-1 flex-col px-6 pt-8 pb-10 overflow-y-auto">
+            <ul className="space-y-1">
+              {NAV_LINKS.map((link) => (
+                <li key={link.href}>
+                  <Link
+                    href={link.href}
+                    onClick={() => setOpen(false)}
+                    className="flex items-center rounded-lg px-3 py-4 text-lg font-medium text-foreground hover:bg-muted/50 transition-colors"
+                  >
+                    {link.label}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+
+            {/* CTA at the bottom of the panel */}
+            <div className="mt-auto pt-8 border-t border-border">
+              <Link
+                href="/demo"
+                onClick={() => setOpen(false)}
+                className="flex w-full items-center justify-center rounded-full bg-foreground px-6 py-4 text-sm font-medium uppercase tracking-[0.16em] text-background hover:bg-foreground/90 transition-colors"
+              >
+                Get a demo
+              </Link>
+              <p className="mt-3 text-center text-xs text-foreground/50">
+                30-day free trial · BAA included · No setup fee
+              </p>
+            </div>
+          </nav>
+        </div>
+      )}
+    </>
   );
 }
