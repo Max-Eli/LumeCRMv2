@@ -153,6 +153,19 @@ export interface InvoiceAppointmentSummary {
   end_time: string;
   service_name: string;
   provider_name: string | null;
+  /** Set when the booking chose a package/membership credit. Drives the
+   *  one-click "Apply credit" banner; cleared once applied. */
+  planned_redemption: PlannedRedemption | null;
+}
+
+/** The credit a booking planned to draw from, mirrored onto the invoice
+ *  so checkout can apply it in one click (POST .../apply-planned-credit/). */
+export interface PlannedRedemption {
+  kind: 'package' | 'membership';
+  item_id: number;
+  source_label: string;
+  covers_label: string;
+  remaining: number;
 }
 
 export interface Invoice {
@@ -624,6 +637,30 @@ export function useRedeemFromMembership(invoiceId: number) {
         });
       }
       qc.invalidateQueries({ queryKey: ['subscriptions'] });
+    },
+  });
+}
+
+/** One-click apply the credit the booking already chose
+ *  (Appointment.planned_redemption). The backend reads the planned
+ *  package/membership credit off the invoice's appointment, redeems it,
+ *  and clears the intent — so this needs no request body and is
+ *  idempotent. Returns the recalculated invoice. */
+export function useApplyPlannedCredit(invoiceId: number) {
+  const qc = useQueryClient();
+  return useMutation<Invoice, Error, void>({
+    mutationFn: () =>
+      api.post<Invoice>(`/api/invoices/${invoiceId}/apply-planned-credit/`, {}),
+    onSuccess: (updated) => {
+      qc.setQueryData(invoiceDetailKey(updated.id), updated);
+      if (updated.appointment) {
+        qc.invalidateQueries({
+          queryKey: invoiceByAppointmentKey(updated.appointment.id),
+        });
+      }
+      qc.invalidateQueries({ queryKey: ['purchased-packages'] });
+      qc.invalidateQueries({ queryKey: ['subscriptions'] });
+      qc.invalidateQueries({ queryKey: ['appointments'] });
     },
   });
 }

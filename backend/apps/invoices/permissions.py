@@ -70,6 +70,7 @@ class InvoicePermission(BasePermission):
             'remove_line',
             'redeem_from_package',
             'redeem_from_membership',
+            'apply_planned_credit',
             'add_custom_package',
             'add_gift_card_sale',
             'apply_gift_card',

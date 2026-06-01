@@ -79,6 +79,10 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
             .select_related(
                 'customer',
                 'appointment', 'appointment__service', 'appointment__provider', 'appointment__provider__user',
+                # Planned credit — joined so the invoice's "Apply credit"
+                # banner doesn't fire extra queries per invoice.
+                'appointment__planned_package_item__purchased_package__source_template',
+                'appointment__planned_subscription_item__subscription__plan',
                 'closed_by', 'reopened_by', 'voided_by', 'created_by',
             )
             .prefetch_related(
@@ -1079,6 +1083,209 @@ class InvoiceViewSet(viewsets.ReadOnlyModelViewSet):
                 'remaining_after': sub_item.quantity_remaining,
                 'line_id': line.pk,
             },
+        )
+        invoice.refresh_from_db()
+        return Response(self.get_serializer(invoice).data)
+
+    @extend_schema(
+        request=None,
+        responses={
+            200: InvoiceSerializer,
+            400: OpenApiResponse(description='No appointment / no planned credit'),
+            403: OpenApiResponse(description='Missing PROCESS_PAYMENT permission'),
+            409: OpenApiResponse(description='Invoice not OPEN or credit not redeemable'),
+        },
+    )
+    @action(detail=True, methods=['post'], url_path='apply-planned-credit')
+    def apply_planned_credit(self, request, pk=None):
+        """One-click redeem the credit the booking already chose.
+
+        When an appointment was booked "from" a package or membership
+        (``Appointment.planned_package_item`` /
+        ``planned_subscription_item``), the front desk shouldn't have to
+        re-pick it at checkout. This reads that planned credit, performs
+        the same redemption as ``redeem-from-package`` /
+        ``-membership``, links it to the appointment, and then CLEARS the
+        planned FK — so the call is idempotent (a second click finds
+        nothing planned and 400s) and the invoice banner disappears.
+
+        The credit is decremented HERE, at checkout — never at booking.
+        """
+        from django.db import transaction
+
+        from apps.appointments.models import Appointment
+        from apps.packages.models import (
+            PackageRedemption,
+            PurchasedPackage,
+            PurchasedPackageItem,
+        )
+        from apps.memberships.models import (
+            Subscription,
+            SubscriptionItem,
+            SubscriptionRedemption,
+        )
+
+        invoice = self.get_object()
+        if invoice.status != Invoice.Status.OPEN:
+            return Response(
+                {
+                    'detail': (
+                        f'Cannot redeem against a '
+                        f'{invoice.get_status_display().lower()} invoice.'
+                    ),
+                },
+                status=status.HTTP_409_CONFLICT,
+            )
+        if invoice.appointment_id is None:
+            return Response(
+                {'detail': 'This invoice has no appointment to draw a credit from.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+
+        with transaction.atomic():
+            # Lock the appointment row so two concurrent checkout clicks
+            # can't both redeem the same planned credit.
+            appt = (
+                Appointment.objects.select_for_update()
+                .select_related('service')
+                .get(pk=invoice.appointment_id)
+            )
+
+            if appt.planned_package_item_id:
+                try:
+                    pp_item = (
+                        PurchasedPackageItem.objects.select_for_update()
+                        .select_related('purchased_package')
+                        .get(pk=appt.planned_package_item_id)
+                    )
+                except PurchasedPackageItem.DoesNotExist:
+                    return Response(
+                        {'detail': 'The planned package credit no longer exists.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                pp = (
+                    PurchasedPackage.objects.select_for_update().get(pk=pp_item.purchased_package_id)
+                )
+                if pp.customer_id != invoice.customer_id:
+                    return Response(
+                        {'detail': 'That package belongs to a different customer.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if pp.status != PurchasedPackage.Status.ACTIVE or pp.is_expired:
+                    return Response(
+                        {'detail': 'That package is no longer redeemable.'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                if pp_item.quantity_remaining < 1:
+                    return Response(
+                        {'detail': 'No credits remaining for this service.'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+                pp_item.quantity_remaining -= 1
+                pp_item.save(update_fields=['quantity_remaining'])
+                line = InvoiceLineItem.objects.create(
+                    invoice=invoice,
+                    service_id=pp_item.service_id,
+                    description=f'{pp_item.service_name} (redeemed from package #{pp.pk})',
+                    quantity=1,
+                    unit_price_cents=0,
+                    tax_rate_percent=0,
+                )
+                PackageRedemption.objects.create(
+                    tenant=invoice.tenant,
+                    purchased_package=pp,
+                    item=pp_item,
+                    quantity=1,
+                    invoice_line=line,
+                    appointment=appt,
+                    by_user=request.user,
+                    note='Applied from booking',
+                )
+                # Clear the intent so this can't double-apply.
+                appt.planned_package_item = None
+                appt.save(update_fields=['planned_package_item', 'updated_at'])
+                event_meta = {
+                    'event': 'planned_credit_applied',
+                    'kind': 'package',
+                    'purchased_package_id': pp.pk,
+                    'service_id': pp_item.service_id,
+                    'remaining_after': pp_item.quantity_remaining,
+                    'line_id': line.pk,
+                }
+
+            elif appt.planned_subscription_item_id:
+                try:
+                    sub_item = (
+                        SubscriptionItem.objects.select_for_update()
+                        .get(pk=appt.planned_subscription_item_id)
+                    )
+                except SubscriptionItem.DoesNotExist:
+                    return Response(
+                        {'detail': 'The planned membership credit no longer exists.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                sub = Subscription.objects.select_for_update().get(pk=sub_item.subscription_id)
+                if sub.customer_id != invoice.customer_id:
+                    return Response(
+                        {'detail': 'That membership belongs to a different customer.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                if sub.status != Subscription.Status.ACTIVE or not sub.is_in_period:
+                    return Response(
+                        {'detail': 'That membership is no longer redeemable.'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+                if sub_item.quantity_remaining < 1:
+                    return Response(
+                        {'detail': 'No credits remaining for this benefit.'},
+                        status=status.HTTP_409_CONFLICT,
+                    )
+
+                sub_item.quantity_remaining -= 1
+                sub_item.save(update_fields=['quantity_remaining'])
+                line = InvoiceLineItem.objects.create(
+                    invoice=invoice,
+                    service_id=appt.service_id,
+                    description=f'{appt.service.name} (redeemed from membership #{sub.pk})',
+                    quantity=1,
+                    unit_price_cents=0,
+                    tax_rate_percent=0,
+                )
+                SubscriptionRedemption.objects.create(
+                    tenant=invoice.tenant,
+                    subscription=sub,
+                    item=sub_item,
+                    quantity=1,
+                    invoice_line=line,
+                    appointment=appt,
+                    by_user=request.user,
+                    note='Applied from booking',
+                )
+                appt.planned_subscription_item = None
+                appt.save(update_fields=['planned_subscription_item', 'updated_at'])
+                event_meta = {
+                    'event': 'planned_credit_applied',
+                    'kind': 'membership',
+                    'subscription_id': sub.pk,
+                    'service_id': appt.service_id,
+                    'credit_kind': 'category' if sub_item.category_id else 'service',
+                    'remaining_after': sub_item.quantity_remaining,
+                    'line_id': line.pk,
+                }
+
+            else:
+                return Response(
+                    {'detail': 'This appointment has no credit planned to apply.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+
+        record(
+            action=AuditLog.Action.UPDATE,
+            resource_type='invoice',
+            resource_id=invoice.pk,
+            request=request,
+            metadata=event_meta,
         )
         invoice.refresh_from_db()
         return Response(self.get_serializer(invoice).data)

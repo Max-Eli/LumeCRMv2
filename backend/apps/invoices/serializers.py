@@ -42,14 +42,22 @@ class _AppointmentSummary(serializers.ModelSerializer):
 
     service_name = serializers.CharField(source='service.name', read_only=True)
     provider_name = serializers.SerializerMethodField()
+    # The credit the booking planned to draw from. Present → the invoice
+    # shows a one-click "Apply credit" banner (POST .../apply-planned-
+    # credit/). Cleared once redeemed, so it disappears after applying.
+    planned_redemption = serializers.SerializerMethodField()
 
     class Meta:
         model = Appointment
         fields = [
             'id', 'status', 'start_time', 'end_time',
-            'service_name', 'provider_name',
+            'service_name', 'provider_name', 'planned_redemption',
         ]
         read_only_fields = fields
+
+    def get_planned_redemption(self, obj: Appointment) -> dict | None:
+        from apps.appointments.serializers import build_planned_redemption
+        return build_planned_redemption(obj)
 
     def get_provider_name(self, obj: Appointment) -> str | None:
         provider = obj.provider

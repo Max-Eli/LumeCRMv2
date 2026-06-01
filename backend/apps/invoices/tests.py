@@ -3181,3 +3181,89 @@ class InvoiceChargesSerializationTests(TestCase):
         for charge in resp.data['charges']:
             self.assertNotIn('stripe_payment_intent_id', charge)
             self.assertNotIn('stripe_charge_id', charge)
+
+
+# ── Apply planned credit (one-click checkout) ───────────────────────
+
+
+class ApplyPlannedCreditTests(TestCase):
+    """`POST /api/invoices/<id>/apply-planned-credit/` redeems the credit
+    the booking already chose (Appointment.planned_*_item): it decrements
+    the credit at checkout, adds a $0 redemption line, links the ledger
+    to the appointment, and clears the intent so it can't double-apply."""
+
+    def setUp(self):
+        self.tenant, self.owner = _make_tenant_with_owner('inv-planned')
+        self.prov_user = _make_user('inv-planned-prov@test.local')
+        self.provider = _make_membership(
+            user=self.prov_user, tenant=self.tenant,
+            role=TenantMembership.Role.PROVIDER, is_bookable=True,
+        )
+        self.customer = _make_customer(self.tenant)
+        self.service = _make_service(self.tenant, price_cents=10000, tax='0')
+        self.appt = _make_appointment(
+            self.tenant, customer=self.customer, service=self.service,
+            provider=self.provider, status=Appointment.Status.CHECKED_IN,
+            created_by=self.owner,
+        )
+        self.invoice = Invoice.objects.get(appointment=self.appt)
+        self.client = APIClient()
+        self.client.force_login(self.owner)
+
+    def _url(self):
+        return reverse('invoice-apply-planned-credit', kwargs={'pk': self.invoice.pk})
+
+    def _post(self):
+        return self.client.post(
+            self._url(), data={}, format='json',
+            HTTP_X_TENANT_SLUG=self.tenant.slug,
+        )
+
+    def _make_package_item(self, *, customer=None, remaining=3):
+        from apps.packages.models import PurchasedPackage, PurchasedPackageItem
+        pp = PurchasedPackage.objects.create(
+            tenant=self.tenant, customer=customer or self.customer,
+            name='3x Botox', status=PurchasedPackage.Status.ACTIVE,
+            purchased_at=timezone.now(),
+        )
+        return PurchasedPackageItem.objects.create(
+            purchased_package=pp, service=self.service,
+            service_name=self.service.name, quantity_purchased=3,
+            quantity_remaining=remaining,
+            unit_value_cents=self.service.price_cents,
+        )
+
+    def _plan_package(self, item):
+        self.appt.planned_package_item = item
+        self.appt.save(update_fields=['planned_package_item'])
+
+    def test_apply_decrements_adds_zero_line_and_clears_intent(self):
+        item = self._make_package_item(remaining=3)
+        self._plan_package(item)
+        resp = self._post()
+        self.assertEqual(resp.status_code, status.HTTP_200_OK, resp.data)
+        item.refresh_from_db()
+        self.assertEqual(item.quantity_remaining, 2)
+        line = self.invoice.line_items.order_by('-id').first()
+        self.assertEqual(line.unit_price_cents, 0)
+        self.assertEqual(line.service_id, self.service.pk)
+        self.appt.refresh_from_db()
+        self.assertIsNone(self.appt.planned_package_item_id)
+
+    def test_apply_is_idempotent(self):
+        item = self._make_package_item(remaining=2)
+        self._plan_package(item)
+        self.assertEqual(self._post().status_code, status.HTTP_200_OK)
+        # Second call: intent already cleared → 400, no further decrement.
+        self.assertEqual(self._post().status_code, status.HTTP_400_BAD_REQUEST)
+        item.refresh_from_db()
+        self.assertEqual(item.quantity_remaining, 1)
+
+    def test_no_planned_credit_returns_400(self):
+        self.assertEqual(self._post().status_code, status.HTTP_400_BAD_REQUEST)
+
+    def test_blocked_on_non_open_invoice(self):
+        item = self._make_package_item()
+        self._plan_package(item)
+        self.invoice.close(by_user=self.owner, payment_method='cash')
+        self.assertEqual(self._post().status_code, status.HTTP_409_CONFLICT)

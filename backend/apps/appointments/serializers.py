@@ -15,6 +15,44 @@ from apps.tenants.models import Location, MembershipLocation, TenantMembership
 from .models import Appointment, AppointmentService, TimeBlock
 
 
+def build_planned_redemption(obj: Appointment) -> dict | None:
+    """Friendly summary of the credit the front desk plans to apply at
+    checkout. Shared by the appointment + invoice serializers so the
+    "Covered by …" badge and the one-click redeem read the same shape.
+    Returns None when no credit was planned (or the underlying
+    package/membership was voided → the FK SET_NULL'd)."""
+    pkg_item = obj.planned_package_item
+    if pkg_item is not None:
+        pp = pkg_item.purchased_package
+        return {
+            'kind': 'package',
+            'item_id': pkg_item.id,
+            'purchased_package_id': pp.id,
+            'service_id': obj.service_id,
+            'source_label': (
+                pp.source_template.name if pp.source_template_id else pp.name
+            ),
+            'covers_label': pkg_item.service_name or 'Service',
+            'remaining': pkg_item.quantity_remaining,
+        }
+    sub_item = obj.planned_subscription_item
+    if sub_item is not None:
+        covers = (
+            sub_item.service_name
+            or (f'Any {sub_item.category_name}' if sub_item.category_name else 'Service')
+        )
+        return {
+            'kind': 'membership',
+            'item_id': sub_item.id,
+            'subscription_id': sub_item.subscription_id,
+            'service_id': obj.service_id,
+            'source_label': sub_item.subscription.plan.name,
+            'covers_label': covers,
+            'remaining': sub_item.quantity_remaining,
+        }
+    return None
+
+
 class _CustomerSummary(serializers.ModelSerializer):
     full_name = serializers.CharField(read_only=True)
 
@@ -237,34 +275,8 @@ class AppointmentSerializer(serializers.ModelSerializer):
     def get_planned_redemption(self, obj: Appointment) -> dict | None:
         """Friendly summary of the credit the front desk plans to apply
         at checkout. Drives the "Covered by …" badge and the one-click
-        redeem on the invoice. Returns None when no credit was planned
-        (or the underlying package/membership was voided → SET_NULL)."""
-        pkg_item = obj.planned_package_item
-        if pkg_item is not None:
-            pp = pkg_item.purchased_package
-            return {
-                'kind': 'package',
-                'item_id': pkg_item.id,
-                'source_label': (
-                    pp.source_template.name if pp.source_template_id else 'Package'
-                ),
-                'covers_label': pkg_item.service_name or 'Service',
-                'remaining': pkg_item.quantity_remaining,
-            }
-        sub_item = obj.planned_subscription_item
-        if sub_item is not None:
-            covers = (
-                sub_item.service_name
-                or (f'Any {sub_item.category_name}' if sub_item.category_name else 'Service')
-            )
-            return {
-                'kind': 'membership',
-                'item_id': sub_item.id,
-                'source_label': sub_item.subscription.plan.name,
-                'covers_label': covers,
-                'remaining': sub_item.quantity_remaining,
-            }
-        return None
+        redeem on the invoice."""
+        return build_planned_redemption(obj)
 
     # Status state machine — each entry maps from-status → set of allowed
     # to-statuses. Terminal states accept no further transitions; the

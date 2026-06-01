@@ -46,6 +46,7 @@ import {
   RotateCcw,
   Sparkles,
   Tag,
+  Ticket,
   Trash2,
   X,
 } from 'lucide-react';
@@ -88,6 +89,7 @@ import {
   useAddGiftCardSale,
   useAddInvoiceLine,
   useApplyGiftCard,
+  useApplyPlannedCredit,
   useCloseInvoice,
   useEditInvoiceLine,
   useEmailInvoice,
@@ -419,6 +421,12 @@ function InvoiceBody({
           ) : null}
           {canEditLines && invoice.status === 'open' && invoice.customer ? (
             <ApplyGiftCardPanel invoice={invoice} />
+          ) : null}
+          {canEditLines &&
+          invoice.status === 'open' &&
+          invoice.customer &&
+          invoice.appointment?.planned_redemption ? (
+            <ApplyPlannedCreditBanner invoice={invoice} />
           ) : null}
           {canEditLines && invoice.status === 'open' && invoice.customer ? (
             <RedeemFromPackagePanel
@@ -1354,6 +1362,60 @@ function AddLinePanel({ invoice }: { invoice: Invoice }) {
             <Plus className="size-4" />
           )}
           Add
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One-click "Apply credit" banner. Shown when the appointment behind
+ * this invoice was booked from a package/membership credit
+ * (`appointment.planned_redemption`). Applying redeems that exact credit
+ * server-side and clears the intent, so the banner disappears after use
+ * — staff never have to re-pick the package at checkout.
+ */
+function ApplyPlannedCreditBanner({ invoice }: { invoice: Invoice }) {
+  const planned = invoice.appointment?.planned_redemption;
+  const apply = useApplyPlannedCredit(invoice.id);
+  if (!planned) return null;
+
+  const onApply = () => {
+    apply.mutate(undefined, {
+      onSuccess: () => toast.success('Credit applied'),
+      onError: (err) =>
+        toast.error(invoiceErrorMessage(err, 'Could not apply the credit.')),
+    });
+  };
+
+  return (
+    <div className="rounded-lg border border-violet-200 bg-violet-50/50 p-3 dark:border-violet-900 dark:bg-violet-950/20">
+      <div className="flex items-center gap-3">
+        <span className="inline-flex size-8 shrink-0 items-center justify-center rounded-full bg-violet-100 text-violet-600 dark:bg-violet-900/50 dark:text-violet-300">
+          <Ticket className="size-4" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">
+            This visit is covered by {planned.source_label}
+          </p>
+          <p className="text-xs text-muted-foreground truncate">
+            {planned.covers_label} · {planned.remaining} credit
+            {planned.remaining === 1 ? '' : 's'} left before this visit
+          </p>
+        </div>
+        <Button
+          size="sm"
+          onClick={onApply}
+          disabled={apply.isPending}
+          className="shrink-0"
+        >
+          {apply.isPending ? (
+            <>
+              <Loader2 className="size-3.5 animate-spin" /> Applying…
+            </>
+          ) : (
+            'Apply credit'
+          )}
         </Button>
       </div>
     </div>
