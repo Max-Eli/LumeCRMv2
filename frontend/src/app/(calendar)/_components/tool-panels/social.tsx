@@ -29,6 +29,11 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { InitialsAvatar } from '@/components/initials-avatar';
 import { ApiError } from '@/lib/api';
+import {
+  useAIConversationStatus,
+  usePauseAI,
+  useResumeAI,
+} from '@/lib/ai-inbox';
 import { useIntegrations } from '@/lib/integrations';
 import {
   PROVIDER_LABEL,
@@ -309,6 +314,7 @@ function ThreadDetailView({
         )}
       </div>
 
+      <MiniAIStatusBanner customerId={thread.customer.id} />
       <MiniComposer thread={thread} />
     </div>
   );
@@ -360,6 +366,7 @@ function DetailHeader({
 function MiniBubble({ message }: { message: SocialMessage }) {
   const isOutbound = message.direction === 'outbound';
   const isFailed = message.status === 'failed';
+  const isAI = message.generated_by_ai === true;
   return (
     <div className={cn('flex', isOutbound ? 'justify-end' : 'justify-start')}>
       <div
@@ -367,11 +374,18 @@ function MiniBubble({ message }: { message: SocialMessage }) {
           'max-w-[80%] rounded-xl px-3 py-2 ring-1 ring-inset text-xs',
           isFailed
             ? 'bg-rose-50 text-rose-900 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-100 dark:ring-rose-900'
-            : isOutbound
-              ? 'bg-accent text-accent-foreground ring-accent/40'
-              : 'bg-card text-foreground ring-border',
+            : isAI
+              ? 'bg-violet-100 text-violet-900 ring-violet-200 dark:bg-violet-950/40 dark:text-violet-100 dark:ring-violet-900'
+              : isOutbound
+                ? 'bg-accent text-accent-foreground ring-accent/40'
+                : 'bg-card text-foreground ring-border',
         )}
       >
+        {isAI && (
+          <p className="mb-0.5 text-[9px] font-semibold uppercase tracking-wide text-violet-700 dark:text-violet-300">
+            AI · agent reply
+          </p>
+        )}
         {message.body && (
           <p className="whitespace-pre-wrap break-words leading-snug">
             {message.body}
@@ -381,9 +395,11 @@ function MiniBubble({ message }: { message: SocialMessage }) {
           'mt-0.5 text-[9px]',
           isFailed
             ? 'text-rose-700 dark:text-rose-200'
-            : isOutbound
-              ? 'text-accent-foreground/70'
-              : 'text-muted-foreground',
+            : isAI
+              ? 'text-violet-700/70 dark:text-violet-300/70'
+              : isOutbound
+                ? 'text-accent-foreground/70'
+                : 'text-muted-foreground',
         )}>
           {relativeAgo(message.created_at)}
           {isOutbound && message.status !== 'sent' && (
@@ -391,6 +407,52 @@ function MiniBubble({ message }: { message: SocialMessage }) {
           )}
         </p>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Compact AI status strip for the calendar rail — mirrors the
+ * `/social` page banner but sized for the 340-px panel. Renders
+ * nothing when the conversation has no Instagram AI state (or the
+ * feature is off → the status query 402s and `isError` short-circuits).
+ */
+function MiniAIStatusBanner({ customerId }: { customerId: number }) {
+  const { data, isError } = useAIConversationStatus(customerId, 'instagram');
+  const pause = usePauseAI(customerId, 'instagram');
+  const resume = useResumeAI(customerId, 'instagram');
+
+  if (isError || !data || data.status === 'closed') return null;
+
+  const isPaused = data.status === 'paused';
+  const isEscalated = data.status === 'escalated';
+
+  const tone = isEscalated
+    ? 'bg-rose-50 border-rose-200 text-rose-900 dark:bg-rose-950/30 dark:text-rose-100 dark:border-rose-900'
+    : isPaused
+      ? 'bg-amber-50 border-amber-200 text-amber-900 dark:bg-amber-950/30 dark:text-amber-100 dark:border-amber-900'
+      : 'bg-violet-50 border-violet-200 text-violet-900 dark:bg-violet-950/30 dark:text-violet-100 dark:border-violet-900';
+
+  const label = isEscalated
+    ? `AI escalated — ${data.escalation_reason || 'needs attention'}.`
+    : isPaused
+      ? 'AI paused. You’re handling this thread.'
+      : 'AI is replying to this thread.';
+
+  const busy = pause.isPending || resume.isPending;
+  const onClick = () => (isPaused || isEscalated ? resume.mutate() : pause.mutate());
+
+  return (
+    <div className={cn('flex items-center justify-between gap-2 border-t px-3 py-1.5 text-[11px]', tone)}>
+      <span className="truncate">{label}</span>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={busy}
+        className="shrink-0 rounded-md border border-current/30 bg-card px-2 py-0.5 text-[10px] font-medium hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {busy ? '…' : isPaused || isEscalated ? 'Resume' : 'Pause'}
+      </button>
     </div>
   );
 }
