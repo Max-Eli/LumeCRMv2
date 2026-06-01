@@ -98,8 +98,32 @@ export interface Appointment {
   total_price_cents: number;
   /** False once the invoice is paid/void — services are then locked. */
   services_editable: boolean;
+  /** Set when the booking was made "from" a customer's package or
+   *  membership credit. The credit isn't decremented until checkout —
+   *  this drives the "Covered by …" badge + the one-click redeem on the
+   *  invoice. Null when the visit is being paid for normally. */
+  planned_redemption: PlannedRedemption | null;
   created_at: string;
   updated_at: string;
+}
+
+/** Read-only summary of the credit a booking plans to redeem at checkout. */
+export interface PlannedRedemption {
+  kind: 'package' | 'membership';
+  /** PurchasedPackageItem id (package) or SubscriptionItem id (membership). */
+  item_id: number;
+  /** Package / membership plan name, e.g. "5x Facials" or "Gold". */
+  source_label: string;
+  /** What the credit covers, e.g. "Facial" or "Any Injectables". */
+  covers_label: string;
+  /** Credits left BEFORE this visit is checked out. */
+  remaining: number;
+}
+
+/** Write-only on create: book the primary service "from" a credit. */
+export interface RedeemCreditInput {
+  kind: 'package' | 'membership';
+  item_id: number;
 }
 
 /** One row in the create payload's `extras` array. `provider_id` is
@@ -120,6 +144,9 @@ export interface CreateAppointmentInput {
    *  Esthetician B" instead of forcing two appointments. Omit or pass
    *  `[]` for a single-service single-provider booking. */
   extras?: AppointmentExtraInput[];
+  /** Book the primary service from a customer's package/membership
+   *  credit. Records intent only — the credit is redeemed at checkout. */
+  redeem_credit?: RedeemCreditInput | null;
   start_time: string; // ISO-8601 UTC
   end_time: string;
   status?: AppointmentStatus;

@@ -38,7 +38,7 @@
 'use client';
 
 import { zodResolver } from '@hookform/resolvers/zod';
-import { AlertTriangle, Plus, Search, UserPlus, X } from 'lucide-react';
+import { AlertTriangle, Check, Plus, Search, Ticket, UserPlus, X } from 'lucide-react';
 import { useEffect, useMemo, useState } from 'react';
 import { Controller, useForm } from 'react-hook-form';
 import { toast } from 'sonner';
@@ -80,7 +80,9 @@ import {
   membershipName,
   useBookableMemberships,
 } from '@/lib/memberships';
+import { useCustomerPurchasedPackages } from '@/lib/packages';
 import { type Service, useServiceCategories, useServices } from '@/lib/services';
+import { useCustomerSubscriptions } from '@/lib/subscriptions';
 
 // ── Validation ───────────────────────────────────────────────────────────
 
@@ -104,6 +106,15 @@ const schema = z.object({
   date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'Pick a date'),
   time: z.string().regex(/^\d{2}:\d{2}$/, 'Pick a time'),
   notes: z.string().max(2000).optional(),
+  // Book the primary service "from" a customer's package/membership
+  // credit. Null = pay normally. The credit is only redeemed at
+  // checkout, so this records intent on the appointment.
+  redeem_credit: z
+    .object({
+      kind: z.enum(['package', 'membership']),
+      item_id: z.number().int().positive(),
+    })
+    .nullable(),
 });
 
 type FormValues = z.infer<typeof schema>;
@@ -153,6 +164,7 @@ export function NewAppointmentSheet({
     date: defaultDate ?? todayLocalISODate(),
     time: defaultTime ?? defaultStartTimeLabel(),
     notes: '',
+    redeem_credit: null,
   });
 
   const form = useForm<FormValues>({
@@ -176,6 +188,152 @@ export function NewAppointmentSheet({
     () => (services ?? []).find((s) => s.id === watched.service_id) ?? null,
     [services, watched.service_id],
   );
+
+  // ── Book from a package / membership credit ──────────────────────
+  // Once a customer is picked, surface their redeemable credits so the
+  // front desk can book a covered service in one tap instead of looking
+  // up what's inside the package. Picking a credit fills the service and
+  // tags the appointment; the credit is only decremented at checkout.
+  const { data: customerPackages } = useCustomerPurchasedPackages(
+    watched.customer_id || undefined,
+    { status: 'active' },
+  );
+  const { data: customerSubscriptions } = useCustomerSubscriptions(
+    watched.customer_id || undefined,
+    { status: 'active' },
+  );
+
+  type CreditOption = {
+    key: string;
+    kind: 'package' | 'membership';
+    itemId: number;
+    /** Set for a service-specific credit; null for a category credit. */
+    coversServiceId: number | null;
+    /** Set for a category credit (any service in it); null otherwise. */
+    coversCategoryId: number | null;
+    label: string;
+    sourceLabel: string;
+    remaining: number;
+  };
+  const creditOptions = useMemo<CreditOption[]>(() => {
+    const out: CreditOption[] = [];
+    for (const pkg of customerPackages ?? []) {
+      if (!pkg.is_redeemable) continue;
+      for (const item of pkg.items) {
+        if (item.quantity_remaining <= 0 || !item.service) continue;
+        out.push({
+          key: `pkg-${item.id}`,
+          kind: 'package',
+          itemId: item.id,
+          coversServiceId: item.service,
+          coversCategoryId: null,
+          label: item.service_name,
+          sourceLabel: pkg.name,
+          remaining: item.quantity_remaining,
+        });
+      }
+    }
+    for (const sub of customerSubscriptions ?? []) {
+      if (!sub.is_redeemable) continue;
+      for (const item of sub.items) {
+        if (item.quantity_remaining <= 0) continue;
+        if (item.item_type === 'service' && item.service) {
+          out.push({
+            key: `sub-${item.id}`,
+            kind: 'membership',
+            itemId: item.id,
+            coversServiceId: item.service,
+            coversCategoryId: null,
+            label: item.service_name,
+            sourceLabel: sub.name,
+            remaining: item.quantity_remaining,
+          });
+        } else if (item.item_type === 'category' && item.category) {
+          out.push({
+            key: `sub-${item.id}`,
+            kind: 'membership',
+            itemId: item.id,
+            coversServiceId: null,
+            coversCategoryId: item.category,
+            label: `Any ${item.category_name}`,
+            sourceLabel: sub.name,
+            remaining: item.quantity_remaining,
+          });
+        }
+      }
+    }
+    return out;
+  }, [customerPackages, customerSubscriptions]);
+
+  const selectedCredit = useMemo(() => {
+    const rc = watched.redeem_credit;
+    if (!rc) return null;
+    return (
+      creditOptions.find(
+        (o) => o.kind === rc.kind && o.itemId === rc.item_id,
+      ) ?? null
+    );
+  }, [creditOptions, watched.redeem_credit]);
+
+  // When a category credit is active, scope the primary service picker
+  // to that category so staff can only pick a covered service.
+  const creditCategoryId = selectedCredit?.coversCategoryId ?? null;
+  const primaryServiceOptions = useMemo(() => {
+    const all = services ?? [];
+    if (creditCategoryId == null) return all;
+    return all.filter((s) => s.category?.id === creditCategoryId);
+  }, [services, creditCategoryId]);
+
+  const applyCredit = (opt: CreditOption) => {
+    form.setValue(
+      'redeem_credit',
+      { kind: opt.kind, item_id: opt.itemId },
+      { shouldValidate: false, shouldDirty: true },
+    );
+    if (opt.coversServiceId != null) {
+      // Service-specific credit → fill the service in one tap.
+      form.setValue('service_id', opt.coversServiceId, {
+        shouldValidate: true,
+        shouldDirty: true,
+      });
+    } else {
+      // Category credit → clear any service not in the category so the
+      // operator picks a covered one from the now-scoped picker.
+      const cur = (services ?? []).find((s) => s.id === watched.service_id);
+      if (!cur || cur.category?.id !== opt.coversCategoryId) {
+        form.setValue('service_id', 0, { shouldValidate: false });
+      }
+    }
+  };
+
+  const clearCredit = () => {
+    form.setValue('redeem_credit', null, { shouldDirty: true });
+  };
+
+  // Credits belong to a specific customer — drop any selection when the
+  // customer changes so a stale credit can't ride along to the next one.
+  useEffect(() => {
+    form.setValue('redeem_credit', null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watched.customer_id]);
+
+  // If the operator changes the service away from what the selected
+  // credit covers, drop the credit so a mismatch is never submitted.
+  useEffect(() => {
+    const rc = watched.redeem_credit;
+    if (!rc || !watched.service_id) return;
+    const opt = creditOptions.find(
+      (o) => o.kind === rc.kind && o.itemId === rc.item_id,
+    );
+    if (!opt) return;
+    const svc = (services ?? []).find((s) => s.id === watched.service_id);
+    const matches =
+      opt.coversServiceId != null
+        ? watched.service_id === opt.coversServiceId
+        : !!svc && svc.category?.id === opt.coversCategoryId;
+    if (!matches) form.setValue('redeem_credit', null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [watched.service_id]);
 
   // Resolve each extras row to the full Service + (optional) provider
   // membership so the card can show name/duration/price and the
@@ -381,6 +539,7 @@ export function NewAppointmentSheet({
         customer_id: values.customer_id,
         service_id: values.service_id,
         extras,
+        redeem_credit: values.redeem_credit ?? undefined,
         provider_id: values.provider_id,
         start_time: start.toISOString(),
         end_time: end.toISOString(),
@@ -440,6 +599,87 @@ export function NewAppointmentSheet({
               )}
             />
 
+            {/* Book from a package / membership credit. Only shown once a
+                customer with redeemable credits is selected. Picking one
+                fills the service (or scopes the picker for a category
+                credit) and tags the appointment; the credit is redeemed
+                at checkout, not now. */}
+            {watched.customer_id > 0 && creditOptions.length > 0 ? (
+              <Field>
+                <FieldLabel>
+                  <span className="inline-flex items-center gap-1.5">
+                    <Ticket className="size-3.5 text-violet-500" />
+                    Book from a package or membership
+                  </span>
+                </FieldLabel>
+                <ul className="space-y-1.5">
+                  {creditOptions.map((opt) => {
+                    const active = selectedCredit?.key === opt.key;
+                    return (
+                      <li key={opt.key}>
+                        <button
+                          type="button"
+                          aria-pressed={active}
+                          onClick={() =>
+                            active ? clearCredit() : applyCredit(opt)
+                          }
+                          className={
+                            'flex w-full items-center gap-3 rounded-lg border px-3 py-2 text-left text-sm transition-colors ' +
+                            (active
+                              ? 'border-violet-300 bg-violet-50 dark:border-violet-800 dark:bg-violet-950/30'
+                              : 'border-input hover:bg-muted/50')
+                          }
+                        >
+                          <span
+                            className={
+                              'inline-flex size-5 shrink-0 items-center justify-center rounded-full border ' +
+                              (active
+                                ? 'border-violet-500 bg-violet-500 text-white'
+                                : 'border-muted-foreground/40')
+                            }
+                          >
+                            {active ? <Check className="size-3" /> : null}
+                          </span>
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium">
+                              {opt.label}
+                            </span>
+                            <span className="block truncate text-[11px] text-muted-foreground">
+                              {opt.sourceLabel}
+                            </span>
+                          </span>
+                          <span className="shrink-0 text-[11px] font-medium text-muted-foreground tabular-nums">
+                            {opt.remaining} left
+                          </span>
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+                {selectedCredit ? (
+                  <p className="mt-1.5 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                    <span className="min-w-0">
+                      Covered by{' '}
+                      <span className="font-medium text-foreground">
+                        {selectedCredit.sourceLabel}
+                      </span>{' '}
+                      · applied at checkout
+                      {selectedCredit.coversCategoryId != null
+                        ? ' · pick a covered service below'
+                        : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={clearCredit}
+                      className="shrink-0 underline hover:text-foreground"
+                    >
+                      Pay normally
+                    </button>
+                  </p>
+                ) : null}
+              </Field>
+            ) : null}
+
             <Controller
               control={form.control}
               name="service_id"
@@ -448,9 +688,15 @@ export function NewAppointmentSheet({
                   <FieldLabel>Service</FieldLabel>
                   <ServicePicker
                     value={field.value}
-                    services={services ?? []}
+                    services={primaryServiceOptions}
                     onChange={(id) => field.onChange(id)}
                   />
+                  {creditCategoryId != null ? (
+                    <p className="mt-1 text-[11px] text-muted-foreground">
+                      Showing only services covered by the selected
+                      membership credit.
+                    </p>
+                  ) : null}
                   {fieldState.error ? (
                     <FieldError>{fieldState.error.message}</FieldError>
                   ) : null}
