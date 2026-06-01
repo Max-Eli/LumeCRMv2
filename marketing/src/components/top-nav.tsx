@@ -25,7 +25,7 @@ import { BrandMark } from './brand-mark';
 const NAV_LINKS = [
   { href: '/features', label: 'Features' },
   { href: '/medspas', label: 'For medspas' },
-  { href: '/security', label: 'Security' },
+  { href: '/compare', label: 'Compare' },
   { href: '/pricing', label: 'Pricing' },
   { href: '/blog', label: 'Journal' },
   { href: '/about', label: 'About' },

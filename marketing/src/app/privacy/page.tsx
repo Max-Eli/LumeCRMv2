@@ -255,8 +255,7 @@ export default function PrivacyPage() {
             includes tenant isolation at the database layer,
             role-based permissions resolved per request, append-only
             audit logging on every PHI access, and AWS infrastructure
-            under a signed Business Associate Agreement. SOC 2 Type
-            II is in progress.
+            under a signed Business Associate Agreement.
           </p>
           <p>
             In the event of a breach involving unsecured PHI, Lumè

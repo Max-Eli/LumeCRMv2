@@ -8,7 +8,7 @@ import type { Metadata } from 'next';
 const COMPLIANCE_MARKERS = [
   { label: 'HIPAA', body: 'Compliant by architecture.' },
   { label: 'BAA', body: 'Signed with every customer.' },
-  { label: 'SOC 2 Type II', body: 'Audit in progress.' },
+  { label: 'Audit logging', body: 'Append-only on every PHI read.' },
   { label: 'AWS', body: 'BAA-eligible infrastructure.' },
 ];
 
@@ -116,8 +116,8 @@ export default function SecurityPage() {
                   What "HIPAA-compliant" means here
                 </h2>
                 <p className="mt-4 text-base leading-[1.85] text-foreground/85">
-                  The product is built on a SOC 2-aligned spine: least
-                  privilege, traceability, change management,
+                  Lumè is built on a defense-in-depth architecture:
+                  least privilege, traceability, change management,
                   separation of duties. Production runs on AWS services
                   covered by a Business Associate Agreement. Postgres
                   is KMS-encrypted at rest. Email goes through SES with
@@ -150,9 +150,17 @@ export default function SecurityPage() {
                   statements are rejected.
                 </p>
                 <p className="mt-4 text-base leading-[1.85] text-foreground/85">
-                  SOC 2 Type II is in progress. We can share the
-                  in-progress audit scope and a list of mapped controls
-                  on request.
+                  If your compliance team needs documentation —
+                  architecture diagrams, control mappings, or answers
+                  to a vendor questionnaire — we respond directly.
+                  Contact us at{' '}
+                  <a
+                    href="mailto:security@xn--lumcrm-5ua.com"
+                    className="text-accent underline underline-offset-2 hover:text-foreground"
+                  >
+                    security@lumècrm.com
+                  </a>
+                  .
                 </p>
               </ScrollReveal>
             </article>

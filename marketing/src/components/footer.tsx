@@ -32,6 +32,7 @@ const FOOTER_GROUPS = [
     label: 'Company',
     links: [
       { href: '/medspas', label: 'For medspas' },
+      { href: '/compare', label: 'Compare alternatives' },
       { href: '/security', label: 'Security' },
       { href: '/blog', label: 'Journal' },
       { href: '/about', label: 'About' },
@@ -89,7 +90,7 @@ export function Footer() {
             © {new Date().getFullYear()} Lumè. All rights reserved.
           </p>
           <p className="text-xs text-muted-foreground">
-            HIPAA-compliant · BAA included · SOC 2 Type II in progress
+            HIPAA-compliant · BAA included in every contract
           </p>
         </div>
       </div>

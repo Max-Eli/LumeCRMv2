@@ -60,7 +60,7 @@ const WORKFLOW_FITS = [
     eyebrow: 'Medical-grade audit trail',
     title: 'Every PHI access logged. Every state change traceable.',
     body:
-      "If your medical board asks who viewed Sarah Chen's chart on May 12th, you can answer. Every PHI read writes an append-only audit entry, queryable by date, user, or resource. SOC 2 CC 6.1 and HIPAA §164.312(b) satisfied by architecture, not retrofit.",
+      "If your medical board asks who viewed a client's chart on a specific date, you can answer in seconds. Every PHI read writes an append-only audit entry, queryable by date, user, or resource. HIPAA §164.312(b) satisfied by architecture, not retrofit.",
   },
 ];
 

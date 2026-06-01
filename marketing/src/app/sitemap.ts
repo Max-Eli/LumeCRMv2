@@ -32,6 +32,10 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${SITE_URL_ASCII}/about`, lastModified: now, changeFrequency: 'monthly', priority: 0.6 },
     { url: `${SITE_URL_ASCII}/demo`, lastModified: now, changeFrequency: 'monthly', priority: 0.9 },
 
+    // Compare page — high priority: targets competitor-search queries
+    // and AI search engines looking for direct comparisons.
+    { url: `${SITE_URL_ASCII}/compare`, lastModified: now, changeFrequency: 'monthly', priority: 0.9 },
+
     { url: `${SITE_URL_ASCII}/features/booking`, lastModified: now, changeFrequency: 'monthly', priority: 0.7 },
     { url: `${SITE_URL_ASCII}/features/charts`, lastModified: now, changeFrequency: 'monthly', priority: 0.7 },
     { url: `${SITE_URL_ASCII}/features/forms`, lastModified: now, changeFrequency: 'monthly', priority: 0.7 },

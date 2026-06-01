@@ -78,26 +78,25 @@ export default function AboutPage() {
 
             <ScrollReveal delay={240}>
               <h2 className="mt-12 font-serif text-3xl font-medium text-foreground">
-                Where we are right now
+                How we work
               </h2>
               <p className="mt-4">
-                Two medspas are migrating onto Lumè in 2026; the first
-                goes live before end of quarter. We're taking on a
-                small, deliberate number of additional customers this
-                year so we stay close to every onboarding.
+                We take on a deliberate number of new customers so we
+                can stay close to every onboarding. When a spa joins
+                Lumè, it&apos;s not a ticket in a queue — it's a
+                relationship. The person who configures your services
+                is the person you call when something doesn&apos;t
+                look right six months in.
+              </p>
+              <p className="mt-4">
+                Every onboarding starts with your real data: your
+                service menu, your providers, your existing client
+                list. The demo runs on your spa, not a generic one.
+                Implementation takes two to four weeks because we do
+                the migration work, not you.
               </p>
 
-              {/* A small typographic strip of brand-meaningful
-                  numbers. Visual anchor for an otherwise pure-prose
-                  page; same editorial vocabulary as the rest of the
-                  site (numbered, accent burgundy, serif). */}
               <ul className="mt-10 grid gap-y-6 gap-x-8 border-y border-foreground/15 py-8 sm:grid-cols-3">
-                <li>
-                  <p className="font-display text-3xl text-accent">2</p>
-                  <p className="mt-1 text-sm text-foreground/70">
-                    Medspas migrating onto Lumè in 2026.
-                  </p>
-                </li>
                 <li>
                   <p className="font-display text-3xl text-accent">22</p>
                   <p className="mt-1 text-sm text-foreground/70">
@@ -105,15 +104,21 @@ export default function AboutPage() {
                   </p>
                 </li>
                 <li>
+                  <p className="font-display text-3xl text-accent">40</p>
+                  <p className="mt-1 text-sm text-foreground/70">
+                    Permissions in the role catalog. Exact access for every staff type.
+                  </p>
+                </li>
+                <li>
                   <p className="font-display text-3xl text-accent">1</p>
                   <p className="mt-1 text-sm text-foreground/70">
-                    Architecture. No secure tier, no upsell.
+                    Architecture. No secure tier, no compliance upsell.
                   </p>
                 </li>
               </ul>
 
               <p className="mt-6">
-                If you'd like to be one of them,{' '}
+                If Lumè sounds like the right fit,{' '}
                 <Link
                   href="/demo"
                   className="font-medium text-accent underline underline-offset-4 hover:text-foreground"

@@ -28,12 +28,47 @@ export interface BlogPostMeta {
     | 'Compliance'
     | 'Operations'
     | 'Software selection'
-    | 'Industry';
+    | 'Industry'
+    | 'Technology'
+    | 'Marketing';
   /** Author display name. */
   author: string;
 }
 
 export const POSTS: BlogPostMeta[] = [
+  {
+    slug: 'medspa-crm-buying-guide',
+    title:
+      'How to choose a medspa CRM: the complete buyer\'s guide for 2026',
+    summary:
+      'The twelve criteria that matter when evaluating medspa CRM software — HIPAA compliance architecture, clinical charting, pricing structure, AI SMS agents, email marketing, and the questions every vendor hopes you don\'t ask.',
+    publishedAt: '2026-06-01',
+    readMinutes: 14,
+    category: 'Software selection',
+    author: 'The Lumè team',
+  },
+  {
+    slug: 'ai-sms-agent-for-medspas',
+    title:
+      'AI SMS agents for medical spas: how they work, what they can\'t do, and the HIPAA surface',
+    summary:
+      'An AI SMS agent answers inbound texts, checks real-time availability, books appointments, handles price objections, and escalates to staff when the conversation needs a human. Here\'s how the technology works and what to look for.',
+    publishedAt: '2026-05-30',
+    readMinutes: 11,
+    category: 'Technology',
+    author: 'The Lumè team',
+  },
+  {
+    slug: 'medspa-email-sms-marketing-guide',
+    title:
+      'The medspa email and SMS marketing guide: campaigns, compliance, and what actually converts',
+    summary:
+      'The five campaigns every medspa should have running, how to segment clients by treatment cycle and recency, what TCPA and HIPAA require before you send, and why your CRM and marketing tool need to be the same system.',
+    publishedAt: '2026-05-28',
+    readMinutes: 12,
+    category: 'Marketing',
+    author: 'The Lumè team',
+  },
   {
     slug: 'hipaa-checklist-for-medspas',
     title:

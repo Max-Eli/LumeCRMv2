@@ -421,8 +421,8 @@ function Compliance() {
                 Tenant data isolated at the database layer. Permissions
                 resolved per request from a forty-permission catalog.
                 Audit log entries on every PHI read and every state
-                change. AWS infrastructure under a signed BAA. SOC 2
-                Type II in progress.
+                change. AWS infrastructure under a signed BAA. BAA
+                included in every contract, at every tier.
               </p>
             </div>
             <div className="lg:col-span-4 lg:col-start-9 lg:text-right">
