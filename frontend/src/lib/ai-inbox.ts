@@ -30,6 +30,8 @@ export type AIConversationStatus =
 export interface AIConversationStatusResponse {
   id: number;
   customer_id: number;
+  channel: 'sms' | 'instagram';
+  social_thread_id: number | null;
   status: AIConversationStatus;
   paused_at: string | null;
   paused_by_email: string | null;
@@ -56,6 +58,11 @@ export interface AIConfig {
   escalation_keywords: string[];
   platform_disabled_at: string | null;
   platform_disabled_reason: string;
+  // Instagram channel
+  instagram_enabled: boolean;
+  instagram_test_mode: boolean;
+  instagram_test_username: string;
+  business_phone: string;
   created_at: string;
   updated_at: string;
 }
@@ -73,6 +80,10 @@ export type AIConfigInput = Partial<
     | 'daily_send_cap'
     | 'monthly_exchange_cap'
     | 'escalation_keywords'
+    | 'instagram_enabled'
+    | 'instagram_test_mode'
+    | 'instagram_test_username'
+    | 'business_phone'
   >
 >;
 
@@ -82,6 +93,9 @@ export interface EscalationAlert {
   customer_first_name: string;
   customer_last_name: string;
   customer_phone: string;
+  /** 'sms' | 'instagram' — drives the notifier deep-link target. */
+  channel: 'sms' | 'instagram';
+  social_thread_id: number | null;
   reason: string;
   reason_detail: string;
   acknowledged_at: string | null;
@@ -110,14 +124,25 @@ const ESCALATIONS_KEY = (statusFilter: 'open' | 'all') =>
  * websocket layer. Disabled when no customerId is provided so the
  * inbox can keep this hook mounted across thread switches.
  */
-export function useAIConversationStatus(customerId: number | undefined) {
+export type AIChannel = 'sms' | 'instagram';
+
+function channelSuffix(channel: AIChannel): string {
+  // SMS is the default server-side, so only append for instagram to
+  // keep SMS URLs byte-identical to before.
+  return channel === 'instagram' ? '?channel=instagram' : '';
+}
+
+export function useAIConversationStatus(
+  customerId: number | undefined,
+  channel: AIChannel = 'sms',
+) {
   return useQuery<AIConversationStatusResponse>({
     queryKey: customerId
-      ? STATUS_KEY(customerId)
+      ? [...STATUS_KEY(customerId), channel]
       : (['ai-inbox', 'conversation', 'status', 'disabled'] as const),
     queryFn: () =>
       api.get<AIConversationStatusResponse>(
-        `/api/ai-inbox/conversations/${customerId}/`,
+        `/api/ai-inbox/conversations/${customerId}/${channelSuffix(channel)}`,
       ),
     enabled: typeof customerId === 'number' && customerId > 0,
     refetchInterval: 10_000,
@@ -129,15 +154,15 @@ export function useAIConversationStatus(customerId: number | undefined) {
 }
 
 /** Operator pauses the AI for one conversation. */
-export function usePauseAI(customerId: number) {
+export function usePauseAI(customerId: number, channel: AIChannel = 'sms') {
   const qc = useQueryClient();
   return useMutation<AIConversationStatusResponse, Error, void>({
     mutationFn: () =>
       api.post<AIConversationStatusResponse>(
-        `/api/ai-inbox/conversations/${customerId}/pause/`,
+        `/api/ai-inbox/conversations/${customerId}/pause/${channelSuffix(channel)}`,
       ),
     onSuccess: (data) => {
-      qc.setQueryData(STATUS_KEY(customerId), data);
+      qc.setQueryData([...STATUS_KEY(customerId), channel], data);
     },
   });
 }
@@ -145,15 +170,15 @@ export function usePauseAI(customerId: number) {
 /** Operator resumes the AI for one conversation. Auto-resolves any
  * open escalation alerts on this conversation as a side effect on
  * the server. */
-export function useResumeAI(customerId: number) {
+export function useResumeAI(customerId: number, channel: AIChannel = 'sms') {
   const qc = useQueryClient();
   return useMutation<AIConversationStatusResponse, Error, void>({
     mutationFn: () =>
       api.post<AIConversationStatusResponse>(
-        `/api/ai-inbox/conversations/${customerId}/resume/`,
+        `/api/ai-inbox/conversations/${customerId}/resume/${channelSuffix(channel)}`,
       ),
     onSuccess: (data) => {
-      qc.setQueryData(STATUS_KEY(customerId), data);
+      qc.setQueryData([...STATUS_KEY(customerId), channel], data);
       qc.invalidateQueries({ queryKey: ['ai-inbox', 'escalations'] });
     },
   });

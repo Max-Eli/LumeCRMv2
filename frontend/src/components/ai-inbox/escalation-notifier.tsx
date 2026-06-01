@@ -74,6 +74,15 @@ function formatCustomer(alert: EscalationAlert): string {
   return name || alert.customer_phone || `Customer #${alert.customer_id}`;
 }
 
+/** Where clicking an escalation should take the operator: the SMS
+ *  inbox for SMS escalations, the social inbox thread for Instagram. */
+function alertHref(alert: EscalationAlert): string {
+  if (alert.channel === 'instagram' && alert.social_thread_id) {
+    return `/social?thread=${alert.social_thread_id}`;
+  }
+  return `/inbox?customer=${alert.customer_id}`;
+}
+
 export function EscalationNotifier() {
   const { data: alerts, isError } = useEscalationAlerts('open');
 
@@ -102,7 +111,7 @@ export function EscalationNotifier() {
         action: {
           label: 'Open',
           onClick: () => {
-            window.location.href = `/inbox?customer=${alert.customer_id}`;
+            window.location.href = alertHref(alert);
           },
         },
       });
@@ -172,7 +181,7 @@ function EscalationRow({ alert }: { alert: EscalationAlert }) {
   const isAcknowledged = alert.acknowledged_at !== null;
 
   const openInbox = () => {
-    window.location.href = `/inbox?customer=${alert.customer_id}`;
+    window.location.href = alertHref(alert);
   };
 
   return (

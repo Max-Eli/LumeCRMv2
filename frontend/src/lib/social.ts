@@ -65,6 +65,10 @@ export interface SocialMessage {
   media_urls: string[];
   status: SocialMessageStatus;
   sent_by_id: number | null;
+  /** True when the Instagram AI agent authored this reply. Drives the
+   *  violet "AI" bubble so staff can tell AI replies from staff ones. */
+  generated_by_ai: boolean;
+  ai_conversation_id: number | null;
   received_at: string | null;
   created_at: string;
 }
@@ -146,16 +150,11 @@ export function useReplyToThread() {
   });
 }
 
-/** How many hours after the last inbound message can the operator
- *  still reply? Mirrors `META_REPLY_WINDOW_HOURS` in the backend. */
-export const REPLY_WINDOW_HOURS = 24;
-
-/** Returns true if it's still inside the 24h reply window per ADR 0027 §7. */
-export function canReply(thread: SocialThreadSummary): boolean {
-  if (!thread.last_inbound_at) return false;
-  const last = new Date(thread.last_inbound_at).getTime();
-  const ageMs = Date.now() - last;
-  return ageMs < REPLY_WINDOW_HOURS * 60 * 60 * 1000;
+/** The 24h reply-window restriction was removed (ADR 0033) — Meta
+ *  governs send eligibility and tools like ManyChat reply beyond 24h.
+ *  Kept as an always-true function so existing callers don't break. */
+export function canReply(_thread: SocialThreadSummary): boolean {
+  return true;
 }
 
 // ── Display helpers ─────────────────────────────────────────────────

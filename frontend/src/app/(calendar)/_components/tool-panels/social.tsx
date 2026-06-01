@@ -33,8 +33,6 @@ import { useIntegrations } from '@/lib/integrations';
 import {
   PROVIDER_LABEL,
   PROVIDER_TONE,
-  REPLY_WINDOW_HOURS,
-  canReply,
   displayHandle,
   displayName,
   relativeAgo,
@@ -400,10 +398,9 @@ function MiniBubble({ message }: { message: SocialMessage }) {
 function MiniComposer({ thread }: { thread: SocialThreadSummary }) {
   const [body, setBody] = useState('');
   const reply = useReplyToThread();
-  const replyAllowed = canReply(thread);
   const trimmed = body.trim();
   const canSend =
-    replyAllowed && trimmed.length > 0 && trimmed.length <= MAX_REPLY_CHARS && !reply.isPending;
+    trimmed.length > 0 && trimmed.length <= MAX_REPLY_CHARS && !reply.isPending;
 
   const handleSend = () => {
     if (!canSend) return;
@@ -429,43 +426,33 @@ function MiniComposer({ thread }: { thread: SocialThreadSummary }) {
       <p className="text-[9px] text-muted-foreground uppercase tracking-wide">
         Meta prohibits PHI in DMs — keep replies non-clinical
       </p>
-      {!replyAllowed ? (
-        <p className="text-[11px] rounded-md bg-amber-50/70 border border-amber-200 px-2 py-1.5 text-amber-900 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-100">
-          {thread.last_inbound_at
-            ? `${REPLY_WINDOW_HOURS}h reply window expired. Wait for them to message again.`
-            : 'No inbound message yet — Instagram only allows replies after they message first.'}
-        </p>
-      ) : (
-        <>
-          <textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            onKeyDown={(e) => {
-              if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-                e.preventDefault();
-                handleSend();
-              }
-            }}
-            placeholder="Reply…"
-            rows={2}
-            disabled={reply.isPending}
-            className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-          />
-          <div className="flex items-center justify-between gap-2">
-            <span className="text-[9px] text-muted-foreground">
-              Cmd/Ctrl+Enter
-            </span>
-            <Button
-              size="sm"
-              onClick={handleSend}
-              disabled={!canSend}
-              className="h-7 text-xs px-3"
-            >
-              {reply.isPending ? 'Sending…' : 'Send'}
-            </Button>
-          </div>
-        </>
-      )}
+      <textarea
+        value={body}
+        onChange={(e) => setBody(e.target.value)}
+        onKeyDown={(e) => {
+          if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+            e.preventDefault();
+            handleSend();
+          }
+        }}
+        placeholder="Reply…"
+        rows={2}
+        disabled={reply.isPending}
+        className="w-full resize-none rounded-md border border-input bg-background px-2 py-1.5 text-xs focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+      />
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-[9px] text-muted-foreground">
+          Cmd/Ctrl+Enter
+        </span>
+        <Button
+          size="sm"
+          onClick={handleSend}
+          disabled={!canSend}
+          className="h-7 text-xs px-3"
+        >
+          {reply.isPending ? 'Sending…' : 'Send'}
+        </Button>
+      </div>
     </div>
   );
 }

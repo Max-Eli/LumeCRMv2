@@ -25,10 +25,13 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { ApiError } from '@/lib/api';
 import { InitialsAvatar } from '@/components/initials-avatar';
 import {
+  useAIConversationStatus,
+  usePauseAI,
+  useResumeAI,
+} from '@/lib/ai-inbox';
+import {
   PROVIDER_LABEL,
   PROVIDER_TONE,
-  REPLY_WINDOW_HOURS,
-  canReply,
   displayHandle,
   displayName,
   relativeAgo,
@@ -366,6 +369,7 @@ function ThreadDetail({
         )}
       </div>
 
+      <AIStatusBanner customerId={thread.customer.id} />
       <ReplyComposer thread={thread} />
     </div>
   );
@@ -375,15 +379,61 @@ function ThreadDetail({
 
 const MAX_REPLY_CHARS = 1000;
 
+/**
+ * AI status strip above the reply box. Shows whether the Instagram
+ * AI agent is handling this thread and lets staff pause / resume.
+ * Renders nothing if the tenant doesn't have the Instagram agent
+ * (the status query 402s → error → hidden), so the social inbox is
+ * unaffected for tenants that haven't enabled it.
+ */
+function AIStatusBanner({ customerId }: { customerId: number }) {
+  const { data, isError } = useAIConversationStatus(customerId, 'instagram');
+  const pause = usePauseAI(customerId, 'instagram');
+  const resume = useResumeAI(customerId, 'instagram');
+
+  if (isError || !data || data.status === 'closed') return null;
+
+  const isPaused = data.status === 'paused';
+  const isEscalated = data.status === 'escalated';
+
+  const tone = isEscalated
+    ? 'bg-rose-50 border-rose-200 text-rose-900 dark:bg-rose-950/30 dark:text-rose-100 dark:border-rose-900'
+    : isPaused
+      ? 'bg-amber-50 border-amber-200 text-amber-900 dark:bg-amber-950/30 dark:text-amber-100 dark:border-amber-900'
+      : 'bg-violet-50 border-violet-200 text-violet-900 dark:bg-violet-950/30 dark:text-violet-100 dark:border-violet-900';
+
+  const label = isEscalated
+    ? `AI escalated — ${data.escalation_reason || 'needs attention'}.`
+    : isPaused
+      ? `AI paused${data.paused_by_email ? ' by ' + data.paused_by_email : ''}. You're handling this thread.`
+      : 'AI is replying to this thread. Click Pause to take over.';
+
+  const busy = pause.isPending || resume.isPending;
+  const onClick = () => (isPaused || isEscalated ? resume.mutate() : pause.mutate());
+
+  return (
+    <div className={'flex items-center justify-between gap-3 border-t px-6 py-2 text-xs ' + tone}>
+      <span className="truncate">{label}</span>
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={busy}
+        className="shrink-0 rounded-md border border-current/30 bg-card px-2.5 py-1 text-[11px] font-medium hover:bg-muted disabled:opacity-50 disabled:cursor-not-allowed"
+      >
+        {busy ? '…' : isPaused || isEscalated ? 'Resume AI' : 'Pause AI'}
+      </button>
+    </div>
+  );
+}
+
 function ReplyComposer({ thread }: { thread: SocialThreadSummary }) {
   const [body, setBody] = useState('');
   const reply = useReplyToThread();
-  const replyAllowed = canReply(thread);
 
   const remaining = MAX_REPLY_CHARS - body.length;
   const trimmedBody = body.trim();
   const canSend =
-    replyAllowed && trimmedBody.length > 0 && remaining >= 0 && !reply.isPending;
+    trimmedBody.length > 0 && remaining >= 0 && !reply.isPending;
 
   const handleSend = () => {
     if (!canSend) return;
@@ -428,59 +478,40 @@ function ReplyComposer({ thread }: { thread: SocialThreadSummary }) {
         keep replies non-clinical. The full conversation is audit-logged.
       </p>
 
-      {!replyAllowed ? (
-        <div className="rounded-md bg-amber-50/70 border border-amber-200 px-3 py-2 text-xs text-amber-900 dark:bg-amber-950/30 dark:border-amber-900 dark:text-amber-100">
-          {thread.last_inbound_at ? (
-            <>
-              The {REPLY_WINDOW_HOURS}-hour reply window has expired. Wait
-              for {displayHandle(thread)} to message you again before you
-              can reply. (Instagram&apos;s rule, not ours.)
-            </>
-          ) : (
-            <>
-              This thread has no inbound message yet — Instagram only
-              allows replies after the customer messages first.
-            </>
-          )}
-        </div>
-      ) : (
-        <div className="flex items-end gap-2">
-          <textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={reply.isPending}
-            placeholder="Reply…"
-            rows={2}
-            className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
-          />
-          <button
-            type="button"
-            onClick={handleSend}
-            disabled={!canSend}
-            className="shrink-0 inline-flex items-center justify-center rounded-md bg-accent text-accent-foreground text-sm font-medium px-4 py-2 hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
-          >
-            {reply.isPending ? 'Sending…' : 'Send'}
-          </button>
-        </div>
-      )}
+      <div className="flex items-end gap-2">
+        <textarea
+          value={body}
+          onChange={(e) => setBody(e.target.value)}
+          onKeyDown={handleKeyDown}
+          disabled={reply.isPending}
+          placeholder="Reply…"
+          rows={2}
+          className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:opacity-60"
+        />
+        <button
+          type="button"
+          onClick={handleSend}
+          disabled={!canSend}
+          className="shrink-0 inline-flex items-center justify-center rounded-md bg-accent text-accent-foreground text-sm font-medium px-4 py-2 hover:bg-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {reply.isPending ? 'Sending…' : 'Send'}
+        </button>
+      </div>
 
-      {replyAllowed && (
-        <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted-foreground">
-          <span>Cmd/Ctrl+Enter to send</span>
-          <span
-            className={
-              remaining < 0
-                ? 'text-rose-600'
-                : remaining < 50
-                  ? 'text-amber-600'
-                  : ''
-            }
-          >
-            {remaining} chars left
-          </span>
-        </div>
-      )}
+      <div className="mt-1.5 flex items-center justify-between text-[10px] text-muted-foreground">
+        <span>Cmd/Ctrl+Enter to send</span>
+        <span
+          className={
+            remaining < 0
+              ? 'text-rose-600'
+              : remaining < 50
+                ? 'text-amber-600'
+                : ''
+          }
+        >
+          {remaining} chars left
+        </span>
+      </div>
     </div>
   );
 }
@@ -492,16 +523,24 @@ function MessageBubble({
 }) {
   const isOutbound = message.direction === 'outbound';
   const isFailed = message.status === 'failed';
+  const isAI = message.generated_by_ai === true;
   return (
-    <div className={'flex ' + (isOutbound ? 'justify-end' : 'justify-start')}>
+    <div className={'flex flex-col ' + (isOutbound ? 'items-end' : 'items-start')}>
+      {isAI && (
+        <span className="mb-1 inline-flex items-center gap-1 rounded-full bg-violet-100 px-1.5 py-px text-[9px] font-medium uppercase tracking-wide text-violet-700 ring-1 ring-inset ring-violet-200 dark:bg-violet-950/40 dark:text-violet-200 dark:ring-violet-900">
+          AI · agent reply
+        </span>
+      )}
       <div
         className={
           'max-w-[70%] rounded-2xl px-4 py-2.5 ring-1 ring-inset ' +
           (isFailed
             ? 'bg-rose-50 text-rose-900 ring-rose-200 dark:bg-rose-950/40 dark:text-rose-100 dark:ring-rose-900'
-            : isOutbound
-              ? 'bg-accent text-accent-foreground ring-accent/40'
-              : 'bg-card text-foreground ring-border')
+            : isAI
+              ? 'bg-violet-50 text-violet-900 ring-violet-200 dark:bg-violet-950/30 dark:text-violet-50 dark:ring-violet-900'
+              : isOutbound
+                ? 'bg-accent text-accent-foreground ring-accent/40'
+                : 'bg-card text-foreground ring-border')
         }
       >
         {message.body && (
@@ -529,14 +568,16 @@ function MessageBubble({
             'mt-1 text-[10px] flex items-center gap-1.5 ' +
             (isFailed
               ? 'text-rose-700 dark:text-rose-200'
-              : isOutbound
-                ? 'text-accent-foreground/70'
-                : 'text-muted-foreground')
+              : isAI
+                ? 'text-violet-700/80 dark:text-violet-200/80'
+                : isOutbound
+                  ? 'text-accent-foreground/70'
+                  : 'text-muted-foreground')
           }
         >
           <span>{relativeAgo(message.created_at)}</span>
           {isOutbound && (
-            <span>· {outboundStatusLabel(message.status)}</span>
+            <span>· {isAI ? 'AI agent' : outboundStatusLabel(message.status)}</span>
           )}
         </p>
       </div>
